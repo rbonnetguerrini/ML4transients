@@ -1,0 +1,13 @@
+repo: "/sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml"
+collection: "u/rbonnetguerrini/injected"
+visits: [123456, 234567, 345678] 
+cutout:
+  size: 30
+  rotate: false
+  rotation_angles: [90, 180, 270]
+  coadd_science: false
+  save: true
+  return_data: false
+paths:
+  cutouts: "saved/cutouts"
+  csv: "saved/csv"
