@@ -2,4 +2,4 @@
 *.csv
 *.out
 *.npy
-.log
+*.log
