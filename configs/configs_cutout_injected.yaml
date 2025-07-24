@@ -1,14 +1,17 @@
-repo: "/sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml"
-collection: "u/rbonnetguerrini/injected_step6"
-
-visits: [11690, 11694]  # Optional: if omitted, all visits are processed
-injection: true  # has the collection been produced with the injection pipeline
+repo: /sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml
+collection: u/rbonnetguerrini/injected_step6
+visits:
+- 11690
+- 11694
+injection: true
 cutout:
   size: 30
   coadd_science: false
   save: true
-  save_features_only: false   
+  save_features_only: false
   return_data: false
-paths:
-  cutouts: "saved/cutouts"
-  features: "saved/features"
+path: saved/tests
+run_info:
+  status: completed
+  started: '2025-07-24T14:01:00'
+  finished: '2025-07-24T14:15:58.010163'

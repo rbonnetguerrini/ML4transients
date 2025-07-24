@@ -41,8 +41,8 @@ def save_cutouts(config: dict):
     save_features_only = config["cutout"].get("save_features_only", False)
     return_file = config["cutout"]["return_data"]
 
-    path_cutouts = config["paths"]["cutouts"]
-    path_features = config["paths"].get("features", path_cutouts)
+    path_cutouts = f"{config['path']}/cutouts"
+    path_features = f"{config['path']}/features"
 
     if injection:
         prefix = "injected_"
