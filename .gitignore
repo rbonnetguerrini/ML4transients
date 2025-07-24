@@ -5,3 +5,4 @@
 *.log
 *.hd5
 **/saved
+**/__pycache__
