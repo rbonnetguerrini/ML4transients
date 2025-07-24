@@ -1,13 +1,17 @@
-repo: "/sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml"
-collection: "u/rbonnetguerrini/injected"
-visits: [123456, 234567, 345678] 
+repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+collection: run/ssp_ud_cosmos/step5_new
+visits:
+- 68328
+- 103108
+injection: false
 cutout:
   size: 30
-  rotate: false
-  rotation_angles: [90, 180, 270]
   coadd_science: false
   save: true
+  save_features_only: false
   return_data: false
-paths:
-  cutouts: "saved/cutouts"
-  csv: "saved/csv"
+path: saved/test1
+run_info:
+  status: completed
+  started: '2025-07-24T14:01:00'
+  finished: '2025-07-24T13:52:32.565284'
