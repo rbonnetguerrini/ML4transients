@@ -3,3 +3,5 @@
 *.out
 *.npy
 *.log
+*.hd5
+**/saved
