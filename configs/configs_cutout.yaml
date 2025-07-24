@@ -1,13 +1,14 @@
-repo: "/sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml"
-collection: "u/rbonnetguerrini/injected"
-visits: [123456, 234567, 345678] 
+repo: "/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml"
+collection: "run/ssp_ud_cosmos/step5_new"
+
+visits: [68328, 103108]  # Optional: if omitted, all visits are processed
+injection: false  # has the collection been produced with the injection pipeline
 cutout:
   size: 30
-  rotate: false
-  rotation_angles: [90, 180, 270]
   coadd_science: false
   save: true
+  save_features_only: false   
   return_data: false
 paths:
   cutouts: "saved/cutouts"
-  csv: "saved/csv"
+  features: "saved/features"

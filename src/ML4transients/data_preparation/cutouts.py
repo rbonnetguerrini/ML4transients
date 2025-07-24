@@ -6,134 +6,103 @@ from scipy.ndimage import rotate
 import os
 import h5py
 
-
-def extract_all_single_visit(visit_id: int, collection: str, repo: str) -> list:
-    """
-    Query all datasets for a single visit.
-
-    Parameters:
-        visit_id (int): Visit ID.
-        collection (str): Butler collection name.
-        repo (str): Butler repo path.
-
-    Returns:
-        list: List of dataIds for the visit.
-    """
+def extract_all_single_visit(visit_id: int, collection: str, repo: str, prefix : str) -> list:
     butler = Butler(repo, collections=collection)
     registry = butler.registry
     result = registry.queryDatasets(
-        datasetType='injected_goodSeeingDiff_differenceExp',
+        datasetType=f'{prefix}goodSeeingDiff_differenceExp',
         collections=collection,
         where=f"visit = {visit_id}"
     )
     return [ref.dataId for ref in result]
 
 def apply_rotations(cutout: np.ndarray, angles: list) -> list:
-    """
-    Generate rotated versions of a cutout.
+    return [rotate(cutout, angle, reshape=False) for angle in angles]
 
-    Parameters:
-        cutout (ndarray): The original cutout array.
-        angles (list): List of rotation angles in degrees.
+def save_features_hdf5(features_df, path):
+    if features_df.index.name != "diaSourceId":
+        if "diaSourceId" in features_df.columns:
+            features_df.set_index("diaSourceId", inplace=True)
+        else:
+            raise ValueError("diaSourceId not found in columns or index of features_df")
+    features_df.to_hdf(path, key="features", mode="w")
 
-    Returns:
-        list of ndarray: Rotated cutouts.
-    """
-    rotated_cutouts = []
-    for angle in angles:
-        rotated = rotate(cutout, angle, reshape=False)
-        rotated_cutouts.append(rotated)
-    return rotated_cutouts
+def save_cutouts_hdf5(cutouts, diaSourceIds, path):
+    with h5py.File(path, "w") as f:
+        f.create_dataset("cutouts", data=cutouts, compression="gzip")
+        f.create_dataset("diaSourceId", data=np.array(diaSourceIds, dtype="int64"))
 
 def save_cutouts(config: dict):
-    """
-    Extract cutouts and features from Butler repo, apply rotations, and save to disk.
-
-    Parameters:
-        config (dict): Configuration dictionary with keys:
-            - repo, collection, cutout (size, rotate, rotation_angles, coadd_science, save, return_data), paths (cutouts, csv)
-    """
     repo = config["repo"]
     collection = config["collection"]
+    injection = config["injection"]
     cutout_size = config["cutout"]["size"]
-    rotate_data = config["cutout"]["rotate"]
-    rotation_angles = config["cutout"].get("rotation_angles", [90, 180, 270])
-    coadd_science = config["cutout"]["coadd_science"]
     save_file = config["cutout"]["save"]
+    save_features_only = config["cutout"].get("save_features_only", False)
     return_file = config["cutout"]["return_data"]
 
     path_cutouts = config["paths"]["cutouts"]
-    path_csv = config["paths"]["csv"]
+    path_features = config["paths"].get("features", path_cutouts)
+
+    if injection:
+        prefix = "injected_"
+    else:
+        prefix = ""
+        
     os.makedirs(path_cutouts, exist_ok=True)
-    os.makedirs(path_csv, exist_ok=True)
+    os.makedirs(path_features, exist_ok=True)
 
     butler = Butler(repo, collections=collection)
     registry = butler.registry
-
     datasetRefs = registry.queryDatasets(
-        datasetType='injected_goodSeeingDiff_differenceExp',
+        datasetType=f'{prefix}goodSeeingDiff_differenceExp',
         collections=collection
     )
     
-    # Get all visits from datasets
     all_visits = sorted(set(ref.dataId['visit'] for ref in datasetRefs))
-    # Use visits from config if specified, else use all
     visits = config.get("visits", all_visits)
-
-    nbr_cutout = 0
-
-    all_cutouts_collection = []
-    all_features_collection = []
-
     for visit in visits:
         all_cutouts = []
         all_features = []
-        rotated_cutouts = []
-        rotated_rows = []
+        diaSourceIds = []
 
-        ref_ids = extract_all_single_visit(visit, collection, repo)
-
+        ref_ids = extract_all_single_visit(visit, collection, repo, prefix)
         for ref in ref_ids:
-            diff_array = butler.get('injected_goodSeeingDiff_differenceExp', dataId=ref).getImage().array
-            dia_src = butler.get('injected_goodSeeingDiff_diaSrcTable', dataId=ref)
-            matched_src = butler.get('injected_goodSeeingDiff_matchDiaSrc', dataId=ref)
-
-            dia_src['is_injection'] = dia_src.diaSourceId.isin(matched_src.diaSourceId)
-            dia_src['rotation_angle'] = 0  # Set original cutout angle to 0
+            diff_array = butler.get(f'{prefix}goodSeeingDiff_differenceExp', dataId=ref).getImage().array
+            dia_src = butler.get(f'{prefix}goodSeeingDiff_diaSrcTable', dataId=ref)
+            if injection:
+                matched_src = butler.get(f'{prefix}goodSeeingDiff_matchDiaSrc', dataId=ref)
+                dia_src['is_injection'] = dia_src.diaSourceId.isin(matched_src.diaSourceId)
+            else:
+                dia_src['is_injection'] = 0
+            
+            dia_src['rotation_angle'] = 0
 
             for i in range(len(dia_src)):
                 cutout = Cutout2D(diff_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)
                 if cutout.data.shape != (cutout_size, cutout_size) or np.isnan(cutout.data).any():
                     continue
-
                 all_cutouts.append(cutout.data)
                 all_features.append(dia_src.iloc[i])
-                nbr_cutout += 1
+                diaSourceIds.append(dia_src.iloc[i]["diaSourceId"])
 
-                if rotate_data:
-                    for angle, rotated in zip(rotation_angles, apply_rotations(cutout.data, rotation_angles)):
-                        new_row = dia_src.iloc[[i]].copy()
-                        new_row["rotation_angle"] = angle
-                        rotated_rows.append(new_row)
-                        rotated_cutouts.append(rotated)
 
         features_df = pd.DataFrame(all_features)
-        if rotate_data:
-            rotated_df = pd.concat(rotated_rows, ignore_index=True)
-            features_df = pd.concat([features_df, rotated_df], ignore_index=True)
-            all_cutouts = np.concatenate((all_cutouts, rotated_cutouts))
 
-        if save_file:
-            np.save(os.path.join(path_cutouts, f"visit_{visit}.npy"), all_cutouts)
-            features_df.to_csv(os.path.join(path_csv, f"visit_{visit}.csv"), index=False)
+        # Making sure IDs columns  are not rounded
+        id_columns = ["diaSourceId", "diaObjectId"]  
 
-        if return_file:
-            all_cutouts_collection.append(all_cutouts)
-            all_features_collection.append(features_df)
+        for col in id_columns:
+            if col in features_df.columns:
+                features_df[col] = features_df[col].astype(np.int64)
 
-        print(f"Saved visit {visit}: {len(all_cutouts)} cutouts")
+        # Ensure diaSourceIds array is int64 for cutout saving
+        diaSourceIds = np.array(diaSourceIds, dtype=np.int64)
 
-    print(f"Processed {len(visits)} visits with total {nbr_cutout} cutouts.")
+        if save_file and not save_features_only:
+            save_cutouts_hdf5(np.array(all_cutouts), diaSourceIds, os.path.join(path_cutouts, f"visit_{visit}.h5"))
+            save_features_hdf5(features_df, os.path.join(path_features, f"visit_{visit}_features.h5"))
+        elif save_features_only:
+            save_features_hdf5(features_df, os.path.join(path_features, f"visit_{visit}_features.h5"))
 
-    if return_file:
-        return all_cutouts_collection, all_features_collection
+        print(f"Saved visit {visit}: {len(all_cutouts)} cutouts, {len(features_df)} features")
