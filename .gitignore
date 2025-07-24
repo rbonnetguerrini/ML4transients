@@ -3,3 +3,4 @@
 *.out
 *.npy
 *.log
+**/__pycache__
