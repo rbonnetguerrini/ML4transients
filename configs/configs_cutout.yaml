@@ -1,8 +1,5 @@
 repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
 collection: run/ssp_ud_cosmos/step5_new
-visits:
-- 68328
-- 103108
 injection: false
 cutout:
   size: 30
