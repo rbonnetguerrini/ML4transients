@@ -10,8 +10,8 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: saved/test1
+path: saved/test
 run_info:
   status: completed
   started: '2025-07-24T14:01:00'
-  finished: '2025-07-24T13:52:32.565284'
+  finished: '2025-07-24T17:24:38.601575'
