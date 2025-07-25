@@ -3,4 +3,7 @@
 *.out
 *.npy
 *.log
+
+*.egg-info/
+**/saved
 **/__pycache__
