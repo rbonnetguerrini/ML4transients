@@ -13,6 +13,12 @@ echo "Batch size: $BATCH_SIZE visits per job"
 source /cvmfs/sw.lsst.eu/linux-x86_64/lsst_distrib/w_2024_30/loadLSST.bash
 setup lsst_distrib
 
+# Get project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
+
+export PROJECT_ROOT
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
 # Create batch configs
@@ -36,7 +42,7 @@ echo "Found $NUM_BATCHES batches"
 
 # Submit job array
 CONFIG_BASE=$(basename $CONFIG_FILE .yaml)
-SLURM_JOB_ID=$(sbatch --array=0-$((NUM_BATCHES-1)) --parsable scripts/run_batch.sh $CONFIG_BASE)
+SLURM_JOB_ID=$(sbatch --array=0-$((NUM_BATCHES-1)) --parsable "$PROJECT_ROOT/scripts/run_batch.sh" $CONFIG_BASE)
 
 echo "Submitted SLURM job array: $SLURM_JOB_ID"
 echo "Array indices: 0-$((NUM_BATCHES-1))"
