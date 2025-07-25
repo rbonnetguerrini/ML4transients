@@ -3,6 +3,7 @@
 *.out
 *.npy
 *.log
-*.hd5
+
+*.egg-info/
 **/saved
 **/__pycache__
