@@ -48,7 +48,7 @@ For the remaining job you can load your own conda environment at CC using ;
 source /usr/share/Modules/init/bash
 module load Programming_Languages/anaconda/3.11
 conda activate your_env
-
+pip install --editable .
 ```
 
 
@@ -61,7 +61,12 @@ conda activate your_env
 - Since the main problem of producing those cutouts is that you have to split visit in different job for a given collection,  I made an automatic job submitter, that generates configs with a given amount of visit, and launched them all. You can do that using `./scripts/submit_collection.sh configs/configs_cutout.yaml 100` , again selecting your own original config, and specifying how much you want it to be split by (here 100 visit per job max)
 
 ## Load dataset:
-`dataset = dataset_loader('test')` allow you to lazy load the different components of a dataset (cutout, lc, features, inference), just have to create it from a path
+```py
+from ML4transients.data_access import DatasetLoader
+dataset = DatasetLoader('saved/test')
+print(dataset)
+``` 
+`DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
 when creating this set, it creates a dictionary that assigned each diaSourceId their visit number
 
 
