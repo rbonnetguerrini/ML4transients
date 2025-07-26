@@ -8,3 +8,5 @@
 **/saved
 **/__pycache__
 **/configs/batches
+cutout_raphael.yaml
+cutout_raphael_injected.yaml
