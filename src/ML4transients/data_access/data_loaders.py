@@ -36,31 +36,40 @@ class CutoutLoader:
         return self.data[idx[0]]
 
 class FeatureLoader:
-    """Lazy loader for feature data."""
-    
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data = None
         self._ids = None
+        self._labels = None
     
     @property
-    def data(self):
-        """Lazy load features DataFrame."""
-        if self._data is None:
-            self._data = pd.read_hdf(self.file_path, key='features')
-        return self._data
-    @property
     def ids(self):
-        """Lazy load diaSourceIds from the DataFrame index."""
+        """Get diaSourceIds without loading full data."""
         if self._ids is None:
-            # Load just the index, not the full data
             with pd.HDFStore(self.file_path, 'r') as store:
-                self._ids = self.data.index.values
+                # Now this works efficiently with table format
+                self._ids = store.select_column('features', 'index')
         return self._ids
-
+    
+    @property
+    def labels(self):
+        """Get only labels without loading all features."""
+        if self._labels is None:
+            try:
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    # Load only the is_injection column
+                    self._labels = store.select('features', columns=['is_injection'])
+            except (ValueError, TypeError):
+                # Fall back for fixed format
+                print(f"Warning: Loading full features for labels from {self.file_path}")
+                self._labels = self.data[['is_injection']]
+        return self._labels
+    
     def get_by_id(self, dia_source_id: int):
         """Get specific features by diaSourceId."""
-        return self.data.loc[dia_source_id] if dia_source_id in self.data.index else None
+        with pd.HDFStore(self.file_path, 'r') as store:
+            # Efficient query without loading full data
+            return store.select('features', where=f'index == {dia_source_id}')
 
 class LightCurveLoader:
     """Placeholder for future lightcurve loading."""
