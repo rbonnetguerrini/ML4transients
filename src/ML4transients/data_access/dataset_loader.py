@@ -96,7 +96,11 @@ class DatasetLoader:
             if config_file.exists() and self._config_summary is None:
                 with open(config_file) as f:
                     self._config_summary = yaml.safe_load(f)
-    
+    @property
+    def config_summary(self) -> Optional[Dict]:
+        """Get config summary if available."""
+        return self._config_summary
+        
     def _extract_visit_from_filename(self, filename: str) -> Optional[int]:
         """Extract visit number from filename like 'visit_12345.h5'."""
         try:
