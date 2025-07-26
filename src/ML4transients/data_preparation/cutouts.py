@@ -19,13 +19,16 @@ def extract_all_single_visit(visit_id: int, collection: str, repo: str, prefix :
 def apply_rotations(cutout: np.ndarray, angles: list) -> list:
     return [rotate(cutout, angle, reshape=False) for angle in angles]
 
+
 def save_features_hdf5(features_df, path):
     if features_df.index.name != "diaSourceId":
         if "diaSourceId" in features_df.columns:
             features_df.set_index("diaSourceId", inplace=True)
         else:
             raise ValueError("diaSourceId not found in columns or index of features_df")
-    features_df.to_hdf(path, key="features", mode="w")
+    
+    # Use table format for efficient partial loading
+    features_df.to_hdf(path, key="features", mode="w", format='table', data_columns=True)
 
 def save_cutouts_hdf5(cutouts, diaSourceIds, path):
     with h5py.File(path, "w") as f:
