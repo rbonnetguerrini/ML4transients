@@ -36,5 +36,5 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 # Run the script
-python run_cutout.py "$CONFIG_FILE"
+python scripts/run_cutout.py "$CONFIG_FILE"
 exit $exit_code
