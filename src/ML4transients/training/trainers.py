@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 from abc import ABC, abstractmethod
+from torch.utils.tensorboard import SummaryWriter
+import os
 from .models import CustomCNN
 from .losses import get_loss_function
 
@@ -11,7 +13,21 @@ class BaseTrainer(ABC):
     def __init__(self, config):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # Setup TensorBoard
+        self.setup_tensorboard()
         self.setup_training()
+    
+    def setup_tensorboard(self):
+        """Setup TensorBoard logging"""
+        if self.config.get('use_tensorboard', True):
+            log_dir = self.config.get('tensorboard_log_dir', 'runs')
+            experiment_name = self.config.get('experiment_name', 'experiment')
+            self.writer = SummaryWriter(log_dir=f"{log_dir}/{experiment_name}")
+            print(f"TensorBoard logging to: {log_dir}/{experiment_name}")
+            print(f"Run 'tensorboard --logdir={log_dir}' to view logs")
+        else:
+            self.writer = None
     
     @abstractmethod
     def setup_training(self):
@@ -44,7 +60,10 @@ class BaseTrainer(ABC):
             if val_loader is not None:
                 val_metrics = self.evaluate(val_loader)
             
-            # Logging
+            # TensorBoard logging
+            self.log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
+            
+            # Console logging
             self.log_epoch(epoch, train_metrics, test_metrics, val_metrics)
             
             # Save best model
@@ -52,9 +71,33 @@ class BaseTrainer(ABC):
                 best_acc = test_metrics['accuracy']
                 self.save_checkpoint(epoch, 'best')
         
-        # Save final model
+        # Save final model and close TensorBoard
         self.save_checkpoint(epoch, 'final')
+        if self.writer:
+            self.writer.close()
         return best_acc
+    
+    def log_tensorboard(self, epoch, train_metrics, test_metrics, val_metrics=None):
+        """Log metrics to TensorBoard"""
+        if not self.writer:
+            return
+            
+        # Log training metrics
+        for key, value in train_metrics.items():
+            self.writer.add_scalar(f'Train/{key}', value, epoch)
+        
+        # Log test metrics
+        for key, value in test_metrics.items():
+            self.writer.add_scalar(f'Test/{key}', value, epoch)
+        
+        # Log validation metrics
+        if val_metrics:
+            for key, value in val_metrics.items():
+                self.writer.add_scalar(f'Validation/{key}', value, epoch)
+        
+        # Log learning rate
+        if hasattr(self, 'alpha_plan'):
+            self.writer.add_scalar('Learning_Rate', self.alpha_plan[epoch], epoch)
     
     def log_epoch(self, epoch, train_metrics, test_metrics, val_metrics=None):
         """Log epoch results"""
@@ -137,6 +180,13 @@ class StandardTrainer(BaseTrainer):
             total_loss += loss.item()
             total_correct += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
             total_samples += len(labels)
+            
+            # Log batch metrics to TensorBoard
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                step = epoch * len(train_loader) + batch_idx
+                self.writer.add_scalar('Batch/Loss', loss.item(), step)
+                batch_acc = (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item() / len(labels)
+                self.writer.add_scalar('Batch/Accuracy', batch_acc, step)
         
         return {
             'loss': total_loss / len(train_loader),
@@ -230,6 +280,7 @@ class CoTeachingTrainer(BaseTrainer):
         
         total_correct1, total_correct2 = 0, 0
         total_samples = 0
+        total_loss1, total_loss2 = 0.0, 0.0
         
         for batch_idx, (images, labels, _) in enumerate(train_loader):
             if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
@@ -250,6 +301,9 @@ class CoTeachingTrainer(BaseTrainer):
             epoch_forget_rates = (self.rate_schedule_0[epoch], self.rate_schedule_1[epoch])
             loss_1, loss_2 = self.loss_fn(logits1, logits2, labels, epoch_forget_rates=epoch_forget_rates)
             
+            total_loss1 += loss_1.item()
+            total_loss2 += loss_2.item()
+            
             # Backward pass
             self.optimizer1.zero_grad()
             loss_1.backward()
@@ -258,10 +312,18 @@ class CoTeachingTrainer(BaseTrainer):
             self.optimizer2.zero_grad()
             loss_2.backward()
             self.optimizer2.step()
+            
+            # Log batch metrics to TensorBoard
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                step = epoch * len(train_loader) + batch_idx
+                self.writer.add_scalar('Batch/Loss1', loss_1.item(), step)
+                self.writer.add_scalar('Batch/Loss2', loss_2.item(), step)
         
         return {
             'accuracy1': total_correct1 / total_samples,
-            'accuracy2': total_correct2 / total_samples
+            'accuracy2': total_correct2 / total_samples,
+            'loss1': total_loss1 / len(train_loader),
+            'loss2': total_loss2 / len(train_loader)
         }
     
     def evaluate(self, test_loader):
@@ -344,6 +406,7 @@ class EnsembleTrainer(BaseTrainer):
         self.adjust_learning_rate(epoch)
         
         model_accuracies = [0] * self.num_models
+        model_losses = [0.0] * self.num_models
         total_samples = 0
         
         for batch_idx, (images, labels, _) in enumerate(train_loader):
@@ -359,14 +422,26 @@ class EnsembleTrainer(BaseTrainer):
                 loss.backward()
                 optimizer.step()
                 
-                # Track accuracy
+                # Track accuracy and loss
                 model_accuracies[i] += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
+                model_losses[i] += loss.item()
             
             total_samples += len(labels)
+            
+            # Log batch metrics to TensorBoard
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                step = epoch * len(train_loader) + batch_idx
+                avg_loss = sum(model_losses) / (self.num_models * (batch_idx + 1))
+                self.writer.add_scalar('Batch/Average_Loss', avg_loss, step)
         
-        # Average accuracy across models
+        # Average accuracy and loss across models
         avg_accuracy = sum(acc / total_samples for acc in model_accuracies) / self.num_models
-        return {'accuracy': avg_accuracy}
+        avg_loss = sum(loss / len(train_loader) for loss in model_losses) / self.num_models
+        
+        return {
+            'accuracy': avg_accuracy,
+            'loss': avg_loss
+        }
     
     def evaluate(self, test_loader):
         for model in self.models:

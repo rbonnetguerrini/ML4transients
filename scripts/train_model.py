@@ -63,6 +63,8 @@ def main():
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--trainer', type=str, choices=['standard', 'coteaching', 'ensemble'], 
                        default='standard', help='Type of trainer to use')
+    parser.add_argument('--experiment-name', type=str, help='Experiment name for TensorBoard')
+    parser.add_argument('--no-tensorboard', action='store_true', help='Disable TensorBoard logging')
     
     args = parser.parse_args()
     
@@ -73,8 +75,22 @@ def main():
     if args.trainer:
         config['training']['trainer_type'] = args.trainer
     
+    # Override experiment name if specified
+    if args.experiment_name:
+        config['training']['experiment_name'] = args.experiment_name
+    
+    # Disable TensorBoard if requested
+    if args.no_tensorboard:
+        config['training']['use_tensorboard'] = False
+    
     print(f"Using trainer: {config['training']['trainer_type']}")
-    print(f"Config: {config}")
+    
+    # Print TensorBoard info
+    if config['training'].get('use_tensorboard', True):
+        log_dir = config['training'].get('tensorboard_log_dir', 'runs')
+        exp_name = config['training'].get('experiment_name', 'experiment')
+        print(f"TensorBoard will log to: {log_dir}/{exp_name}")
+        print(f"To view logs, run: tensorboard --logdir={log_dir}")
     
     # Create data loaders
     print("Creating data loaders...")

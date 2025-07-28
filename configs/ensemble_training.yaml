@@ -6,7 +6,7 @@ data:
   val_size: 0.1
 
 training:
-  trainer_type: "standard"
+  trainer_type: "ensemble"
   epochs: 1000
   learning_rate: 0.001
   batch_size: 128
@@ -14,7 +14,7 @@ training:
   epoch_decay_start: 80
   num_workers: 4
   
-  #num_models: 5  # For ensemble
+  num_models: 50  # For ensemble
 
   # Co-teaching specific parameters
   #forget_rate_0: 0.015
@@ -24,7 +24,7 @@ training:
   # TensorBoard configuration
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "transient_detection"
+  experiment_name: "ensemble"
   log_interval: 100
   
   model_params:
