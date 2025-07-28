@@ -80,7 +80,7 @@ class LightCurveLoader:
     
     @property
     def data(self):
-        # To be implemented when you have lightcurve data
+        #todo
         pass
 
 class InferenceLoader:
@@ -92,5 +92,5 @@ class InferenceLoader:
     
     @property
     def data(self):
-        # To be implemented when you have inference results
+        #todo
         pass
