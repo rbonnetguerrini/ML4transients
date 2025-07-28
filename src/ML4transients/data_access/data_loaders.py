@@ -80,17 +80,16 @@ class LightCurveLoader:
     
     @property
     def data(self):
-        # To be implemented when you have lightcurve data
+        #todo
         pass
 
 class InferenceLoader:
     """Placeholder for future inference results loading."""
-    
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data = None
     
     @property
     def data(self):
-        # To be implemented when you have inference results
+        #todo
         pass
