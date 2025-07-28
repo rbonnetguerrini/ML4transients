@@ -85,7 +85,6 @@ class LightCurveLoader:
 
 class InferenceLoader:
     """Placeholder for future inference results loading."""
-    
     def __init__(self, file_path: Path):
         self.file_path = file_path
         self._data = None
