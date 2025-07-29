@@ -14,11 +14,7 @@ from ML4transients.data_access.dataset_loader import DatasetLoader
 
 from ML4transients.training.trainers import get_trainer
 
-def load_config(config_path):
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
-
+from utils import load_config
 
 def main():
 
