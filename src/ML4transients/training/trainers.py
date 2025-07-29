@@ -156,7 +156,8 @@ class StandardTrainer(BaseTrainer):
         """Adjust learning rate"""
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = self.alpha_plan[epoch]
-    
+
+          
     def train_one_epoch(self, epoch, train_loader):
         self.model.train()
         self.adjust_learning_rate(epoch)
