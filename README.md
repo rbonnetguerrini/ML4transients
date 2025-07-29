@@ -69,5 +69,10 @@ print(dataset)
 `DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
 when creating this set, it creates a dictionary that assigned each diaSourceId their visit number
 
+## Launch a training:
+```sh 
+sbatch scripts/submit_training.sh
+```
+Allows to submit job to your GPU. The number of workers can be change in the config, as well as all the training parameter. 
 
 
