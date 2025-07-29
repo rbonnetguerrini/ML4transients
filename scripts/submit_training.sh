@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=transient_ensemble
-#SBATCH --output=logs/training_%j.out
-#SBATCH --error=logs/training_%j.err
+#SBATCH --output=logs/trainings/training_%j.out
+#SBATCH --error=logs/trainings/training_%j.err
 #SBATCH --time=02:00:00
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:1

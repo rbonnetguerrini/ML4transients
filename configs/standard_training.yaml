@@ -1,19 +1,19 @@
 # Standard training configuration
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/rc2_norm"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm"
   visits: null  # Use all visits, or specify list like [1001, 1002, ...]
   test_size: 0.2
   val_size: 0.1
 
 training:
   trainer_type: "standard"
-  epochs: 4
+  epochs: 1000
   learning_rate: 0.001
   batch_size: 128
   num_iter_per_epoch: 400
   epoch_decay_start: 80
-  num_workers: 0
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/test"
+  num_workers: 4 
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/simple_run"
   #num_models: 5  # For ensemble
 
   # Co-teaching specific parameters
@@ -24,7 +24,7 @@ training:
   # TensorBoard configuration
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "transient_detection"
+  experiment_name: "simple_run"
   log_interval: 100
   
   model_params:
