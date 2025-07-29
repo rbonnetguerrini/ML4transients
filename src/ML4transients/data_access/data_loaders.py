@@ -91,5 +91,5 @@ class InferenceLoader:
     
     @property
     def data(self):
-        #todo
+        
         pass

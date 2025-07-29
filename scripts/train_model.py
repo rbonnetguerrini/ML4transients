@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import DataLoader
 import yaml
@@ -59,30 +60,26 @@ def create_data_loaders(config):
     return train_loader, val_loader, test_loader
 
 def main():
-    parser = argparse.ArgumentParser(description='Train transient detection model')
+    parser = argparse.ArgumentParser(description='Train transient bogus classifier')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
-    parser.add_argument('--trainer', type=str, choices=['standard', 'coteaching', 'ensemble'], 
-                       default='standard', help='Type of trainer to use')
-    parser.add_argument('--experiment-name', type=str, help='Experiment name for TensorBoard')
-    parser.add_argument('--no-tensorboard', action='store_true', help='Disable TensorBoard logging')
+    parser.add_argument('--experiment-name', type=str, required=True, help='Name of the training')
     
     args = parser.parse_args()
     
     # Load configuration
     config = load_config(args.config)
-    
-    # Override trainer type if specified
-    if args.trainer:
-        config['training']['trainer_type'] = args.trainer
-    
     # Override experiment name if specified
     if args.experiment_name:
         config['training']['experiment_name'] = args.experiment_name
-    
-    # Disable TensorBoard if requested
-    if args.no_tensorboard:
-        config['training']['use_tensorboard'] = False
-    
+    # Create output directory (facilitating inference and weight loading)
+    output_dir = config['training'].get('output_dir', 'output')
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save a copy of the config in the output directory
+    config_copy_path = os.path.join(output_dir, 'config.yaml')
+    with open(config_copy_path, 'w') as f:
+        yaml.dump(config, f)
+    print(f"Config saved to: {config_copy_path}")
     print(f"Using trainer: {config['training']['trainer_type']}")
     
     # Print TensorBoard info

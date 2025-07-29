@@ -210,8 +210,7 @@ class StandardTrainer(BaseTrainer):
         return {'accuracy': total_correct / total_samples}
     
     def save_checkpoint(self, epoch, suffix):
-        torch.save(self.model.state_dict(), f"model_{suffix}.pth")
-
+        torch.save(self.model.state_dict(), f"{self.config.get('output_dir')}/model_{suffix}.pth")
 
 class CoTeachingTrainer(BaseTrainer):
     """Co-teaching trainer with two networks"""
@@ -284,7 +283,7 @@ class CoTeachingTrainer(BaseTrainer):
         total_loss1, total_loss2 = 0.0, 0.0
         
         for batch_idx, (images, labels, _) in enumerate(train_loader):
-            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
+            if batch_idx >= c('num_iter_per_epoch', float('inf')):
                 break
                 
             images, labels = images.to(self.device), labels.to(self.device)
@@ -357,8 +356,8 @@ class CoTeachingTrainer(BaseTrainer):
         }
     
     def save_checkpoint(self, epoch, suffix):
-        torch.save(self.model1.state_dict(), f"model1_{suffix}.pth")
-        torch.save(self.model2.state_dict(), f"model2_{suffix}.pth")
+        torch.save(self.model1.state_dict(), f"{self.config.get('output_dir')}/model1_{suffix}.pth")
+        torch.save(self.model2.state_dict(), f"{self.config.get('output_dir')}/model2_{suffix}.pth")
 
 
 class EnsembleTrainer(BaseTrainer):
@@ -473,7 +472,7 @@ class EnsembleTrainer(BaseTrainer):
     
     def save_checkpoint(self, epoch, suffix):
         for i, model in enumerate(self.models):
-            torch.save(model.state_dict(), f"ensemble_model_{i}_{suffix}.pth")
+            torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
 
 
 def get_trainer(trainer_type, config):

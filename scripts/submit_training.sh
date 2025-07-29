@@ -33,7 +33,6 @@ TB_PID=$!
 cd /sps/lsst/users/rbonnetguerrini/ML4transients
 python scripts/train_model.py \
     --config configs/standard_training.yaml \
-    --trainer standard \
     --experiment-name "gpu_training_${SLURM_JOB_ID}"
 
 echo "Training completed on $(hostname) with GPU: $CUDA_VISIBLE_DEVICES"

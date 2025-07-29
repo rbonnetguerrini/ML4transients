@@ -7,13 +7,13 @@ data:
 
 training:
   trainer_type: "standard"
-  epochs: 1000
+  epochs: 4
   learning_rate: 0.001
   batch_size: 128
   num_iter_per_epoch: 400
   epoch_decay_start: 80
-  num_workers: 4
-  
+  num_workers: 0
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/test"
   #num_models: 5  # For ensemble
 
   # Co-teaching specific parameters
