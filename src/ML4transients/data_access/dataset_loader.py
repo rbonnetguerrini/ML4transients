@@ -69,6 +69,47 @@ class DatasetLoader:
         """Find which visit contains this diaSourceId."""
         return self.global_index.get(dia_source_id)
 
+    def get_inference_loader(self, weights_path: str, data_path: Path = None):
+        """
+        Get or create an InferenceLoader for the given weights.
+        
+        Args:
+            weights_path: Path to trained model weights directory
+            data_path: Specific data path to use (defaults to first data path)
+            
+        Returns:
+            InferenceLoader: Configured inference loader
+        """
+        if not data_path:
+            data_path = self.data_paths[0]
+        
+        # Use weights path as key to cache inference loaders
+        cache_key = f"{data_path}_{weights_path}"
+        
+        if cache_key not in self._inference_loaders:
+            self._inference_loaders[cache_key] = InferenceLoader(data_path, weights_path)
+        
+        return self._inference_loaders[cache_key]
+
+    def check_or_run_inference(self, weights_path: str, data_path: Path = None):
+        """
+        Check for existing inference results and optionally run inference.
+        
+        Args:
+            weights_path: Path to trained model weights directory
+            data_path: Specific data path to use (defaults to first data path)
+            
+        Returns:
+            InferenceLoader: Configured inference loader with results
+        """
+        inference_loader = self.get_inference_loader(weights_path, data_path)
+        
+        if inference_loader.prompt_and_run_inference(self):
+            return inference_loader
+        else:
+            return None
+
+
     def _discover_data(self):
         """Discover available data files in the directories."""
         for data_path in self.data_paths:
