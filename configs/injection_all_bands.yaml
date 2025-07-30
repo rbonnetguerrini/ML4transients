@@ -3,8 +3,8 @@ butler:
   collections: [u/rbonnetguerrini/step8] #run/ssp_ud_cosmos/step5
 
 injection:
-  galaxy_fraction: 0.065        # Use 5% of available galaxies
-  hostless_fraction: 0.10      # 5% of injections are hostless
+  galaxy_fraction: 0.08        # Use 8% of available galaxies
+  hostless_fraction: 0.10      # 10% of injections are hostless
   min_injections: 1            # Minimum injections per CCD
   max_injections: null         # No maximum limit (null = None)
   random_seed: 42              # For reproducible results
