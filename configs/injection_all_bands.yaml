@@ -1,0 +1,24 @@
+butler:
+  repo: "/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/" #/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/  #/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+  collections: [u/rbonnetguerrini/step8] #run/ssp_ud_cosmos/step5
+
+injection:
+  galaxy_fraction: 0.065        # Use 5% of available galaxies
+  hostless_fraction: 0.10      # 5% of injections are hostless
+  min_injections: 1            # Minimum injections per CCD
+  max_injections: null         # No maximum limit (null = None)
+  random_seed: 42              # For reproducible results
+
+data_selection:
+  band: "r"                    # Filter band
+  patch: null                  # All patches (null = None)
+  visit_range: null            # All visits (or [min_visit, max_visit])
+  detector_range: null         # All detectors (or [min_det, max_det])
+
+output:
+  save_csv: true
+  output_dir: "catalogs/rc2_subset"
+  filename_prefix: "injection_catalog"
+
+mag_distribution:
+  file: "/sps/lsst/users/rbonnetguerrini/ML4transients/saved/mag_distrib.json"
