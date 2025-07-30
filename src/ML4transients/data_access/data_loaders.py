@@ -71,6 +71,51 @@ class FeatureLoader:
             # Efficient query without loading full data
             return store.select('features', where=f'index == {dia_source_id}')
 
+class InferenceLoader:
+    """Placeholder for future inference results loading."""
+    def __init__(self, file_path: Path):
+        self.file_path = file_path
+        self._data = None
+        self._ids = None
+        self._models = None
+        self._labels = None
+    
+    @property
+    def data(self):
+        """Lazy load all inference results."""
+        if self._data is None:
+            with pd.HDFStore(self.file_path, 'r') as store:
+                self._data = store.select('inference')
+        return self._data
+    
+    @property
+    def true_labels(self):
+        """Get true labels without loading full data - FAST."""
+        if self._true_labels is None:
+            with pd.HDFStore(self.file_path, 'r') as store:
+                # Single file access, no joins needed
+                self._true_labels = store.select('inference', columns=['true_label'])
+        return self._true_labels
+    
+    @property
+    def models(self):
+        """Get available model names."""
+        if self._models is None:
+            # Extract model names from column names (excluding metadata columns)
+            with pd.HDFStore(self.file_path, 'r') as store:
+                columns = store.get_storer('inference').table.colnames
+                # Assuming model results are stored as {model_name}_pred, {model_name}_prob
+                self._models = list(set([col.rsplit('_', 1)[0] for col in columns 
+                                       if col.endswith(('_pred', '_prob'))]))
+        return self._models
+
+    def ids(self):
+        """Get diaSourceIds without loading full data."""
+        if self._ids is None:
+            with pd.HDFStore(self.file_path, 'r') as store:
+                self._ids = store.select_column('inference', 'index')
+        return self._ids
+
 class LightCurveLoader:
     """Placeholder for future lightcurve loading."""
     
@@ -81,15 +126,4 @@ class LightCurveLoader:
     @property
     def data(self):
         #todo
-        pass
-
-class InferenceLoader:
-    """Placeholder for future inference results loading."""
-    def __init__(self, file_path: Path):
-        self.file_path = file_path
-        self._data = None
-    
-    @property
-    def data(self):
-        
         pass

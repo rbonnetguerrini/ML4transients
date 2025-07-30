@@ -103,6 +103,67 @@ class PytorchDataset(Dataset):
             _indices=indices,
             **kwargs
         )
+
+    @staticmethod
+    def create_inference_dataset(data_source, **kwargs):
+        """
+        Create dataset for inference - loads all available data without splitting.
+        
+        Args:
+            data_source: DatasetLoader instance or path
+            **kwargs: Additional arguments (visits, transform, etc.)
+            
+        Returns:
+            PytorchDataset: Full dataset for inference
+        """
+        if isinstance(data_source, DatasetLoader):
+            loader = data_source
+        else:
+            loader = DatasetLoader(data_source)
+        
+        # Build sample index and labels (lightweight)
+        sample_index = []
+        labels = []
+        
+        visits = kwargs.get('visits', loader.visits)
+        available_visits = [v for v in visits if v in loader.visits] if visits else loader.visits
+        
+        print("Building inference dataset index...")
+        for visit in available_visits:
+            if visit in loader.cutouts and visit in loader.features:
+                labels_df = loader.features[visit].labels
+                cutout_ids = set(loader.cutouts[visit].ids)
+                
+                for dia_id in labels_df.index:
+                    if dia_id in cutout_ids:
+                        sample_index.append((visit, dia_id))
+                        labels.append(labels_df.loc[dia_id, 'is_injection'])
+        
+        if len(sample_index) == 0:
+            raise ValueError("No samples found. Check your data.")
+            
+        labels = np.array(labels)
+        indices = np.arange(len(sample_index))
+        
+        # Create inference dataset info
+        inference_info = {
+            'sample_index': sample_index,
+            'labels': labels,
+            'indices': indices
+        }
+        
+        print(f"Created inference dataset with {len(sample_index)} samples")
+        
+        return PytorchDataset._from_inference(loader, inference_info, **kwargs)
+    
+    @staticmethod
+    def _from_inference(loader, inference_info, **kwargs):
+        """Create inference dataset from pre-computed info."""
+        return PytorchDataset(
+            data_source=loader,
+            _inference_info=inference_info,
+            **kwargs
+        )
     
     def __init__(self, 
                  data_source: Union[str, Path, List[Union[str, Path]], DatasetLoader],
@@ -115,11 +176,13 @@ class PytorchDataset(Dataset):
                  val_size: float = 0.1,
                  random_state: int = 42,
                  _split_info: dict = None,  # Internal use
-                 _indices: np.ndarray = None):  # Internal use
+                 _indices: np.ndarray = None,  # Internal use
+                 _inference_info: dict = None):  # Internal use for inference
         """
         PyTorch Dataset - can create full dataset or subset.
-        
-        For efficient usage, prefer PytorchDataset.create_splits() which loads data only once.
+        For efficient usage, prefer:
+        - PytorchDataset.create_splits() for training
+        - PytorchDataset.create_inference_dataset() for inference
         """
         # Handle both path and DatasetLoader instance
         if isinstance(data_source, DatasetLoader):
