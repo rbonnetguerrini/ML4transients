@@ -28,6 +28,7 @@ class DatasetLoader:
         self._visits = None
         self._config_summary = None
         self._global_id_index = None 
+        self._cached_trainers = {}  # Cache trainers by weights_path
 
         self._discover_data()
 
@@ -69,6 +70,111 @@ class DatasetLoader:
         """Find which visit contains this diaSourceId."""
         return self.global_index.get(dia_source_id)
 
+    def get_inference_loader(self, weights_path: str, visit: int, data_path: Path = None):
+        """
+        Get or create an InferenceLoader for the given weights and visit.
+        
+        Args:
+            weights_path: Path to trained model weights directory
+            visit: Visit number
+            data_path: Specific data path to use (defaults to first data path)
+            
+        Returns:
+            InferenceLoader: Configured inference loader for the visit
+        """
+        if not data_path:
+            data_path = self.data_paths[0]
+        
+        # Use weights path and visit as key to cache inference loaders
+        cache_key = f"{data_path}_{visit}_{weights_path}"
+        
+        if cache_key not in self._inference_loaders:
+            self._inference_loaders[cache_key] = InferenceLoader(data_path, visit, weights_path)
+        
+        return self._inference_loaders[cache_key]
+
+    def run_inference_all_visits(self, weights_path: str, data_path: Path = None, force=False):
+        """
+        Run inference on all visits sequentially for memory efficiency.
+        Uses cached model to avoid reloading.
+        """
+        if not data_path:
+            data_path = self.data_paths[0]
+        
+        # Pre-load the model once
+        trainer = self._get_or_load_trainer(weights_path)
+        
+        results = {}
+        
+        for i, visit in enumerate(self.visits):
+            print(f"\n--- Processing visit {visit} ({i+1}/{len(self.visits)}) ---")
+            inference_loader = self.get_inference_loader(weights_path, visit, data_path)
+            
+            if inference_loader.has_inference_results() and not force:
+                print(f"Inference results already exist for visit {visit}")
+                results[visit] = inference_loader
+                continue
+            
+            try:
+                # Pass the cached trainer to avoid reloading
+                inference_loader.run_inference(self, trainer=trainer, force=force)
+                results[visit] = inference_loader
+                print(f"Completed inference for visit {visit}")
+                
+                # Force memory cleanup after each visit
+                import gc
+                gc.collect()
+                
+            except Exception as e:
+                print(f"Error running inference for visit {visit}: {e}")
+                continue
+        
+        print(f"\nCompleted inference for {len(results)} visits")
+        return results
+
+    def check_or_run_inference(self, weights_path: str, data_path: Path = None):
+        """
+        Check for existing inference results across all visits and optionally run inference.
+        
+        Args:
+            weights_path: Path to trained model weights directory
+            data_path: Specific data path to use (defaults to first data path)
+            
+        Returns:
+            Dict[int, InferenceLoader]: Inference loaders with results
+        """
+        if not data_path:
+            data_path = self.data_paths[0]
+        
+        # Check which visits have inference results
+        missing_visits = []
+        existing_loaders = {}
+        
+        for visit in self.visits:
+            inference_loader = self.get_inference_loader(weights_path, visit, data_path)
+            if inference_loader.has_inference_results():
+                existing_loaders[visit] = inference_loader
+            else:
+                missing_visits.append(visit)
+        
+        if not missing_visits:
+            print(f"Found existing inference results for all {len(self.visits)} visits")
+            return existing_loaders
+        
+        print(f"Missing inference results for visits: {missing_visits}")
+        response = input(f"Would you like to run inference for {len(missing_visits)} visits? (Y/n): ").lower().strip()
+        
+        if response in ['', 'y', 'yes']:
+            try:
+                all_results = self.run_inference_all_visits(weights_path, data_path)
+                return all_results
+            except Exception as e:
+                print(f"Error running inference: {e}")
+                return existing_loaders
+        else:
+            print("Inference not run.")
+            return existing_loaders
+
     def _discover_data(self):
         """Discover available data files in the directories."""
         for data_path in self.data_paths:
@@ -90,13 +196,18 @@ class DatasetLoader:
                     visit = self._extract_visit_from_filename(file.name)
                     if visit:
                         self._feature_loaders[visit] = FeatureLoader(file)
+
             
             # Load config summary if available
             config_file = data_path / "config_summary.yaml"
             if config_file.exists() and self._config_summary is None:
                 with open(config_file) as f:
                     self._config_summary = yaml.safe_load(f)
-    
+    @property
+    def config_summary(self) -> Optional[Dict]:
+        """Get config summary if available."""
+        return self._config_summary
+        
     def _extract_visit_from_filename(self, filename: str) -> Optional[int]:
         """Extract visit number from filename like 'visit_12345.h5'."""
         try:
@@ -132,8 +243,8 @@ class DatasetLoader:
         return self._lightcurve_loaders
     
     @property
-    def inference(self) -> Dict[int, InferenceLoader]:
-        """Access inference loaders by visit (placeholder)."""
+    def inference(self) -> Dict[str, InferenceLoader]:
+        """Access inference loaders by cache key."""
         return self._inference_loaders
     
     @property
@@ -165,6 +276,38 @@ class DatasetLoader:
             return self._feature_loaders[visit].data
         return None
 
+    def get_inference_results_by_id(self, dia_source_id: int, weights_path: str):
+        """Get inference results by diaSourceId across all visits."""
+        visit = self.find_visit(dia_source_id)
+        if visit:
+            inference_loader = self.get_inference_loader(weights_path, visit)
+            if inference_loader.has_inference_results():
+                return inference_loader.get_results_by_id(dia_source_id)
+        return None
+
+    def _get_or_load_trainer(self, weights_path: str):
+        """Get cached trainer or load it if not cached."""
+        if weights_path not in self._cached_trainers:
+            print(f"Loading model from {weights_path}...")
+            
+            # Import here to avoid circular imports
+            from ML4transients.training import get_trainer
+            from ML4transients.utils import load_config
+            import torch
+            
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            config = load_config(f"{weights_path}/config.yaml")
+            trainer = get_trainer(config["training"]["trainer_type"], config["training"])
+            state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
+            trainer.model.load_state_dict(state_dict)
+            trainer.model.to(device)
+            trainer.model.eval()
+            
+            self._cached_trainers[weights_path] = trainer
+            print(f"Model loaded and cached for {weights_path}")
+        
+        return self._cached_trainers[weights_path]
+
     def __repr__(self):
         total_cutouts = 0
         total_features = 0
@@ -185,4 +328,4 @@ class DatasetLoader:
                 f"  Features: {total_features} across {visits_with_features} visits")
 
     def __str__(self):
-        return self.__repr__()    
+        return self.__repr__()

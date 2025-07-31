@@ -1,9 +1,14 @@
 **/logs
+**/runs
 *.csv
 *.out
 *.npy
 *.log
-
+**/.ipynb_checkpoints
 *.egg-info/
 **/saved
 **/__pycache__
+**/configs/batches
+*.pth
+cutout_raphael.yaml
+cutout_raphael_injected.yaml
