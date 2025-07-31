@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import hashlib
 import yaml
+import torch  
 
 class CutoutLoader:
     """Lazy loader for cutout data."""
@@ -76,15 +77,17 @@ class FeatureLoader:
 class InferenceLoader:
     """Loader for inference results with automatic inference running capability."""
     
-    def __init__(self, data_path: Path, weights_path: str = None):
+    def __init__(self, data_path: Path, visit: int, weights_path: str = None):
         """
-        Initialize InferenceLoader.
+        Initialize InferenceLoader for a specific visit.
         
         Args:
             data_path: Path to the data directory
+            visit: Visit number
             weights_path: Path to trained model weights directory
         """
         self.data_path = Path(data_path)
+        self.visit = visit
         self.weights_path = weights_path
         self._inference_file = None
         self._predictions = None
@@ -116,14 +119,14 @@ class InferenceLoader:
         return hashlib.md5(hash_string.encode()).hexdigest()[:8]
     
     def _get_inference_filename(self):
-        """Generate inference results filename."""
+        """Generate inference results filename for this visit."""
         model_hash = self._get_model_hash()
         if not model_hash:
             return None
-        return f"inference_results_{model_hash}.h5"
+        return f"visit_{self.visit}_inference_{model_hash}.h5"
     
     def _check_inference_availability(self):
-        """Check if inference results exist for the given model."""
+        """Check if inference results exist for the given model and visit."""
         inference_filename = self._get_inference_filename()
         if not inference_filename:
             return False
@@ -188,47 +191,81 @@ class InferenceLoader:
             'dia_source_id': dia_source_id
         }
     
-    def run_inference(self, dataset_loader, force=False):
+    def run_inference(self, dataset_loader, trainer=None, force=False):
         """
-        Run inference and save results.
+        Run inference for this specific visit only.
         
         Args:
             dataset_loader: DatasetLoader instance
-            force: Whether to force re-running inference even if results exist
+            trainer: Optional pre-loaded trainer (avoids reloading model)
+            force: Whether to force re-running inference even if results exists
         """
         if self.has_inference_results() and not force:
-            print(f"Inference results already exist at {self._inference_file}")
+            print(f"Inference results already exist for visit {self.visit} at {self._inference_file}")
             response = input("Do you want to re-run inference? (y/N): ").lower().strip()
             if response != 'y':
                 return
         
-        if not self.weights_path:
-            raise ValueError("No weights path provided. Cannot run inference.")
+        if not self.weights_path and trainer is None:
+            raise ValueError("No weights path or trainer provided. Cannot run inference.")
         
-        print("Running inference...")
+        # Check if this visit has data
+        if self.visit not in dataset_loader.visits:
+            print(f"Warning: Visit {self.visit} not found in dataset")
+            return
+        
+        if self.visit not in dataset_loader.cutouts or self.visit not in dataset_loader.features:
+            print(f"Warning: Visit {self.visit} missing cutouts or features")
+            return
+        
+        print(f"Running inference for visit {self.visit}...")
         
         # Import here to avoid circular imports
         from ML4transients.training.pytorch_dataset import PytorchDataset
         from ML4transients.evaluation.inference import infer
         from torch.utils.data import DataLoader
         
-        # Create inference dataset
-        inference_dataset = PytorchDataset.create_inference_dataset(dataset_loader)
-        inference_dataloader = DataLoader(inference_dataset, batch_size=32, shuffle=False)
+        # Create inference dataset with optimized DataLoader
+        inference_dataset = PytorchDataset.create_inference_dataset(dataset_loader, visit=self.visit)
+        inference_dataloader = DataLoader(
+            inference_dataset, 
+            batch_size=64,  # Larger batch size for inference
+            shuffle=False,
+            num_workers=0,  # Disable multiprocessing to avoid memory issues
+            pin_memory=False  # Disable pin_memory to save GPU memory
+        )
         
         # Ensure inference directory exists
         inference_dir = self.data_path / "inference"
         inference_dir.mkdir(exist_ok=True)
         
-        # Run inference with saving
-        results = infer(
-            inference_loader=inference_dataloader,
-            weights_path=self.weights_path,
-            return_preds=True,
-            compute_metrics=True,
-            save_path=self._inference_file,
-            dia_source_ids=inference_dataset.dia_source_ids
-        )
+        try:
+            # Run inference
+            results = infer(
+                inference_loader=inference_dataloader,
+                trainer=trainer,
+                weights_path=self.weights_path if trainer is None else None,
+                return_preds=True,
+                compute_metrics=True,
+                save_path=self._inference_file,
+                dia_source_ids=inference_dataset.dia_source_ids,
+                visit=self.visit
+            )
+            
+        finally:
+            # Always cleanup memory after inference
+            if hasattr(inference_dataset, 'cleanup_memory'):
+                inference_dataset.cleanup_memory()
+            del inference_dataset
+            del inference_dataloader
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         
         # Clear cached data to force reload
         self._predictions = None

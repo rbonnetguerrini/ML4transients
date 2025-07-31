@@ -105,57 +105,73 @@ class PytorchDataset(Dataset):
         )
 
     @staticmethod
-    def create_inference_dataset(data_source, **kwargs):
+    def create_inference_dataset(data_source, visit=None, **kwargs):
         """
-        Create dataset for inference - loads all available data without splitting.
+        Create dataset for inference - uses lazy loading by visit.
         
         Args:
             data_source: DatasetLoader instance or path
+            visit: Optional specific visit number to process (for memory efficiency)
             **kwargs: Additional arguments (visits, transform, etc.)
             
         Returns:
-            PytorchDataset: Full dataset for inference
+            PytorchDataset: Dataset for inference (full or visit-specific)
         """
         if isinstance(data_source, DatasetLoader):
             loader = data_source
         else:
             loader = DatasetLoader(data_source)
         
-        # Build sample index and labels (lightweight)
+        # If specific visit requested, process only that visit
+        if visit is not None:
+            if visit not in loader.visits:
+                raise ValueError(f"Visit {visit} not found in dataset")
+            
+            if visit not in loader.cutouts or visit not in loader.features:
+                raise ValueError(f"Visit {visit} missing cutouts or features")
+            
+            print(f"Creating inference dataset for visit {visit}...")
+            available_visits = [visit]
+        else:
+            # Process all visits or specified visits
+            visits = kwargs.get('visits', loader.visits)
+            available_visits = [v for v in visits if v in loader.visits] if visits else loader.visits
+            print("Building inference dataset index across visits...")
+        
+        # Build sample index
         sample_index = []
         labels = []
         
-        visits = kwargs.get('visits', loader.visits)
-        available_visits = [v for v in visits if v in loader.visits] if visits else loader.visits
-        
-        print("Building inference dataset index...")
-        for visit in available_visits:
-            if visit in loader.cutouts and visit in loader.features:
-                labels_df = loader.features[visit].labels
-                cutout_ids = set(loader.cutouts[visit].ids)
+        for v in available_visits:
+            if v in loader.cutouts and v in loader.features:
+                labels_df = loader.features[v].labels
+                cutout_ids = set(loader.cutouts[v].ids)
                 
                 for dia_id in labels_df.index:
                     if dia_id in cutout_ids:
-                        sample_index.append((visit, dia_id))
+                        sample_index.append((v, dia_id))
                         labels.append(labels_df.loc[dia_id, 'is_injection'])
         
         if len(sample_index) == 0:
             raise ValueError("No samples found. Check your data.")
             
         labels = np.array(labels)
-        indices = np.arange(len(sample_index))
         
         # Create inference dataset info
         inference_info = {
             'sample_index': sample_index,
             'labels': labels,
-            'indices': indices
+            'visits': available_visits,
+            'single_visit': visit  # Track if this is single visit
         }
         
-        print(f"Created inference dataset with {len(sample_index)} samples")
+        if visit is not None:
+            print(f"Created inference dataset for visit {visit} with {len(sample_index)} samples")
+        else:
+            print(f"Created inference dataset with {len(sample_index)} samples across {len(available_visits)} visits")
         
         return PytorchDataset._from_inference(loader, inference_info, **kwargs)
-    
+
     @staticmethod
     def _from_inference(loader, inference_info, **kwargs):
         """Create inference dataset from pre-computed info."""
@@ -164,7 +180,7 @@ class PytorchDataset(Dataset):
             _inference_info=inference_info,
             **kwargs
         )
-    
+
     def __init__(self, 
                  data_source: Union[str, Path, List[Union[str, Path]], DatasetLoader],
                  visits: Optional[List[int]] = None,
@@ -183,6 +199,7 @@ class PytorchDataset(Dataset):
         For efficient usage, prefer:
         - PytorchDataset.create_splits() for training
         - PytorchDataset.create_inference_dataset() for inference
+        - PytorchDataset.create_inference_dataset(visit=X) for visit-specific inference
         """
         # Handle both path and DatasetLoader instance
         if isinstance(data_source, DatasetLoader):
@@ -241,25 +258,63 @@ class PytorchDataset(Dataset):
             self._apply_legacy_split(train, val, test, test_size, val_size, random_state)
 
     def _load_from_inference(self, inference_info):
-        """Load all data for inference (no splitting)."""
+        """Load data for inference with lazy loading."""
         sample_index = inference_info['sample_index']
         all_labels = inference_info['labels']
-        indices = inference_info['indices']
+        single_visit = inference_info.get('single_visit')
         
-        # Load all cutouts for inference
-        print(f"Loading {len(sample_index)} cutouts for inference...")
-        all_cutouts = []
-        all_ids = []
-        
-        for visit, dia_id in sample_index:
-            cutout = self.loader.get_cutout(visit, dia_id)
-            all_cutouts.append(cutout)
-            all_ids.append(dia_id)
-        
-        self.images = np.array(all_cutouts)
+        # Store sample info instead of loading all data immediately
+        self._sample_index = sample_index
         self.labels = all_labels
-        self.dia_source_ids = np.array(all_ids)
-    
+        self.dia_source_ids = np.array([dia_id for _, dia_id in sample_index])
+        
+        # Don't load images immediately - load on demand in __getitem__
+        self.images = None
+        self._loaded_images = {}  # Cache for loaded images
+        
+        if single_visit is not None:
+            print(f"Created lazy dataset for visit {single_visit} with {len(sample_index)} samples")
+        else:
+            print(f"Created lazy dataset with {len(sample_index)} samples")
+
+    def __getitem__(self, idx):
+        # Load image on demand if using lazy loading
+        if hasattr(self, '_sample_index') and self.images is None:
+            if idx not in self._loaded_images:
+                visit, dia_id = self._sample_index[idx]
+                cutout = self.loader.get_cutout(visit, dia_id)
+                self._loaded_images[idx] = cutout
+            image = self._loaded_images[idx]
+        else:
+            image = self.images[idx]
+        
+        label = self.labels[idx]
+
+        # Convert image to PyTorch tensor
+        image = torch.tensor(image, dtype=torch.float32).squeeze(-1)
+        image = image.unsqueeze(0)
+        
+        if self.transform:
+            image = self.transform(image)
+
+        label = torch.tensor(label, dtype=torch.float32)
+        return image, label, idx
+
+    def cleanup_memory(self):
+        """Explicitly free memory used by this dataset."""
+        if hasattr(self, 'images') and self.images is not None:
+            del self.images
+            self.images = None
+        
+        if hasattr(self, '_loaded_images'):
+            self._loaded_images.clear()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        print(f"Cleaned up memory for dataset")
+
     def _load_from_split(self, split_info, indices):
         """Load only the data needed for this split."""
         sample_index = split_info['sample_index']
@@ -333,19 +388,26 @@ class PytorchDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        image = self.images[idx]
+        # Load image on demand if using lazy loading
+        if hasattr(self, '_sample_index') and self.images is None:
+            if idx not in self._loaded_images:
+                visit, dia_id = self._sample_index[idx]
+                cutout = self.loader.get_cutout(visit, dia_id)
+                self._loaded_images[idx] = cutout
+            image = self._loaded_images[idx]
+        else:
+            image = self.images[idx]
+        
         label = self.labels[idx]
 
         # Convert image to PyTorch tensor
-        image = torch.tensor(image, dtype=torch.float32).squeeze(-1)  # Remove channel dim: (H, W)
-        image = image.unsqueeze(0)  # Add channel dim at front: (1, H, W)
+        image = torch.tensor(image, dtype=torch.float32).squeeze(-1)
+        image = image.unsqueeze(0)
         
         if self.transform:
             image = self.transform(image)
 
-        # Ensure label is a PyTorch tensor
         label = torch.tensor(label, dtype=torch.float32)
-
         return image, label, idx
 
     def get_feature_by_idx(self, idx):
