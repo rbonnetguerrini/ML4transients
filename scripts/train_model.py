@@ -101,17 +101,17 @@ def main():
     
     # Train model
     print("Starting training...")
-    best_acc = trainer.fit(train_loader, test_loader, val_loader)
+    best_val_acc = trainer.fit(train_loader, val_loader, test_loader)
     
-    print(f"Training completed. Best accuracy: {best_acc:.4f}")
+    print(f"Training completed. Best accuracy: {best_val_acc:.4f}")
 
-    if val_loader:  
-        val_results = infer(val_loader, trainer= trainer, return_preds=True, compute_metrics=True)
-        print(f"Accuracy on the validation: {val_results['accuracy']}")
-        print(f"TP on the validation: {val_results['confusion_matrix'][0][0]}")
-        print(f"FP on the validation: {val_results['confusion_matrix'][0][1]}")
-        print(f"FN on the validation: {val_results['confusion_matrix'][1][0]}")
-        print(f"TN on the validation: {val_results['confusion_matrix'][1][1]}")
+    if test_loader:  
+        test_results = infer(test_loader, trainer= trainer, return_preds=True, compute_metrics=True)
+        print(f"Accuracy on the validation: {test_results['accuracy']}")
+        print(f"TP on the validation: {test_results['confusion_matrix'][0][0]}")
+        print(f"FP on the validation: {test_results['confusion_matrix'][0][1]}")
+        print(f"FN on the validation: {test_results['confusion_matrix'][1][0]}")
+        print(f"TN on the validation: {test_results['confusion_matrix'][1][1]}")
 
 
 if __name__ == "__main__":
