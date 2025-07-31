@@ -33,7 +33,7 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
     
     if trainer is None:
         config = load_config(f"{weights_path}/config.yaml")
-        trainer = get_trainer(config["training"]["trainer_type"], config)
+        trainer = get_trainer(config["training"]["trainer_type"], config["training"])
         state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
         trainer.model.load_state_dict(state_dict)
 
@@ -45,8 +45,12 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
     all_labels = []
 
     with torch.no_grad():
-        for images, labels, *_ in inference_loader:
-            images = images.to(trainer.device)
+        for batch_idx, batch in enumerate(inference_loader):
+            if batch_idx % 10 == 0:
+                print(f"Processing batch {batch_idx}/{len(inference_loader)}")
+                
+            images, labels, *_ = batch
+            images = images.to(device)
             outputs = model(images)
             preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float().cpu().numpy()
             labels = labels.cpu().numpy()
@@ -56,7 +60,6 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                 all_labels.append(labels)
 
     results = {}
-
     if return_preds:
         y_pred = np.concatenate(all_preds)
         y_true = np.concatenate(all_labels)

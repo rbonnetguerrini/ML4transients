@@ -196,7 +196,10 @@ class PytorchDataset(Dataset):
         if _split_info is not None and _indices is not None:
             self._load_from_split(_split_info, _indices)
             return
-        
+        if _inference_info is not None:
+            self._load_from_inference(_inference_info)
+            return
+
         # Legacy path - load all data then split (less efficient)
         print("Loading all data then applying split (consider using create_splits() for efficiency)")
         
@@ -236,6 +239,26 @@ class PytorchDataset(Dataset):
         # Apply splits if requested
         if train or val or test:
             self._apply_legacy_split(train, val, test, test_size, val_size, random_state)
+
+    def _load_from_inference(self, inference_info):
+        """Load all data for inference (no splitting)."""
+        sample_index = inference_info['sample_index']
+        all_labels = inference_info['labels']
+        indices = inference_info['indices']
+        
+        # Load all cutouts for inference
+        print(f"Loading {len(sample_index)} cutouts for inference...")
+        all_cutouts = []
+        all_ids = []
+        
+        for visit, dia_id in sample_index:
+            cutout = self.loader.get_cutout(visit, dia_id)
+            all_cutouts.append(cutout)
+            all_ids.append(dia_id)
+        
+        self.images = np.array(all_cutouts)
+        self.labels = all_labels
+        self.dia_source_ids = np.array(all_ids)
     
     def _load_from_split(self, split_info, indices):
         """Load only the data needed for this split."""
