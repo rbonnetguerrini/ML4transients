@@ -54,6 +54,20 @@ pip install --editable .
 
 # Quick tutorial 
 
+## Generating injection catalogues
+The injection module allows you to create fake source catalogs for transient detection training. It supports both galaxy-hosted and hostless transients with realistic magnitude distributions.
+
+- To **configure injection parameters** edit `configs/injection_all_bands.yaml` 
+- To **generate catalog for single band**: 
+```sh
+python scripts/gen_injection_catalogue.py --config configs/injection_all_bands.yaml --band r
+```
+- To **process multiple bands with job array**:
+```sh
+./scripts/submit_band_catalogue.sh
+```
+
+
 ## Performing cutouts:
 
 - Using `scripts/run_cutout.py` you can produce cutout given a specific yaml, template can be found in `ML4transients/configs/configs_cutout.yaml` . From there you can specify visits inside of the collection and if you only want the features, cutouts, or both.
