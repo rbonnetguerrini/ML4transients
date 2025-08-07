@@ -258,7 +258,16 @@ class PytorchDataset(Dataset):
             self._apply_legacy_split(train, val, test, test_size, val_size, random_state)
 
     def _load_from_inference(self, inference_info):
-        """Load data for inference with lazy loading."""
+        """Load data for inference with lazy loading.
+        
+        Parameters
+        ----------
+        inference_info : dict
+            Dictionary containing inference dataset information including:
+            - sample_index: List of (visit, dia_id) tuples
+            - labels: Array of true labels
+            - single_visit: Optional visit number if single visit
+        """
         sample_index = inference_info['sample_index']
         all_labels = inference_info['labels']
         single_visit = inference_info.get('single_visit')
@@ -277,31 +286,12 @@ class PytorchDataset(Dataset):
         else:
             print(f"Created lazy dataset with {len(sample_index)} samples")
 
-    def __getitem__(self, idx):
-        # Load image on demand if using lazy loading
-        if hasattr(self, '_sample_index') and self.images is None:
-            if idx not in self._loaded_images:
-                visit, dia_id = self._sample_index[idx]
-                cutout = self.loader.get_cutout(visit, dia_id)
-                self._loaded_images[idx] = cutout
-            image = self._loaded_images[idx]
-        else:
-            image = self.images[idx]
-        
-        label = self.labels[idx]
-
-        # Convert image to PyTorch tensor
-        image = torch.tensor(image, dtype=torch.float32).squeeze(-1)
-        image = image.unsqueeze(0)
-        
-        if self.transform:
-            image = self.transform(image)
-
-        label = torch.tensor(label, dtype=torch.float32)
-        return image, label, idx
-
     def cleanup_memory(self):
-        """Explicitly free memory used by this dataset."""
+        """Explicitly free memory used by this dataset.
+        
+        Deletes image arrays and loaded image cache, then forces garbage collection.
+        Useful for managing memory in large-scale evaluations.
+        """
         if hasattr(self, 'images') and self.images is not None:
             del self.images
             self.images = None
@@ -316,7 +306,15 @@ class PytorchDataset(Dataset):
         print(f"Cleaned up memory for dataset")
 
     def _load_from_split(self, split_info, indices):
-        """Load only the data needed for this split."""
+        """Load only the data needed for this split.
+        
+        Parameters
+        ----------
+        split_info : dict
+            Dictionary containing split information including sample_index and labels
+        indices : np.ndarray
+            Array of indices to select from the split
+        """
         sample_index = split_info['sample_index']
         all_labels = split_info['labels']
         
@@ -339,7 +337,23 @@ class PytorchDataset(Dataset):
         self.dia_source_ids = np.array(all_ids)
     
     def _apply_legacy_split(self, train, val, test, test_size, val_size, random_state):
-        """Apply split to already loaded data (legacy method)."""
+        """Apply split to already loaded data (legacy method).
+        
+        Parameters
+        ----------
+        train : bool
+            Whether to create training split
+        val : bool
+            Whether to create validation split  
+        test : bool
+            Whether to create test split
+        test_size : float
+            Fraction of data for test set
+        val_size : float
+            Fraction of data for validation set
+        random_state : int
+            Random seed for reproducible splits
+        """
         if len(self.labels) == 0:
             raise ValueError("No features provided. Dataset is empty.")
 
@@ -379,7 +393,13 @@ class PytorchDataset(Dataset):
             self._apply_split(test_idx)
     
     def _apply_split(self, indices):
-        """Helper to apply index split"""
+        """Helper to apply index split.
+        
+        Parameters
+        ----------
+        indices : np.ndarray
+            Array of indices to select for this split
+        """
         self.images = self.images[indices]
         self.labels = self.labels[indices]
         self.dia_source_ids = self.dia_source_ids[indices]
@@ -411,7 +431,18 @@ class PytorchDataset(Dataset):
         return image, label, idx
 
     def get_feature_by_idx(self, idx):
-        """Get features for a specific index - loads on demand."""
+        """Get features for a specific index - loads on demand.
+        
+        Parameters
+        ----------
+        idx : int
+            Index of the sample
+            
+        Returns
+        -------
+        pd.DataFrame or None
+            Features for the sample, or None if not found
+        """
         dia_id = self.dia_source_ids[idx]
         visit = self.loader.find_visit(dia_id)
         if visit:
@@ -419,10 +450,25 @@ class PytorchDataset(Dataset):
         return None
     
     def get_dia_source_id(self, idx):
-        """Get diaSourceId for a specific index."""
+        """Get diaSourceId for a specific index.
+        
+        Parameters
+        ----------
+        idx : int
+            Index of the sample
+            
+        Returns
+        -------
+        int
+            The diaSourceId for this sample
+        """
         return self.dia_source_ids[idx]
     
     def __repr__(self):
-        return (f"PytorchDataset({len(self)} samples)\n"
-                f"  Image shape: {self.images.shape}\n"
-                f"  Labels: {np.sum(self.labels)} injected, {len(self.labels) - np.sum(self.labels)} real")
+        if hasattr(self, '_sample_index') and self.images is None:
+            return (f"PytorchDataset({len(self)} samples, lazy loading)\n"
+                    f"  Labels: {np.sum(self.labels)} injected, {len(self.labels) - np.sum(self.labels)} real")
+        else:
+            return (f"PytorchDataset({len(self)} samples)\n"
+                    f"  Image shape: {self.images.shape if self.images is not None else 'lazy'}\n"
+                    f"  Labels: {np.sum(self.labels)} injected, {len(self.labels) - np.sum(self.labels)} real")

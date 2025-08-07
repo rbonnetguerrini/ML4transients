@@ -109,15 +109,17 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
 
     return results if return_preds else None
 
-def save_inference_results(results, save_path, weights_path=None, dia_source_ids=None):
+def save_inference_results(results, save_path, weights_path=None, dia_source_ids=None, visit=None, model_hash=None):
     """
-    Save inference results to HDF5 file.
+    Save inference results to HDF5 file and register in the dataset.
     
     Args:
         results: Dictionary containing inference results
         save_path: Path where to save the results
         weights_path: Path to the model weights (for metadata)
         dia_source_ids: Array of diaSourceIds corresponding to the results
+        visit: Visit number for registry
+        model_hash: Model hash for registry
     """
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,6 +140,12 @@ def save_inference_results(results, save_path, weights_path=None, dia_source_ids
         # Save metadata
         if weights_path:
             f.attrs['weights_path'] = str(weights_path)
+        
+        if visit is not None:
+            f.attrs['visit'] = visit
+            
+        if model_hash:
+            f.attrs['model_hash'] = model_hash
         
         # Save dataset size for validation
         f.attrs['n_samples'] = len(results['y_pred'])

@@ -1,0 +1,69 @@
+# Evaluation configuration
+
+# Basic evaluation settings
+evaluation:
+  # Metrics to compute
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - specificity
+    - roc_auc
+    - pr_auc
+  
+  # Visualization settings
+  visualization:
+    width: 800
+    height: 550
+    theme: "dark_minimal"
+    
+  # Export settings
+  export:
+    save_plots: true
+    formats: ["html"]
+    
+# Interpretability analysis settings
+interpretability:
+  enabled: true
+  max_samples: 3000  # Maximum samples for UMAP analysis
+  
+  # Feature extraction settings
+  feature_extraction:
+    layer_name: "fc1"  # Layer to extract features from: "fc1", "conv2", "flatten", "output"
+    # Available layers for CustomCNN:
+    # - "conv1": After first convolution + ReLU + pooling + dropout
+    # - "conv2": After second convolution + ReLU + pooling + dropout  
+    # - "flatten": After flattening convolution features
+    # - "fc1": After first fully connected layer + ReLU + dropout (recommended)
+    # - "output": Final model output (1D logits)
+    max_visualization_samples: 1000  # Max samples to show in plots (for performance)
+  
+  # UMAP parameters
+  umap:
+    n_neighbors: 15
+    min_dist: 0.1
+    n_components: 2
+    random_state: 42
+    
+  # Clustering parameters
+  clustering:
+    method: "gmm"  # Gaussian Mixture Model
+    n_components_range: [5, 15]
+    
+  # Features to analyze
+  features:
+    - snr  # If available in your dataset
+    # Add other features as needed
+    
+# Performance settings
+performance:
+  batch_size: 32
+  num_workers: 0
+  pin_memory: false
+  
+# Output settings
+output:
+  save_detailed_results: true
+  save_predictions: true
+  save_embeddings: true
