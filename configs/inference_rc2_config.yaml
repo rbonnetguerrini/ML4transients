@@ -1,7 +1,0 @@
-dataset:
-  path: '/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm'
-
-inference:
-  weights_path: '/sps/lsst/groups/transients/HSC/fouchez/raphael/training/simple_run'
-  save_summary: true
-  force_rerun: false
