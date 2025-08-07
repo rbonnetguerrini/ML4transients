@@ -76,3 +76,26 @@ sbatch scripts/submit_training.sh
 Allows to submit job to your GPU. The number of workers can be change in the config, as well as all the training parameter. 
 
 
+## Perform Inference: 
+
+```sh
+python .scripts/run_inference.py \
+--dataset-path /path/to/dataset/folder/ \ # The folder with features, images etc...
+  --weights-path /path/to/weight/folder/
+
+```
+More details in `notebooks/inference_example.ipynb`
+
+## Perform evaluation: 
+
+```sh
+python scripts/run_evaluation.py     
+    --config configs/evaluation_config.yaml     
+    --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm 
+    --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/simple_run     
+    --output-dir saved/test_eval     
+    --interpretability 
+    --model-hash "6d5bb4aa" 
+```
+
+More details in `notebooks/evaluation_example.ipynb`

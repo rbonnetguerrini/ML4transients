@@ -1,0 +1,11 @@
+dataset:
+  path: '/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm'
+
+inference:
+  weights_path: '/sps/lsst/groups/transients/HSC/fouchez/raphael/training/simple_run'
+  save_summary: true
+  force_rerun: false
+
+# Optional: Add other inference settings
+# device: 'cuda'  # or 'cpu'
+# batch_size: 32
