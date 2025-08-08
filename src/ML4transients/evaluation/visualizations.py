@@ -435,19 +435,22 @@ def create_interpretability_dashboard(interpreter,
         interp_config = config['interpretability']
         feature_config = interp_config.get('feature_extraction', {})
         layer_name = feature_config.get('layer_name', 'fc1')
-        max_viz_samples = feature_config.get('max_visualization_samples', 1000)
+        max_umap_samples = interp_config.get('max_samples', 30000)  # Main parameter for UMAP computation
+        max_viz_samples = feature_config.get('max_visualization_samples', 100)  # For final visualization
         umap_config = interp_config.get('umap', {})
         clustering_config = interp_config.get('clustering', {})
     else:
         layer_name = 'fc1'
-        max_viz_samples = 1000
+        max_umap_samples = 30000
+        max_viz_samples = 100
         umap_config = {}
         clustering_config = {}
     
     try:
-        # Extract features
+        # Extract features using max_umap_samples for UMAP computation
         print("Extracting features...")
-        interpreter.extract_features(data_loader, layer_name=layer_name)
+        interpreter.extract_features(data_loader, layer_name=layer_name, 
+                                   max_samples=max_umap_samples)
         
         # Fit UMAP with optional parameter optimization
         print("Fitting UMAP...")
@@ -460,23 +463,33 @@ def create_interpretability_dashboard(interpreter,
             optimize_params=optimize_umap
         )
         
-        # Perform high-dimensional clustering
-        print("Performing high-dimensional clustering...")
-        min_cluster_size = clustering_config.get('min_cluster_size', 10)
-        min_samples = clustering_config.get('min_samples', 5)
-        interpreter.cluster_high_dimensional_features(
-            min_cluster_size=min_cluster_size,
-            min_samples=min_samples
-        )
+        # Perform high-dimensional clustering (optional)
+        clustering_enabled = clustering_config.get('enabled', False)
+        if clustering_enabled:
+            print("Performing high-dimensional clustering...")
+            min_cluster_size = clustering_config.get('min_cluster_size', 10)
+            min_samples = clustering_config.get('min_samples', 5)
+            interpreter.cluster_high_dimensional_features(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples
+            )
+        else:
+            print("High-dimensional clustering disabled - skipping clustering step")
         
-        # Create visualization dataframe
-        print(f"Creating visualization dataframe (max {max_viz_samples} samples)...")
+        # Create visualization dataframe - potentially subsample further for visualization
+        print(f"Creating visualization dataframe...")
         df = interpreter.create_interpretability_dataframe(
             predictions, labels, data_loader, 
             additional_features=additional_features
         )
         
+        # Subsample for visualization if needed (separate from UMAP computation)
+        if len(df) > max_viz_samples:
+            print(f"Subsampling {max_viz_samples} from {len(df)} samples for visualization performance")
+            df = df.sample(n=max_viz_samples, random_state=42).copy()
+        
         print(f"Created visualization dataframe with {len(df)} samples using {layer_name} features")
+        print(f"UMAP was computed on up to {max_umap_samples} samples")
         
         # Create visualizer and plots
         visualizer = UMAPVisualizer()
@@ -506,8 +519,8 @@ def create_interpretability_dashboard(interpreter,
                     feature_layout = gridplot([feature_plots[i:i+2] for i in range(0, len(feature_plots), 2)])
                 tabs.append(TabPanel(child=feature_layout, title="Feature Analysis"))
         
-        # Tab 3: High-dimensional clusters (if available)
-        if 'high_dim_cluster' in df.columns:
+        # Tab 3: High-dimensional clusters (if available and enabled)
+        if clustering_enabled and 'high_dim_cluster' in df.columns:
             cluster_plot = visualizer.plot_clusters(
                 df, cluster_column='high_dim_cluster',
                 title=f"UMAP: High-Dimensional Clusters{title_suffix}"

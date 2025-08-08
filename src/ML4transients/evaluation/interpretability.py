@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import torch.utils.data
 import umap.umap_ as umap
 from sklearn.model_selection import ParameterGrid
 from typing import Dict, List, Optional, Tuple, Any
@@ -103,7 +104,8 @@ class UMAPInterpreter:
         self.features = None
         self.umap_embedding = None
         self.high_dim_clusters = None
-        
+        self.sample_indices = None  # Add this line
+    
         # For hook-based feature extraction
         self.hook_features = None
         self.hook_handle = None
@@ -158,25 +160,35 @@ class UMAPInterpreter:
         """
         self.hook_features = output.detach()
     
-    def extract_features(self, data_loader, layer_name: str = "fc1") -> np.ndarray:
+    def extract_features(self, data_loader, layer_name: str = "fc1", 
+                    max_samples: Optional[int] = None, random_state: int = 42) -> np.ndarray:
         """
         Extract features from specified layer of the model.
         
         Args:
             data_loader: DataLoader with input data
             layer_name: Which layer to extract features from
+            max_samples: Maximum number of samples to extract for UMAP computation (None for all)
+            random_state: Random seed for sampling
             
         Returns:
             Extracted features as numpy array
         """
         print(f"Extracting features from layer: {layer_name}")
+        if max_samples is not None:
+            print(f"Will sample up to {max_samples} samples for UMAP computation")
         
+        # First pass: extract all features
         features = []
         total_batches = len(data_loader)
         
-        # Handle special cases
-        if layer_name == "output":
-            # Extract from final model output
+        # Use hooks to extract from intermediate layers
+        target_layer = self._get_layer_by_name(layer_name)
+        
+        # Register hook
+        self.hook_handle = target_layer.register_forward_hook(self._hook_fn)
+        
+        try:
             with torch.no_grad():
                 for batch_idx, batch in enumerate(data_loader):
                     if batch_idx % 10 == 0:  # Progress every 10 batches
@@ -184,61 +196,54 @@ class UMAPInterpreter:
                     
                     images, *_ = batch
                     images = images.to(self.device)
-                    feat = self.trainer.model(images)
-                    feat_flat = feat.view(feat.size(0), -1)
+                    
+                    # Forward pass (hook will capture the features)
+                    _ = self.trainer.model(images)
+                    
+                    # Process the captured features
+                    if layer_name == 'flatten':
+                        # Apply the same processing as in the model's forward pass
+                        feat = self.hook_features
+                        # Apply pooling and dropout if we're at conv2
+                        if hasattr(self.trainer.model, 'pool2'):
+                            feat = self.trainer.model.pool2(feat)
+                        if hasattr(self.trainer.model, 'dropout2'):
+                            feat = self.trainer.model.dropout2(feat)
+                        feat_flat = feat.view(feat.size(0), -1)
+                    else:
+                        feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
+                    
                     features.append(feat_flat.cpu().numpy())
                     
                     # Clear GPU memory after each batch
-                    del images, feat, feat_flat
+                    del images, feat_flat
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-        else:
-            # Use hooks to extract from intermediate layers
-            target_layer = self._get_layer_by_name(layer_name)
-            
-            # Register hook
-            self.hook_handle = target_layer.register_forward_hook(self._hook_fn)
-            
-            try:
-                with torch.no_grad():
-                    for batch_idx, batch in enumerate(data_loader):
-                        if batch_idx % 10 == 0:  # Progress every 10 batches
-                            print(f"Processing batch {batch_idx+1}/{total_batches}")
-                        
-                        images, *_ = batch
-                        images = images.to(self.device)
-                        
-                        # Forward pass (hook will capture the features)
-                        _ = self.trainer.model(images)
-                        
-                        # Process the captured features
-                        if layer_name == 'flatten':
-                            # Apply the same processing as in the model's forward pass
-                            feat = self.hook_features
-                            # Apply pooling and dropout if we're at conv2
-                            if hasattr(self.trainer.model, 'pool2'):
-                                feat = self.trainer.model.pool2(feat)
-                            if hasattr(self.trainer.model, 'dropout2'):
-                                feat = self.trainer.model.dropout2(feat)
-                            feat_flat = feat.view(feat.size(0), -1)
-                        else:
-                            feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
-                        
-                        features.append(feat_flat.cpu().numpy())
-                        
-                        # Clear GPU memory after each batch
-                        del images, feat_flat
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        
-            finally:
-                # Always remove the hook
-                if self.hook_handle:
-                    self.hook_handle.remove()
-                    self.hook_handle = None
+        finally:
+            # Always remove the hook
+            if self.hook_handle:
+                self.hook_handle.remove()
+                self.hook_handle = None
         
-        self.features = np.vstack(features)
-        print(f"Extracted features shape: {self.features.shape}")
+        # Stack all features
+        all_features = np.vstack(features)
+        print(f"Total extracted features shape: {all_features.shape}")
+        
+        # Apply random sampling if max_samples is specified
+        if max_samples is not None and len(all_features) > max_samples:
+            print(f"Randomly sampling {max_samples} from {len(all_features)} total samples for UMAP computation (random_state={random_state})")
+            
+            np.random.seed(random_state)
+            indices = np.random.choice(len(all_features), size=max_samples, replace=False)
+            indices = np.sort(indices)  # Sort to maintain some order
+            
+            self.features = all_features[indices]
+            self.sample_indices = indices  # Store indices for later use
+            print(f"Final features shape for UMAP computation: {self.features.shape}")
+        else:
+            print(f"Using all {len(all_features)} samples (no sampling needed)")
+            self.features = all_features
+            self.sample_indices = np.arange(len(all_features))
         
         # Force garbage collection after feature extraction
         import gc
@@ -348,6 +353,10 @@ class UMAPInterpreter:
         if self.features is None:
             raise ValueError("No features extracted. Call extract_features first.")
         
+        # Print number of samples being used for UMAP
+        print(f"Building UMAP embedding with {len(self.features)} samples")
+        print(f"Feature dimensionality: {self.features.shape[1]}D -> {n_components}D")
+        
         if optimize_params:
             print("Optimizing UMAP parameters first...")
             try:
@@ -423,8 +432,8 @@ class UMAPInterpreter:
             return self.high_dim_clusters
 
     def create_interpretability_dataframe(self, predictions: np.ndarray, labels: np.ndarray,
-                                    data_loader, sample_indices: Optional[np.ndarray] = None,
-                                    additional_features: Optional[Dict[str, np.ndarray]] = None) -> pd.DataFrame:
+                                data_loader, sample_indices: Optional[np.ndarray] = None,
+                                additional_features: Optional[Dict[str, np.ndarray]] = None) -> pd.DataFrame:
         """
         Create interpretability DataFrame with UMAP coordinates and additional information.
         
@@ -432,7 +441,7 @@ class UMAPInterpreter:
             predictions: Model predictions
             labels: True labels
             data_loader: DataLoader with input data
-            sample_indices: Indices of samples to include (optional)
+            sample_indices: Indices of samples to include (optional, uses stored indices if None)
             additional_features: Additional features to include (e.g., SNR)
             
         Returns:
@@ -441,19 +450,27 @@ class UMAPInterpreter:
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         
-        # Sample indices if not provided
+        # Use stored sample indices if not provided
         if sample_indices is None:
-            sample_indices = np.arange(len(predictions))
-        
+            if self.sample_indices is not None:
+                sample_indices = self.sample_indices
+                print(f"Using stored sample indices ({len(sample_indices)} samples)")
+            else:
+                sample_indices = np.arange(len(predictions))
+                print(f"No sample indices available, using all {len(sample_indices)} samples")
+    
         # Create base DataFrame with UMAP coordinates
         df = pd.DataFrame({
             'umap_x': self.umap_embedding[:, 0],
             'umap_y': self.umap_embedding[:, 1],
-            'prediction': predictions,
-            'true_label': labels,
-            'correct': predictions == labels
-        }, index=sample_indices)
+            'prediction': predictions[sample_indices],
+            'true_label': labels[sample_indices],
+            'sample_index': sample_indices
+        })
         
+        # Add correct/incorrect classification
+        df['correct'] = df['prediction'] == df['true_label']
+    
         # Add classification categories
         df['class_type'] = 'True Negative'
         df.loc[(df['true_label'] == 1) & (df['prediction'] == 1), 'class_type'] = 'True Positive'

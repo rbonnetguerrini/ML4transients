@@ -42,6 +42,8 @@ def parse_args():
                        help="Run UMAP-based interpretability analysis")
     parser.add_argument("--optimize-umap", action="store_true",
                        help="Optimize UMAP parameters during interpretability analysis")
+    parser.add_argument("--enable-clustering", action="store_true",
+                       help="Enable HDBSCAN clustering on high-dimensional features")
     parser.add_argument("--port", type=int, default=5006,
                        help="Port for Bokeh server (default: 5006)")
     
@@ -401,17 +403,23 @@ def main():
                     # Add SNR or other features here
                     pass
                 
-                # Update config with UMAP optimization from command line
+                # Update config with UMAP optimization and clustering from command line
                 interp_config = config.copy()
                 if 'interpretability' not in interp_config:
                     interp_config['interpretability'] = {}
                 if 'umap' not in interp_config['interpretability']:
                     interp_config['interpretability']['umap'] = {}
+                if 'clustering' not in interp_config['interpretability']:
+                    interp_config['interpretability']['clustering'] = {}
                 
                 # Override UMAP optimization from command line
                 if args.optimize_umap:
                     interp_config['interpretability']['umap']['optimize_params'] = True
                 
+                # Override clustering enablement from command line
+                if args.enable_clustering:
+                    interp_config['interpretability']['clustering']['enabled'] = True
+
                 # Create interpretability dashboard with configuration
                 print("Creating interpretability dashboard...")
                 step_start = time.time()
