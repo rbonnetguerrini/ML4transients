@@ -2,13 +2,13 @@ import numpy as np
 import pandas as pd
 import torch
 import umap.umap_ as umap
-from sklearn.mixture import GaussianMixture
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import ParameterGrid
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 import base64
 import io
 from PIL import Image
+import hdbscan
 
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
@@ -102,11 +102,12 @@ class UMAPInterpreter:
         self.umap_reducer = None
         self.features = None
         self.umap_embedding = None
+        self.high_dim_clusters = None
         
         # For hook-based feature extraction
         self.hook_features = None
         self.hook_handle = None
-        
+    
     def _get_layer_by_name(self, layer_name: str):
         """Get a layer by name from the model.
         
@@ -245,8 +246,92 @@ class UMAPInterpreter:
         
         return self.features
     
+    def optimize_umap_parameters(self, param_grid: Dict = None, 
+                                n_samples: int = 1000, random_state: int = 42) -> Dict:
+        """
+        Find optimal UMAP parameters using grid search.
+        
+        Args:
+            param_grid: Dictionary of parameters to search over
+            n_samples: Number of samples to use for optimization (for speed)
+            random_state: Random seed
+            
+        Returns:
+            Dictionary of best parameters found
+        """
+        if self.features is None:
+            raise ValueError("No features extracted. Call extract_features first.")
+        
+        if param_grid is None:
+            param_grid = {
+                'n_neighbors': [5, 10, 15, 20, 30],
+                'min_dist': [0.01, 0.1, 0.3, 0.5],
+                'n_components': [2]  # Keep 2D for visualization
+            }
+        
+        print("Optimizing UMAP parameters...")
+        print(f"Parameter grid: {param_grid}")
+        
+        # Subsample features for faster optimization
+        if len(self.features) > n_samples:
+            indices = np.random.RandomState(random_state).choice(
+                len(self.features), n_samples, replace=False
+            )
+            features_subset = self.features[indices]
+        else:
+            features_subset = self.features
+            
+        print(f"Using {len(features_subset)} samples for optimization")
+        
+        best_score = -np.inf
+        best_params = None
+        
+        param_combinations = list(ParameterGrid(param_grid))
+        print(f"Testing {len(param_combinations)} parameter combinations...")
+        
+        for i, params in enumerate(param_combinations):
+            print(f"Testing {i+1}/{len(param_combinations)}: {params}")
+            
+            try:
+                # Fit UMAP with current parameters
+                reducer = umap.UMAP(
+                    n_neighbors=params['n_neighbors'],
+                    min_dist=params['min_dist'], 
+                    n_components=params['n_components'],
+                    random_state=random_state,
+                    verbose=False
+                )
+                
+                embedding = reducer.fit_transform(features_subset)
+                
+                # Score based on embedding quality - use spread of points as a simple metric
+                # Higher spread generally indicates better separation
+                embedding_std = np.std(embedding, axis=0).mean()
+                score = embedding_std
+                
+                print(f"  Embedding spread score: {score:.4f}")
+                
+                if score > best_score:
+                    best_score = score
+                    best_params = params.copy()
+                    
+            except Exception as e:
+                print(f"  Failed: {e}")
+                continue
+        
+        if best_params is None:
+            print("No valid parameter combination found, using defaults")
+            best_params = {'n_neighbors': 15, 'min_dist': 0.1, 'n_components': 2}
+        else:
+            print(f"\nBest parameters found:")
+            print(f"  Parameters: {best_params}")
+            print(f"  Embedding spread score: {best_score:.4f}")
+        
+        return best_params
+
     def fit_umap(self, n_neighbors: int = 15, min_dist: float = 0.1, 
-                 n_components: int = 2, random_state: int = 42) -> np.ndarray:
+                 n_components: int = 2, random_state: int = 42,
+                 optimize_params: bool = False) -> np.ndarray:
         """
         Fit UMAP on extracted features.
         
@@ -255,6 +340,7 @@ class UMAPInterpreter:
             min_dist: UMAP min_dist parameter  
             n_components: Number of UMAP dimensions
             random_state: Random seed
+            optimize_params: Whether to optimize parameters first
             
         Returns:
             UMAP embedding
@@ -262,61 +348,79 @@ class UMAPInterpreter:
         if self.features is None:
             raise ValueError("No features extracted. Call extract_features first.")
         
-        self.umap_reducer = umap.UMAP(
-            n_neighbors=n_neighbors,
-            min_dist=min_dist,
-            n_components=n_components,
-            random_state=random_state
-        )
+        if optimize_params:
+            print("Optimizing UMAP parameters first...")
+            try:
+                best_params = self.optimize_umap_parameters(random_state=random_state)
+                n_neighbors = best_params['n_neighbors']
+                min_dist = best_params['min_dist']
+                n_components = best_params['n_components']
+                print(f"Using optimized parameters: n_neighbors={n_neighbors}, min_dist={min_dist}")
+            except Exception as e:
+                print(f"UMAP optimization failed: {e}")
+                print("Using default parameters instead")
         
-        self.umap_embedding = self.umap_reducer.fit_transform(self.features)
-        return self.umap_embedding
-    
-    def cluster_umap(self, n_components_range: Tuple[int, int] = (5, 15)) -> np.ndarray:
-        """Perform Gaussian Mixture clustering on UMAP embedding.
+        print("Fitting UMAP embedding...")
+        print(f"Parameters: n_neighbors={n_neighbors}, min_dist={min_dist}, n_components={n_components}")
         
-        Uses grid search to find optimal GMM parameters based on BIC score.
-        
-        Parameters
-        ----------
-        n_components_range : tuple of int, default=(5, 15)
-            Range of number of components to try for GMM
+        try:
+            self.umap_reducer = umap.UMAP(
+                n_neighbors=n_neighbors,
+                min_dist=min_dist,
+                n_components=n_components,
+                random_state=random_state,
+                verbose=True
+            )
             
-        Returns
-        -------
-        np.ndarray
-            Cluster labels for each sample
+            self.umap_embedding = self.umap_reducer.fit_transform(self.features)
+            print(f"UMAP embedding completed. Final embedding shape: {self.umap_embedding.shape}")
+            return self.umap_embedding
             
-        Raises
-        ------
-        ValueError
-            If no UMAP embedding exists
+        except Exception as e:
+            print(f"UMAP fitting failed: {e}")
+            raise
+
+    def cluster_high_dimensional_features(self, min_cluster_size: int = 10, 
+                                        min_samples: int = 5) -> np.ndarray:
         """
-        if self.umap_embedding is None:
-            raise ValueError("No UMAP embedding. Call fit_umap first.")
+        Perform HDBSCAN clustering on high-dimensional features (before UMAP).
         
-        # Grid search for best GMM parameters
-        param_grid = {
-            "n_components": range(n_components_range[0], n_components_range[1] + 1),
-            "covariance_type": ["spherical", "tied", "diag", "full"],
-        }
+        Args:
+            min_cluster_size: Minimum cluster size for HDBSCAN
+            min_samples: Minimum samples for HDBSCAN
+            
+        Returns:
+            Cluster labels for each sample
+        """
+        if self.features is None:
+            raise ValueError("No features extracted. Call extract_features first.")
         
-        def gmm_bic_score(estimator, X):
-            return -estimator.bic(X)
+        print(f"Performing HDBSCAN clustering on high-dimensional features...")
+        print(f"Feature space shape: {self.features.shape}")
+        print(f"Parameters: min_cluster_size={min_cluster_size}, min_samples={min_samples}")
         
-        grid_search = GridSearchCV(
-            GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score
-        )
-        grid_search.fit(self.umap_embedding)
-        
-        # Fit best GMM
-        best_gmm = GaussianMixture(
-            n_components=grid_search.best_params_["n_components"],
-            covariance_type=grid_search.best_params_["covariance_type"]
-        )
-        best_gmm.fit(self.umap_embedding)
-        
-        return best_gmm.predict(self.umap_embedding)
+        try:
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples,
+                metric='euclidean'
+            )
+            
+            self.high_dim_clusters = clusterer.fit_predict(self.features)
+            n_clusters = len(set(self.high_dim_clusters)) - (1 if -1 in self.high_dim_clusters else 0)
+            n_noise = list(self.high_dim_clusters).count(-1)
+            
+            print(f"HDBSCAN clustering completed.")
+            print(f"Found {n_clusters} clusters with {n_noise} noise points")
+            
+            return self.high_dim_clusters
+            
+        except Exception as e:
+            print(f"HDBSCAN clustering failed: {e}")
+            # Return all points as noise if clustering fails
+            self.high_dim_clusters = np.full(len(self.features), -1)
+            print("Assigning all points as noise due to clustering failure")
+            return self.high_dim_clusters
 
     def create_interpretability_dataframe(self, predictions: np.ndarray, labels: np.ndarray,
                                     data_loader, sample_indices: Optional[np.ndarray] = None,
@@ -356,7 +460,12 @@ class UMAPInterpreter:
         df.loc[(df['true_label'] == 0) & (df['prediction'] == 1), 'class_type'] = 'False Positive'
         df.loc[(df['true_label'] == 1) & (df['prediction'] == 0), 'class_type'] = 'False Negative'
         
-        # Add embeddable images if we can extract them from data_loader
+        # Add high-dimensional clusters if available
+        if self.high_dim_clusters is not None:
+            cluster_strings = np.where(self.high_dim_clusters == -1, "Noise", self.high_dim_clusters.astype(str))
+            df['high_dim_cluster'] = cluster_strings
+        
+        # Add embeddable images
         print("Creating embeddable images for hover tooltips...")
         images = []
         current_idx = 0
@@ -392,58 +501,5 @@ class UMAPInterpreter:
         if additional_features:
             for key, values in additional_features.items():
                 df[key] = values[sample_indices]
-        
-        return df
-    
-    def add_clustering_to_dataframe(self, df: pd.DataFrame, 
-                                  n_components_range: Tuple[int, int] = (5, 15)) -> pd.DataFrame:
-        """Add clustering information to the DataFrame using Gaussian Mixture Model.
-        
-        Performs GMM clustering on the UMAP embedding and adds cluster labels
-        to the DataFrame.
-        
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Input DataFrame with UMAP coordinates
-        n_components_range : tuple of int, default=(5, 15)
-            Range of components to try for GMM optimization
-            
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with additional 'cluster' column containing string labels
-            
-        Raises
-        ------
-        ValueError
-            If no UMAP embedding exists
-        """
-        if self.umap_embedding is None:
-            raise ValueError("No UMAP embedding. Call fit_umap first.")
-        
-        # Grid search for best GMM parameters
-        param_grid = {
-            "n_components": range(n_components_range[0], n_components_range[1] + 1),
-            "covariance_type": ["spherical", "tied", "diag", "full"],
-        }
-        
-        def gmm_bic_score(estimator, X):
-            return -estimator.bic(X)
-        
-        grid_search = GridSearchCV(
-            GaussianMixture(), param_grid=param_grid, scoring=gmm_bic_score
-        )
-        grid_search.fit(self.umap_embedding)
-        
-        # Fit best GMM
-        best_gmm = GaussianMixture(
-            n_components=grid_search.best_params_["n_components"],
-            covariance_type=grid_search.best_params_["covariance_type"]
-        )
-        best_gmm.fit(self.umap_embedding)
-        
-        # Predict clusters
-        df['cluster'] = best_gmm.predict(self.umap_embedding).astype(str)
         
         return df

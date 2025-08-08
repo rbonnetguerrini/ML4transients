@@ -10,6 +10,7 @@ import sys
 import torch
 import numpy as np
 import gc
+import time
 from torch.utils.data import DataLoader
 
 sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')
@@ -39,6 +40,8 @@ def parse_args():
                        help="Run inference if not available (requires weights-path)")
     parser.add_argument("--interpretability", action="store_true",
                        help="Run UMAP-based interpretability analysis")
+    parser.add_argument("--optimize-umap", action="store_true",
+                       help="Optimize UMAP parameters during interpretability analysis")
     parser.add_argument("--port", type=int, default=5006,
                        help="Port for Bokeh server (default: 5006)")
     
@@ -245,6 +248,8 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
 def main():
     args = parse_args()
     
+    # Start overall timing
+    start_time = time.time()
     # Validate arguments
     if not args.weights_path and not args.model_hash:
         print("Error: Must provide either --weights-path or --model-hash")
@@ -255,12 +260,17 @@ def main():
         return
     
     # Load configuration
+    print("Loading configuration...")
+    step_start = time.time()
     config = load_evaluation_config(Path(args.config))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Configuration loaded in {time.time() - step_start:.2f}s")
     
     print("Loading dataset...")
+    step_start = time.time()
     dataset_loader = DatasetLoader(args.data_path)
+    print(f"Dataset loaded in {time.time() - step_start:.2f}s")
     
     # Show available inference results if using model_hash
     if args.model_hash:
@@ -273,30 +283,36 @@ def main():
     
     # Check for inference results
     print("Checking inference results...")
+    step_start = time.time()
     inference_results = collect_inference_results(
         dataset_loader, 
         weights_path=args.weights_path, 
         visits=visits_to_eval, 
         model_hash=args.model_hash
     )
+    print(f"Inference results collection completed in {time.time() - step_start:.2f}s")
     
     if inference_results is None:
         if args.run_inference and args.weights_path:
             print("Running inference for missing visits...")
+            step_start = time.time()
             # Run inference for all originally requested visits
             inference_results = dataset_loader.run_inference_all_visits(
                 args.weights_path, force=False
             )
+            print(f"Inference completed in {time.time() - step_start:.2f}s")
             
             # After running inference, collect results again
             if inference_results:
                 print("Re-collecting inference results after running inference...")
+                step_start = time.time()
                 inference_results = collect_inference_results(
                     dataset_loader, 
                     weights_path=args.weights_path, 
                     visits=visits_to_eval, 
                     model_hash=args.model_hash
                 )
+                print(f"Re-collection completed in {time.time() - step_start:.2f}s")
         else:
             print("Evaluation stopped.")
             if args.weights_path and not args.run_inference:
@@ -306,19 +322,25 @@ def main():
             return
     
     # Update visits_to_eval to only include visits with successful inference
-    if inference_results:
-        actual_visits = list(inference_results.keys())
-        if set(actual_visits) != set(visits_to_eval):
-            print(f"\nNote: Evaluation will proceed with {len(actual_visits)} visits instead of {len(visits_to_eval)} originally requested")
-            visits_to_eval = actual_visits
+    if inference_results is None:
+        print("No inference results found, evaluation cannot proceed.")
+        return
+    actual_visits = list(inference_results.keys())
+    if set(actual_visits) != set(visits_to_eval):
+        print(f"\nNote: Evaluation will proceed with {len(actual_visits)} visits instead of {len(visits_to_eval)} originally requested")
+        visits_to_eval = actual_visits
     
     # Aggregate results across visits
     print("Aggregating results...")
+    step_start = time.time()
     predictions, labels, source_ids = aggregate_results(inference_results)
+    print(f"Results aggregation completed in {time.time() - step_start:.2f}s")
     
     # Create metrics evaluation
     print("Computing evaluation metrics...")
+    step_start = time.time()
     metrics = EvaluationMetrics(predictions, labels)
+    print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
     # Determine model name for dashboard title
     if args.weights_path:
@@ -328,11 +350,13 @@ def main():
     
     # Create metrics dashboard
     print("Creating metrics dashboard...")
+    step_start = time.time()
     metrics_dashboard = create_evaluation_dashboard(
         metrics, 
         output_path=output_dir / "metrics_dashboard.html",
         title=f"Model Evaluation - {model_name}"
     )
+    print(f"Metrics dashboard created in {time.time() - step_start:.2f}s")
     
     # Print summary
     summary = metrics.summary()
@@ -353,16 +377,23 @@ def main():
             print("Warning: Interpretability analysis requires --weights-path, skipping...")
         else:
             print("\nRunning interpretability analysis...")
+            interp_start = time.time()
             
             try:
                 # Create data loader for UMAP analysis
+                print("Creating evaluation data loader...")
+                step_start = time.time()
                 eval_data_loader = create_evaluation_data_loader(
                     dataset_loader, visits_to_eval, 
                     max_samples=config.get('interpretability', {}).get('max_samples', 3000)
                 )
+                print(f"Data loader created in {time.time() - step_start:.2f}s")
                 
                 # Initialize UMAP interpreter
+                print("Initializing UMAP interpreter...")
+                step_start = time.time()
                 interpreter = UMAPInterpreter(args.weights_path)
+                print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
                 
                 # Get additional features if specified in config
                 additional_features = {}
@@ -370,7 +401,20 @@ def main():
                     # Add SNR or other features here
                     pass
                 
+                # Update config with UMAP optimization from command line
+                interp_config = config.copy()
+                if 'interpretability' not in interp_config:
+                    interp_config['interpretability'] = {}
+                if 'umap' not in interp_config['interpretability']:
+                    interp_config['interpretability']['umap'] = {}
+                
+                # Override UMAP optimization from command line
+                if args.optimize_umap:
+                    interp_config['interpretability']['umap']['optimize_params'] = True
+                
                 # Create interpretability dashboard with configuration
+                print("Creating interpretability dashboard...")
+                step_start = time.time()
                 interp_dashboard = create_interpretability_dashboard(
                     interpreter,
                     eval_data_loader,
@@ -378,8 +422,10 @@ def main():
                     labels[:len(eval_data_loader.dataset)],
                     output_path=output_dir / "interpretability_dashboard.html",
                     additional_features=additional_features,
-                    config=config
+                    config=interp_config
                 )
+                print(f"Interpretability dashboard created in {time.time() - step_start:.2f}s")
+                print(f"Total interpretability analysis time: {time.time() - interp_start:.2f}s")
                 
                 print(f"Interpretability dashboard saved to {output_dir / 'interpretability_dashboard.html'}")
                 
@@ -398,6 +444,8 @@ def main():
                     torch.cuda.empty_cache()
 
     # Save detailed results
+    print("Saving evaluation results...")
+    step_start = time.time()
     results_file = output_dir / "evaluation_results.yaml"
     eval_data = {
         'visits_evaluated': visits_to_eval,
@@ -413,8 +461,12 @@ def main():
     
     with open(results_file, 'w') as f:
         yaml.dump(eval_data, f)
+    print(f"Results saved in {time.time() - step_start:.2f}s")
     
+    # Final timing summary
+    total_time = time.time() - start_time
     print(f"\nEvaluation complete!")
+    print(f"Total execution time: {total_time:.2f}s ({total_time/60:.1f} minutes)")
     print(f"Results saved to: {output_dir}")
     print(f"Open metrics dashboard: file://{output_dir / 'metrics_dashboard.html'}")
     if args.interpretability and args.weights_path:
