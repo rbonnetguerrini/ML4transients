@@ -74,11 +74,14 @@ def embeddable_image(image_array: np.ndarray) -> str:
     return f"data:image/png;base64,{img_str}"
 
 class UMAPInterpreter:
-    """Class for UMAP-based model interpretability analysis (computation only).
-    
-    Provides tools for extracting features from neural network layers,
-    applying UMAP dimensionality reduction, and creating interpretable
-    visualizations of model behavior.
+    """Encapsulates feature extraction + UMAP embedding + optional clustering.
+
+    Workflow
+    --------
+    1. extract_features()
+    2. fit_umap()
+    3. (optional) cluster_high_dimensional_features()
+    4. create_interpretability_dataframe()
     """
     
     def __init__(self, model_path: str, device: Optional[torch.device] = None):
@@ -160,19 +163,31 @@ class UMAPInterpreter:
         """
         self.hook_features = output.detach()
     
-    def extract_features(self, data_loader, layer_name: str = "fc1", 
+    def extract_features(self, data_loader, layer_name: str = "fc1",
                     max_samples: Optional[int] = None, random_state: int = 42) -> np.ndarray:
-        """
-        Extract features from specified layer of the model.
-        
-        Args:
-            data_loader: DataLoader with input data
-            layer_name: Which layer to extract features from
-            max_samples: Maximum number of samples to extract for UMAP computation (None for all)
-            random_state: Random seed for sampling
-            
-        Returns:
-            Extracted features as numpy array
+        """Extract flattened activations from a target layer.
+
+        Parameters
+        ----------
+        data_loader : DataLoader
+            Source of input tensors.
+        layer_name : str
+            Layer identifier ('conv1','conv2','fc1','flatten','output').
+        max_samples : int, optional
+            If set, random subset used for UMAP (sampling after full collection).
+        random_state : int
+            Seed for reproducible subsampling.
+
+        Returns
+        -------
+        np.ndarray
+            Feature matrix (n_selected, n_features).
+
+        Notes
+        -----
+        Current implementation collects all features before subsampling.
+        For extremely large datasets, a streaming reservoir approach could
+        replace this to reduce peak memory usage.
         """
         print(f"Extracting features from layer: {layer_name}")
         if max_samples is not None:
@@ -253,16 +268,9 @@ class UMAPInterpreter:
     
     def optimize_umap_parameters(self, param_grid: Dict = None, 
                                 n_samples: int = 1000, random_state: int = 42) -> Dict:
-        """
-        Find optimal UMAP parameters using grid search.
-        
-        Args:
-            param_grid: Dictionary of parameters to search over
-            n_samples: Number of samples to use for optimization (for speed)
-            random_state: Random seed
-            
-        Returns:
-            Dictionary of best parameters found
+        """Grid-search heuristic for approximate UMAP parameter selection.
+
+        Scoring metric: mean std-dev of embedding axes (spread proxy).
         """
         if self.features is None:
             raise ValueError("No features extracted. Call extract_features first.")
@@ -337,19 +345,7 @@ class UMAPInterpreter:
     def fit_umap(self, n_neighbors: int = 15, min_dist: float = 0.1, 
                  n_components: int = 2, random_state: int = 42,
                  optimize_params: bool = False) -> np.ndarray:
-        """
-        Fit UMAP on extracted features.
-        
-        Args:
-            n_neighbors: UMAP n_neighbors parameter
-            min_dist: UMAP min_dist parameter  
-            n_components: Number of UMAP dimensions
-            random_state: Random seed
-            optimize_params: Whether to optimize parameters first
-            
-        Returns:
-            UMAP embedding
-        """
+        """Fit UMAP on previously extracted features (with optional param search)."""
         if self.features is None:
             raise ValueError("No features extracted. Call extract_features first.")
         
@@ -434,19 +430,7 @@ class UMAPInterpreter:
     def create_interpretability_dataframe(self, predictions: np.ndarray, labels: np.ndarray,
                                 data_loader, sample_indices: Optional[np.ndarray] = None,
                                 additional_features: Optional[Dict[str, np.ndarray]] = None) -> pd.DataFrame:
-        """
-        Create interpretability DataFrame with UMAP coordinates and additional information.
-        
-        Args:
-            predictions: Model predictions
-            labels: True labels
-            data_loader: DataLoader with input data
-            sample_indices: Indices of samples to include (optional, uses stored indices if None)
-            additional_features: Additional features to include (e.g., SNR)
-            
-        Returns:
-            DataFrame with UMAP coordinates and additional information
-        """
+        """Build DataFrame joining UMAP output + classification + hover images."""
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         

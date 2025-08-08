@@ -50,17 +50,17 @@ def parse_args():
     return parser.parse_args()
 
 def load_evaluation_config(config_path: Path) -> dict:
-    """Load evaluation configuration.
-    
+    """Load YAML evaluation configuration.
+
     Parameters
     ----------
     config_path : Path
-        Path to YAML configuration file
-        
+        Path to YAML config.
+
     Returns
     -------
     dict
-        Loaded configuration dictionary
+        Parsed configuration dictionary.
     """
     # Load configuration
     with open(config_path, 'r') as f:
@@ -68,29 +68,11 @@ def load_evaluation_config(config_path: Path) -> dict:
 
 def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str = None,
                             visits: list = None, model_hash: str = None) -> dict:
-    """Collect inference results for specified visits.
-    
-    Parameters
-    ----------
-    dataset_loader : DatasetLoader
-        Dataset loader instance
-    weights_path : str, optional
-        Path to model weights for new inference
-    visits : list, optional
-        List of visit numbers to collect. If None, uses all visits
-    model_hash : str, optional
-        Model hash for loading existing inference results
-        
-    Returns
-    -------
-    dict or None
-        Dictionary mapping visit numbers to InferenceLoader instances,
-        or None if collection failed or user cancelled
-        
-    Raises
-    ------
-    ValueError
-        If neither weights_path nor model_hash is provided
+    """Collect (or discover) inference loaders for requested visits.
+
+    Notes
+    -----
+    If some visits are missing, user is prompted (unless non-interactive usage).
     """
     # Validate arguments
     if not weights_path and not model_hash:
@@ -174,21 +156,12 @@ def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str =
     return results
 
 def aggregate_results(inference_results: dict) -> tuple:
-    """Aggregate predictions and labels across all visits.
-    
-    Parameters
-    ----------
-    inference_results : dict
-        Dictionary mapping visit numbers to InferenceLoader instances
-        
+    """Concatenate predictions / labels / ids across visits.
+
     Returns
     -------
-    predictions : np.ndarray
-        Concatenated predictions from all visits
-    labels : np.ndarray
-        Concatenated true labels from all visits
-    source_ids : np.ndarray
-        Concatenated diaSourceId arrays from all visits
+    tuple
+        (predictions, labels, source_ids)
     """
     all_predictions = []
     all_labels = []
@@ -213,22 +186,7 @@ def aggregate_results(inference_results: dict) -> tuple:
 
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000) -> DataLoader:
-    """Create a DataLoader for interpretability analysis.
-    
-    Parameters
-    ----------
-    dataset_loader : DatasetLoader
-        Dataset loader instance
-    visits : list
-        List of visit numbers to include
-    max_samples : int, default=3000
-        Maximum number of samples (not currently enforced)
-        
-    Returns
-    -------
-    DataLoader
-        Configured DataLoader with optimized settings for evaluation
-    """
+    """Return DataLoader tailored for feature extraction / interpretability."""
     print(f"Creating evaluation dataset from {len(visits)} visits...")
     
     # Create inference dataset for the specified visits
@@ -248,6 +206,14 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
     )
 
 def main():
+    """Orchestrate full evaluation:
+       1. Load config + dataset
+       2. Collect or run inference
+       3. Aggregate results + compute metrics (cached)
+       4. Build dashboards
+       5. Optional interpretability (UMAP)
+       6. Persist summary
+    """
     args = parse_args()
     
     # Start overall timing
@@ -361,7 +327,7 @@ def main():
     print(f"Metrics dashboard created in {time.time() - step_start:.2f}s")
     
     # Print summary
-    summary = metrics.summary()
+    summary = metrics.summary()  # Single call (cached) used for printing + serialization
     print("\n" + "="*50)
     print("EVALUATION SUMMARY")
     print("="*50)
@@ -372,6 +338,13 @@ def main():
     for metric, value in summary.items():
         print(f"{metric.replace('_', ' ').title()}: {value:.4f}")
     print("="*50)
+    
+    # After dashboards, optionally release large arrays to free memory before interpretability
+    # (Especially useful on constrained systems)
+    del predictions
+    del labels
+    del source_ids
+    import gc; gc.collect()
     
     # Run interpretability analysis if requested
     if args.interpretability:
@@ -457,7 +430,7 @@ def main():
     results_file = output_dir / "evaluation_results.yaml"
     eval_data = {
         'visits_evaluated': visits_to_eval,
-        'total_samples': len(predictions),
+        'total_samples': metrics.get_confusion_matrix_stats()['total_samples'],
         'metrics': summary,
         'confusion_matrix': metrics.confusion_mat.tolist()
     }

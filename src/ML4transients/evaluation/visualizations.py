@@ -366,10 +366,25 @@ class UMAPVisualizer:
         return p
 
 # Dashboard creation functions
-def create_evaluation_dashboard(metrics: EvaluationMetrics, 
+def create_evaluation_dashboard(metrics: EvaluationMetrics,
                               output_path: Optional[Path] = None,
                               title: str = "Model Evaluation Dashboard") -> Tabs:
-    """Create a complete evaluation dashboard with multiple tabs."""
+    """Assemble interactive evaluation dashboard.
+
+    Parameters
+    ----------
+    metrics : EvaluationMetrics
+        Metrics object (with or without probability scores).
+    output_path : Path, optional
+        If provided, writes HTML file.
+    title : str
+        Dashboard title.
+
+    Returns
+    -------
+    Tabs
+        Bokeh Tabs object.
+    """
     plotter = BokehEvaluationPlots()
     
     # Tab 1: Overview with confusion matrix and summary
@@ -415,20 +430,13 @@ def create_interpretability_dashboard(interpreter,
                                     output_path: Optional[Path] = None,
                                     additional_features: Optional[Dict[str, np.ndarray]] = None,
                                     config: Optional[Dict] = None) -> Tabs:
-    """
-    Create complete interpretability dashboard.
-    
-    Args:
-        interpreter: UMAPInterpreter instance
-        data_loader: DataLoader with evaluation data
-        predictions: Model predictions
-        labels: True labels
-        output_path: Path to save dashboard
-        additional_features: Additional features for visualization (e.g., SNR)
-        config: Configuration dictionary with interpretability settings
-        
-    Returns:
-        Bokeh Tabs object with dashboard
+    """Create UMAP-based interpretability dashboard.
+
+    Notes
+    -----
+    Separates sample count for:
+      - UMAP computation (max_samples)
+      - Visualization (max_visualization_samples)
     """
     # Get configuration parameters
     if config and 'interpretability' in config:
