@@ -26,7 +26,7 @@ evaluation:
 # Interpretability analysis settings
 interpretability:
   enabled: true
-  max_samples: 3000  # Maximum samples for UMAP analysis
+  max_samples: 30000  # Maximum samples for UMAP analysis
   
   # Feature extraction settings
   feature_extraction:
@@ -37,7 +37,8 @@ interpretability:
     # - "flatten": After flattening convolution features
     # - "fc1": After first fully connected layer + ReLU + dropout (recommended)
     # - "output": Final model output (1D logits)
-    max_visualization_samples: 1000  # Max samples to show in plots (for performance)
+    max_visualization_samples: 300  # Max samples to show in plots (for performance)
+    random_state: 42  # Add this for reproducible sampling
   
   # UMAP parameters
   umap:
@@ -45,12 +46,29 @@ interpretability:
     min_dist: 0.1
     n_components: 2
     random_state: 42
+    optimize_params: false  # Set to true to optimize UMAP parameters
     
-  # Clustering parameters
-  clustering:
-    method: "gmm"  # Gaussian Mixture Model
-    n_components_range: [5, 15]
+  # High-dimensional clustering parameters (performed before UMAP)
+  high_dim_clustering:
+    enabled: false  # Set to true to enable HDBSCAN clustering on high-dimensional features
+    # HDBSCAN parameters for high-dimensional feature clustering
+    min_cluster_size: 10
+    min_samples: 5
     
+  # UMAP clustering parameters (performed after UMAP embedding)
+  umap_clustering:
+    use_hdbscan: false  # Set to true to use HDBSCAN instead of GMM
+    
+    # HDBSCAN parameters (used if use_hdbscan: true)
+    hdbscan:
+      min_cluster_size: 50
+      min_samples: null  # If null, defaults to min_cluster_size
+      cluster_selection_epsilon: 0.0
+    
+    # GMM parameters (used if use_hdbscan: false)
+    gmm:
+      n_components_range: [5, 15]  # Range for grid search
+      
   # Features to analyze
   features:
     - snr  # If available in your dataset

@@ -366,10 +366,25 @@ class UMAPVisualizer:
         return p
 
 # Dashboard creation functions
-def create_evaluation_dashboard(metrics: EvaluationMetrics, 
+def create_evaluation_dashboard(metrics: EvaluationMetrics,
                               output_path: Optional[Path] = None,
                               title: str = "Model Evaluation Dashboard") -> Tabs:
-    """Create a complete evaluation dashboard with multiple tabs."""
+    """Assemble interactive evaluation dashboard.
+
+    Parameters
+    ----------
+    metrics : EvaluationMetrics
+        Metrics object (with or without probability scores).
+    output_path : Path, optional
+        If provided, writes HTML file.
+    title : str
+        Dashboard title.
+
+    Returns
+    -------
+    Tabs
+        Bokeh Tabs object.
+    """
     plotter = BokehEvaluationPlots()
     
     # Tab 1: Overview with confusion matrix and summary
@@ -415,98 +430,122 @@ def create_interpretability_dashboard(interpreter,
                                     output_path: Optional[Path] = None,
                                     additional_features: Optional[Dict[str, np.ndarray]] = None,
                                     config: Optional[Dict] = None) -> Tabs:
-    """
-    Create complete interpretability dashboard.
-    
-    Args:
-        interpreter: UMAPInterpreter instance
-        data_loader: DataLoader with evaluation data
-        predictions: Model predictions
-        labels: True labels
-        output_path: Path to save dashboard
-        additional_features: Additional features for visualization (e.g., SNR)
-        config: Configuration dictionary with interpretability settings
-        
-    Returns:
-        Bokeh Tabs object with dashboard
+    """Create UMAP-based interpretability dashboard.
+
+    Notes
+    -----
+    Separates sample count for:
+      - UMAP computation (max_samples)
+      - Visualization (max_visualization_samples)
     """
     # Get configuration parameters
     if config and 'interpretability' in config:
         interp_config = config['interpretability']
         feature_config = interp_config.get('feature_extraction', {})
         layer_name = feature_config.get('layer_name', 'fc1')
-        max_viz_samples = feature_config.get('max_visualization_samples', 1000)
+        max_umap_samples = interp_config.get('max_samples', 30000)  # Main parameter for UMAP computation
+        max_viz_samples = feature_config.get('max_visualization_samples', 100)  # For final visualization
         umap_config = interp_config.get('umap', {})
+        clustering_config = interp_config.get('clustering', {})
     else:
         layer_name = 'fc1'
-        max_viz_samples = 1000
+        max_umap_samples = 30000
+        max_viz_samples = 100
         umap_config = {}
+        clustering_config = {}
     
-    # Extract features and fit UMAP
-    print("Extracting features...")
-    interpreter.extract_features(data_loader, layer_name=layer_name)
-    print("Fitting UMAP...")
-    umap_embedding = interpreter.fit_umap(
-        n_neighbors=umap_config.get('n_neighbors', 15),
-        min_dist=umap_config.get('min_dist', 0.1),
-        n_components=umap_config.get('n_components', 2),
-        random_state=umap_config.get('random_state', 42)
-    )
-    
-    # Create visualization dataframe (using interpreter's method)
-    print(f"Creating visualization dataframe (max {max_viz_samples} samples)...")
-    df = interpreter.create_interpretability_dataframe(
-        predictions, labels, data_loader, 
-        additional_features=additional_features
-    )
-    
-    # Add clustering
-    print("Performing clustering...")
-    clustering_config = config.get('interpretability', {}).get('clustering', {})
-    n_components_range = clustering_config.get('n_components_range', [5, 15])
-    df = interpreter.add_clustering_to_dataframe(df, tuple(n_components_range))
-    
-    print(f"Created visualization dataframe with {len(df)} samples using {layer_name} features")
-    
-    # Create visualizer and plots
-    visualizer = UMAPVisualizer()
-    tabs = []
-    
-    # Tab 1: Classification results
-    title_suffix = f" (Layer: {layer_name})"
-    class_plot = visualizer.plot_classification_results(
-        df, title=f"UMAP: Classification Results{title_suffix}"
-    )
-    tabs.append(TabPanel(child=class_plot, title="Classification Results"))
-    
-    # Tab 2: Feature-based coloring (if additional features provided)
-    if additional_features:
-        feature_plots = []
-        for feature_name in additional_features.keys():
-            if feature_name in df.columns:
-                plot = visualizer.plot_feature_coloring(
-                    df, feature_name, title=f"UMAP: {feature_name}{title_suffix}"
-                )
-                feature_plots.append(plot)
+    try:
+        # Extract features using max_umap_samples for UMAP computation
+        print("Extracting features...")
+        interpreter.extract_features(data_loader, layer_name=layer_name, 
+                                   max_samples=max_umap_samples)
         
-        if feature_plots:
-            if len(feature_plots) == 1:
-                feature_layout = feature_plots[0]
-            else:
-                feature_layout = gridplot([feature_plots[i:i+2] for i in range(0, len(feature_plots), 2)])
-            tabs.append(TabPanel(child=feature_layout, title="Feature Analysis"))
-    
-    # Tab 3: Clustering
-    cluster_plot = visualizer.plot_clusters(
-        df, title=f"UMAP: Clusters{title_suffix}"
-    )
-    tabs.append(TabPanel(child=cluster_plot, title="Clusters"))
-    
-    dashboard = Tabs(tabs=tabs)
-    
-    if output_path:
-        output_file(str(output_path))
-        save(dashboard)
-        print(f"Interpretability dashboard saved to {output_path}")
-    
-    return dashboard
+        # Fit UMAP with optional parameter optimization
+        print("Fitting UMAP...")
+        optimize_umap = umap_config.get('optimize_params', False)
+        umap_embedding = interpreter.fit_umap(
+            n_neighbors=umap_config.get('n_neighbors', 15),
+            min_dist=umap_config.get('min_dist', 0.1),
+            n_components=umap_config.get('n_components', 2),
+            random_state=umap_config.get('random_state', 42),
+            optimize_params=optimize_umap
+        )
+        
+        # Perform high-dimensional clustering (optional)
+        clustering_enabled = clustering_config.get('enabled', False)
+        if clustering_enabled:
+            print("Performing high-dimensional clustering...")
+            min_cluster_size = clustering_config.get('min_cluster_size', 10)
+            min_samples = clustering_config.get('min_samples', 5)
+            interpreter.cluster_high_dimensional_features(
+                min_cluster_size=min_cluster_size,
+                min_samples=min_samples
+            )
+        else:
+            print("High-dimensional clustering disabled - skipping clustering step")
+        
+        # Create visualization dataframe - potentially subsample further for visualization
+        print(f"Creating visualization dataframe...")
+        df = interpreter.create_interpretability_dataframe(
+            predictions, labels, data_loader, 
+            additional_features=additional_features
+        )
+        
+        # Subsample for visualization if needed (separate from UMAP computation)
+        if len(df) > max_viz_samples:
+            print(f"Subsampling {max_viz_samples} from {len(df)} samples for visualization performance")
+            df = df.sample(n=max_viz_samples, random_state=42).copy()
+        
+        print(f"Created visualization dataframe with {len(df)} samples using {layer_name} features")
+        print(f"UMAP was computed on up to {max_umap_samples} samples")
+        
+        # Create visualizer and plots
+        visualizer = UMAPVisualizer()
+        tabs = []
+        
+        # Tab 1: Classification results
+        title_suffix = f" (Layer: {layer_name})"
+        class_plot = visualizer.plot_classification_results(
+            df, title=f"UMAP: Classification Results{title_suffix}"
+        )
+        tabs.append(TabPanel(child=class_plot, title="Classification Results"))
+        
+        # Tab 2: Feature-based coloring (if additional features provided)
+        if additional_features:
+            feature_plots = []
+            for feature_name in additional_features.keys():
+                if feature_name in df.columns:
+                    plot = visualizer.plot_feature_coloring(
+                        df, feature_name, title=f"UMAP: {feature_name}{title_suffix}"
+                    )
+                    feature_plots.append(plot)
+            
+            if feature_plots:
+                if len(feature_plots) == 1:
+                    feature_layout = feature_plots[0]
+                else:
+                    feature_layout = gridplot([feature_plots[i:i+2] for i in range(0, len(feature_plots), 2)])
+                tabs.append(TabPanel(child=feature_layout, title="Feature Analysis"))
+        
+        # Tab 3: High-dimensional clusters (if available and enabled)
+        if clustering_enabled and 'high_dim_cluster' in df.columns:
+            cluster_plot = visualizer.plot_clusters(
+                df, cluster_column='high_dim_cluster',
+                title=f"UMAP: High-Dimensional Clusters{title_suffix}"
+            )
+            tabs.append(TabPanel(child=cluster_plot, title="High-Dim Clusters"))
+        
+        dashboard = Tabs(tabs=tabs)
+        
+        if output_path:
+            output_file(str(output_path))
+            save(dashboard)
+            print(f"Interpretability dashboard saved to {output_path}")
+        
+        return dashboard
+        
+    except Exception as e:
+        print(f"Error creating interpretability dashboard: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
