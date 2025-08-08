@@ -12,11 +12,9 @@ sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')
 from ML4transients.training.pytorch_dataset import PytorchDataset
 from ML4transients.training.trainers import get_trainer
 from ML4transients.data_access.dataset_loader import DatasetLoader
+from ML4transients.evaluation import infer
 
-def load_config(config_path):
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+from ML4transients.utils import load_config
 
 def create_data_loaders(config):
     """Create train/val/test data loaders"""
@@ -103,9 +101,18 @@ def main():
     
     # Train model
     print("Starting training...")
-    best_acc = trainer.fit(train_loader, test_loader, val_loader)
+    best_val_acc = trainer.fit(train_loader, val_loader, test_loader)
     
-    print(f"Training completed. Best accuracy: {best_acc:.4f}")
+    print(f"Training completed. Best accuracy: {best_val_acc:.4f}")
+
+    if test_loader:  
+        test_results = infer(test_loader, trainer= trainer, return_preds=True, compute_metrics=True)
+        print(f"Accuracy on the validation: {test_results['accuracy']}")
+        print(f"TP on the validation: {test_results['confusion_matrix'][0][0]}")
+        print(f"FP on the validation: {test_results['confusion_matrix'][0][1]}")
+        print(f"FN on the validation: {test_results['confusion_matrix'][1][0]}")
+        print(f"TN on the validation: {test_results['confusion_matrix'][1][1]}")
+
 
 if __name__ == "__main__":
     main()

@@ -53,12 +53,7 @@ class BaseTrainer(ABC):
             train_metrics = self.train_one_epoch(epoch, train_loader)
             
             # Evaluation
-            test_metrics = self.evaluate(test_loader)
-            
-            # Validation if available
-            val_metrics = None
-            if val_loader is not None:
-                val_metrics = self.evaluate(val_loader)
+            val_metrics = self.evaluate(val_loader)
             
             # TensorBoard logging
             self.log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
@@ -67,8 +62,8 @@ class BaseTrainer(ABC):
             self.log_epoch(epoch, train_metrics, test_metrics, val_metrics)
             
             # Save best model
-            if test_metrics['accuracy'] > best_acc:
-                best_acc = test_metrics['accuracy']
+            if val_metrics['accuracy'] > best_acc:
+                best_acc = val_metrics['accuracy']
                 self.save_checkpoint(epoch, 'best')
         
         # Save final model and close TensorBoard
