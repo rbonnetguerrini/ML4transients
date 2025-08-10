@@ -6,6 +6,7 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 from .models import CustomCNN
 from .losses import get_loss_function
+import torch.nn.functional as F
 
 class BaseTrainer(ABC):
     """Base trainer class"""
@@ -17,6 +18,7 @@ class BaseTrainer(ABC):
         # Setup TensorBoard
         self.setup_tensorboard()
         self.setup_training()
+        self._init_early_stopping()
     
     def setup_tensorboard(self):
         """Setup TensorBoard logging"""
@@ -29,6 +31,37 @@ class BaseTrainer(ABC):
         else:
             self.writer = None
     
+    def _init_early_stopping(self):
+        es_cfg = self.config.get('early_stopping', {})
+        self.es_enabled = es_cfg.get('enabled', False)
+        self.es_monitor = es_cfg.get('monitor', 'loss')
+        self.es_mode = es_cfg.get('mode', 'min')
+        self.es_patience = es_cfg.get('patience', 20)  # fallback
+        self.es_patience_lr_changes = es_cfg.get('patience_lr_changes', None)
+        self.es_min_delta = es_cfg.get('min_delta', 0.0)
+        self.best_metric = float('-inf') if self.es_mode == 'max' else float('inf')
+        self.epochs_no_improve = 0
+        self.lr_change_no_improve = 0
+        self.best_epoch = -1
+        self.last_lr = None
+
+    def _is_improvement(self, current):
+        if current is None:
+            return False
+        if self.es_mode == 'max':
+            return current > self.best_metric + self.es_min_delta
+        else:
+            return current < self.best_metric - self.es_min_delta
+
+    def _get_current_lr(self):
+        if hasattr(self, 'optimizer'):
+            return self.optimizer.param_groups[0]['lr']
+        if hasattr(self, 'optimizers') and len(self.optimizers) > 0:
+            return self.optimizers[0].param_groups[0]['lr']
+        if hasattr(self, 'optimizer1'):
+            return self.optimizer1.param_groups[0]['lr']
+        return None
+
     @abstractmethod
     def setup_training(self):
         """Setup models, optimizers, loss functions"""
@@ -44,33 +77,57 @@ class BaseTrainer(ABC):
         """Evaluate model"""
         pass
     
-    def fit(self, train_loader, test_loader, val_loader=None):
-        """Main training loop"""
-        best_acc = 0.0
-        
+    def fit(self, train_loader, val_loader=None, test_loader=None):
+        """Main training loop (order: train, val, test)."""
+        # best_metric stored in self.best_metric
         for epoch in range(self.config['epochs']):
-            # Training
             train_metrics = self.train_one_epoch(epoch, train_loader)
-            
-            # Evaluation
-            val_metrics = self.evaluate(val_loader)
-            
+            val_metrics = self.evaluate(val_loader) if val_loader else {}
+            test_metrics = self.evaluate(test_loader) if test_loader else {}
+
+            # Select metrics source for monitoring
+            monitor_source = val_metrics if val_metrics else test_metrics
+            current_monitored = monitor_source.get(self.es_monitor)
+            current_lr = self._get_current_lr()
+
             # TensorBoard logging
             self.log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
-            
+
             # Console logging
             self.log_epoch(epoch, train_metrics, test_metrics, val_metrics)
-            
-            # Save best model
-            if val_metrics['accuracy'] > best_acc:
-                best_acc = val_metrics['accuracy']
-                self.save_checkpoint(epoch, 'best')
-        
-        # Save final model and close TensorBoard
+
+            # Early stopping / best checkpoint
+            if current_monitored is not None:
+                if self._is_improvement(current_monitored):
+                    self.best_metric = current_monitored
+                    self.best_epoch = epoch
+                    self.epochs_no_improve = 0
+                    self.lr_change_no_improve = 0
+                    self.save_checkpoint(epoch, 'best')
+                else:
+                    self.epochs_no_improve += 1
+                    # Count only epochs where LR changed and no improvement
+                    if self.last_lr is not None and current_lr is not None and current_lr != self.last_lr:
+                        self.lr_change_no_improve += 1
+                    # Decide stopping condition
+                    stop = False
+                    if self.es_enabled:
+                        if self.es_patience_lr_changes is not None:
+                            if self.lr_change_no_improve >= self.es_patience_lr_changes:
+                                stop = True
+                        elif self.epochs_no_improve >= self.es_patience:
+                            stop = True
+                    if stop:
+                        print(f"Early stopping at epoch {epoch+1} (best {self.es_monitor} at epoch {self.best_epoch+1})")
+                        break
+
+            self.last_lr = current_lr
+
+        # Save final model
         self.save_checkpoint(epoch, 'final')
         if self.writer:
             self.writer.close()
-        return best_acc
+        return self.best_metric if self.best_epoch >= 0 else (current_monitored if current_monitored is not None else float('nan'))
     
     def log_tensorboard(self, epoch, train_metrics, test_metrics, val_metrics=None):
         """Log metrics to TensorBoard"""
@@ -190,19 +247,25 @@ class StandardTrainer(BaseTrainer):
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         self.model.eval()
         total_correct = 0
         total_samples = 0
-        
+        total_loss = 0.0
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
+                loss = self.loss_fn(outputs, labels)
+                total_loss += loss.item()
                 preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
                 total_correct += (preds == labels).sum().item()
                 total_samples += len(labels)
-        
-        return {'accuracy': total_correct / total_samples}
+        return {
+            'accuracy': total_correct / total_samples,
+            'loss': total_loss / len(test_loader)
+        }
     
     def save_checkpoint(self, epoch, suffix):
         torch.save(self.model.state_dict(), f"{self.config.get('output_dir')}/model_{suffix}.pth")
@@ -278,7 +341,7 @@ class CoTeachingTrainer(BaseTrainer):
         total_loss1, total_loss2 = 0.0, 0.0
         
         for batch_idx, (images, labels, _) in enumerate(train_loader):
-            if batch_idx >= c('num_iter_per_epoch', float('inf')):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
                 break
                 
             images, labels = images.to(self.device), labels.to(self.device)
@@ -322,32 +385,32 @@ class CoTeachingTrainer(BaseTrainer):
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         self.model1.eval()
         self.model2.eval()
-        
-        total_correct1, total_correct2 = 0, 0
+        total_correct1 = total_correct2 = 0
         total_samples = 0
-        
+        total_loss = 0.0
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
-                
                 logits1 = self.model1(images)
                 logits2 = self.model2(images)
-                
+                loss1 = F.binary_cross_entropy_with_logits(logits1.squeeze(), labels.float())
+                loss2 = F.binary_cross_entropy_with_logits(logits2.squeeze(), labels.float())
+                total_loss += 0.5 * (loss1.item() + loss2.item())
                 preds1 = (torch.sigmoid(logits1.squeeze()) > 0.5).float()
                 preds2 = (torch.sigmoid(logits2.squeeze()) > 0.5).float()
-                
                 total_correct1 += (preds1 == labels).sum().item()
                 total_correct2 += (preds2 == labels).sum().item()
                 total_samples += len(labels)
-        
-        # Return ensemble accuracy (average of both models)
         ensemble_acc = (total_correct1 + total_correct2) / (2 * total_samples)
         return {
             'accuracy': ensemble_acc,
             'accuracy1': total_correct1 / total_samples,
-            'accuracy2': total_correct2 / total_samples
+            'accuracy2': total_correct2 / total_samples,
+            'loss': total_loss / len(test_loader)
         }
     
     def save_checkpoint(self, epoch, suffix):
@@ -439,20 +502,25 @@ class EnsembleTrainer(BaseTrainer):
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         for model in self.models:
             model.eval()
         
         ensemble_correct = 0
         total_samples = 0
-        
+        total_loss = 0.0
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
                 
                 # Get predictions from all models
                 predictions = []
+                batch_losses = []
                 for model in self.models:
                     outputs = model(images)
+                    loss = self.loss_fn(outputs, labels)
+                    batch_losses.append(loss.item())
                     preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
                     predictions.append(preds)
                 
@@ -462,8 +530,12 @@ class EnsembleTrainer(BaseTrainer):
                 
                 ensemble_correct += (ensemble_preds == labels).sum().item()
                 total_samples += len(labels)
+                total_loss += np.mean(batch_losses)
         
-        return {'accuracy': ensemble_correct / total_samples}
+        return {
+            'accuracy': ensemble_correct / total_samples,
+            'loss': total_loss / len(test_loader)
+        }
     
     def save_checkpoint(self, epoch, suffix):
         for i, model in enumerate(self.models):

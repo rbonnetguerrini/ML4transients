@@ -75,6 +75,22 @@ sbatch scripts/submit_training.sh
 ```
 Allows to submit job to your GPU. The number of workers can be change in the config, as well as all the training parameter. 
 
+## Hyperparameter Optimization:
+
+Run Bayesian optimization to find optimal hyperparameters:
+
+```sh
+# Standard CNN optimization
+sbatch scripts/submit_training.sh configs/standard_training.yaml "standard_bayes"
+
+# Ensemble optimization  
+sbatch scripts/submit_training.sh configs/ensemble_training.yaml "ensemble_bayes"
+
+# Co-teaching optimization
+sbatch scripts/submit_training.sh configs/coteaching_training.yaml "coteaching_bayes"
+```
+
+Configure search space in the config file under `bayes_search` section. Best parameters are saved to `bayes_best_params.yaml` in the output directory. Each optimization runs short trials (max_epochs) to efficiently explore hyperparameter space.
 
 ## Perform Inference: 
 
