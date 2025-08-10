@@ -45,22 +45,44 @@ def main():
     # Run inference
     print("Running inference...")
     if args.force:
-        inference_loader = dataset_loader.run_inference_all_visits(weights_path, force=True)
+        inference_results = dataset_loader.run_inference_all_visits(weights_path, force=True)
     else:
-        inference_loader = dataset_loader.check_or_run_inference(weights_path)
+        inference_results = dataset_loader.check_or_run_inference(weights_path)
     
-    if inference_loader:
+    if inference_results:
         print("Inference completed successfully!")
-        print(f"Accuracy: {inference_loader.metrics['accuracy']}")
-        print(f"Predictions shape: {inference_loader.predictions.shape}")
         
-        # Save results summary if requested
-        if save_summary:
-            summary_path = Path(weights_path) / 'inference_summary.txt'
-            with open(summary_path, 'w') as f:
-                f.write(f"Accuracy: {inference_loader.metrics['accuracy']}\n")
-                f.write(f"Predictions shape: {inference_loader.predictions.shape}\n")
-            print(f"Summary saved to: {summary_path}")
+        # Handle results - could be dict with metrics or other structure
+        if isinstance(inference_results, dict):
+            if 'accuracy' in inference_results:
+                print(f"Accuracy: {inference_results['accuracy']}")
+            if 'y_pred' in inference_results:
+                print(f"Predictions shape: {inference_results['y_pred'].shape}")
+            
+            # Save results summary if requested
+            if save_summary:
+                summary_path = Path(weights_path) / 'inference_summary.txt'
+                with open(summary_path, 'w') as f:
+                    if 'accuracy' in inference_results:
+                        f.write(f"Accuracy: {inference_results['accuracy']}\n")
+                    if 'y_pred' in inference_results:
+                        f.write(f"Predictions shape: {inference_results['y_pred'].shape}\n")
+                    if 'confusion_matrix' in inference_results:
+                        f.write(f"Confusion matrix:\n{inference_results['confusion_matrix']}\n")
+                print(f"Summary saved to: {summary_path}")
+        else:
+            # Handle other return types if needed
+            print(f"Inference results type: {type(inference_results)}")
+            if hasattr(inference_results, 'metrics'):
+                print(f"Accuracy: {inference_results.metrics['accuracy']}")
+                print(f"Predictions shape: {inference_results.predictions.shape}")
+                
+                if save_summary:
+                    summary_path = Path(weights_path) / 'inference_summary.txt'
+                    with open(summary_path, 'w') as f:
+                        f.write(f"Accuracy: {inference_results.metrics['accuracy']}\n")
+                        f.write(f"Predictions shape: {inference_results.predictions.shape}\n")
+                    print(f"Summary saved to: {summary_path}")
     else:
         print("Inference failed or no results available.")
 

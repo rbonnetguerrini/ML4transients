@@ -339,7 +339,14 @@ def main():
         print(f"{metric.replace('_', ' ').title()}: {value:.4f}")
     print("="*50)
     
-    # After dashboards, optionally release large arrays to free memory before interpretability
+    # Store predictions and labels for interpretability before deletion
+    interp_predictions = None
+    interp_labels = None
+    if args.interpretability and args.weights_path:
+        interp_predictions = predictions.copy()
+        interp_labels = labels.copy()
+    
+    # After dashboards, optionally release large arrays to save memory before interpretability
     # (Especially useful on constrained systems)
     del predictions
     del labels
@@ -399,8 +406,8 @@ def main():
                 interp_dashboard = create_interpretability_dashboard(
                     interpreter,
                     eval_data_loader,
-                    predictions[:len(eval_data_loader.dataset)],  # Match lengths
-                    labels[:len(eval_data_loader.dataset)],
+                    interp_predictions,  # Use the stored copy
+                    interp_labels,       # Use the stored copy
                     output_path=output_dir / "interpretability_dashboard.html",
                     additional_features=additional_features,
                     config=interp_config
@@ -420,6 +427,10 @@ def main():
                     del eval_data_loader
                 if 'interpreter' in locals():
                     del interpreter
+                if 'interp_predictions' in locals():
+                    del interp_predictions
+                if 'interp_labels' in locals():
+                    del interp_labels
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()

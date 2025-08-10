@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
 
-def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None):
+def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None, model_hash=None):
     """
     Run inference using a trained model on a dataset with minimal memory usage.
 
@@ -19,6 +19,7 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
         save_path: Optional path to save inference results.
         dia_source_ids: Array of diaSourceIds corresponding to the inference data.
         visit: Optional visit number for logging purposes.
+        model_hash: Optional model hash for saving in results metadata.
 
     Returns:
         Optionally returns predictions, true labels, accuracy, and confusion matrix.
@@ -102,7 +103,7 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
 
         # Save results if requested
         if save_path is not None:
-            save_inference_results(results, save_path, weights_path, dia_source_ids)
+            save_inference_results(results, save_path, weights_path, dia_source_ids, visit, model_hash)
         
         if visit is not None:
             print(f"Inference for visit {visit} completed. Accuracy: {results.get('accuracy', 'N/A'):.4f}")
