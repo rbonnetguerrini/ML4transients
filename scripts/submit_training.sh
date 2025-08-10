@@ -2,7 +2,7 @@
 #SBATCH --job-name=transient_bayes
 #SBATCH --output=logs/trainings/training_%j.out
 #SBATCH --error=logs/trainings/training_%j.err
-#SBATCH --time=08:00:00
+#SBATCH --time=20:00:00
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:v100:1
 #SBATCH --cpus-per-task=5

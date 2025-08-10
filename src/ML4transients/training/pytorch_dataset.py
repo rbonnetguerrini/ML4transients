@@ -464,6 +464,16 @@ class PytorchDataset(Dataset):
         """
         return self.dia_source_ids[idx]
     
+    def get_dia_source_ids(self):
+        """Get all diaSourceIds in the dataset.
+        
+        Returns
+        -------
+        np.ndarray
+            Array of all diaSourceIds in the dataset
+        """
+        return self.dia_source_ids
+    
     def __repr__(self):
         if hasattr(self, '_sample_index') and self.images is None:
             return (f"PytorchDataset({len(self)} samples, lazy loading)\n"

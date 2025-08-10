@@ -161,28 +161,50 @@ def aggregate_results(inference_results: dict) -> tuple:
     Returns
     -------
     tuple
-        (predictions, labels, source_ids)
+        (predictions, labels, source_ids, probabilities, uncertainties)
     """
     all_predictions = []
     all_labels = []
     all_ids = []
+    all_probabilities = []
+    all_uncertainties = []
+    
+    has_probabilities = False
+    has_uncertainties = False
     
     for i, (visit, loader) in enumerate(inference_results.items()):
         print(f"Loading visit {visit} results ({i+1}/{len(inference_results)})...")
         all_predictions.append(loader.predictions)
         all_labels.append(loader.labels)
         all_ids.append(loader.ids)
+        
+        # Check if probabilistic data is available
+        if hasattr(loader, 'probabilities') and loader.probabilities is not None:
+            all_probabilities.append(loader.probabilities)
+            has_probabilities = True
+        if hasattr(loader, 'uncertainties') and loader.uncertainties is not None:
+            all_uncertainties.append(loader.uncertainties)
+            has_uncertainties = True
     
     predictions = np.concatenate(all_predictions)
     labels = np.concatenate(all_labels)
     source_ids = np.concatenate(all_ids)
     
+    probabilities = None
+    uncertainties = None
+    if has_probabilities:
+        probabilities = np.concatenate(all_probabilities)
+        print(f"Loaded prediction probabilities (mean: {probabilities.mean():.4f})")
+    if has_uncertainties:
+        uncertainties = np.concatenate(all_uncertainties)
+        print(f"Loaded prediction uncertainties (mean: {uncertainties.mean():.4f})")
+    
     # Clear individual loader data to save memory
-    del all_predictions, all_labels, all_ids
+    del all_predictions, all_labels, all_ids, all_probabilities, all_uncertainties
     import gc
     gc.collect()
     
-    return (predictions, labels, source_ids)
+    return (predictions, labels, source_ids, probabilities, uncertainties)
 
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000) -> DataLoader:
@@ -206,14 +228,7 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
     )
 
 def main():
-    """Orchestrate full evaluation:
-       1. Load config + dataset
-       2. Collect or run inference
-       3. Aggregate results + compute metrics (cached)
-       4. Build dashboards
-       5. Optional interpretability (UMAP)
-       6. Persist summary
-    """
+    """Orchestrate full evaluation with ensemble model support."""
     args = parse_args()
     
     # Start overall timing
@@ -301,18 +316,31 @@ def main():
     # Aggregate results across visits
     print("Aggregating results...")
     step_start = time.time()
-    predictions, labels, source_ids = aggregate_results(inference_results)
+    predictions, labels, source_ids, probabilities, uncertainties = aggregate_results(inference_results)
     print(f"Results aggregation completed in {time.time() - step_start:.2f}s")
     
-    # Create metrics evaluation
+    # Create metrics evaluation with probabilities if available
     print("Computing evaluation metrics...")
     step_start = time.time()
-    metrics = EvaluationMetrics(predictions, labels)
+    metrics = EvaluationMetrics(predictions, labels, probabilities)
     print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
     # Determine model name for dashboard title
     if args.weights_path:
         model_name = Path(args.weights_path).name
+        # Add model type information
+        try:
+            config = load_config(Path(args.weights_path) / "config.yaml")
+            trainer_type = config["training"]["trainer_type"]
+            if trainer_type == "ensemble":
+                num_models = config["training"]["num_models"]
+                model_name += f" (Ensemble-{num_models})"
+            elif trainer_type == "coteaching":
+                model_name += " (Co-Teaching)"
+            else:
+                model_name += " (Standard)"
+        except:
+            pass
     else:
         model_name = f"Model Hash {args.model_hash}"
     
@@ -326,31 +354,36 @@ def main():
     )
     print(f"Metrics dashboard created in {time.time() - step_start:.2f}s")
     
-    # Print summary
-    summary = metrics.summary()  # Single call (cached) used for printing + serialization
+    # Print enhanced summary
+    summary = metrics.summary()
     print("\n" + "="*50)
     print("EVALUATION SUMMARY")
     print("="*50)
     print(f"Model: {model_name}")
     print(f"Total samples: {len(predictions):,}")
     print(f"Visits evaluated: {len(visits_to_eval)} {visits_to_eval}")
+    if probabilities is not None:
+        print(f"Probabilistic predictions: Yes")
+    if uncertainties is not None:
+        print(f"Uncertainty quantification: Yes (mean: {uncertainties.mean():.4f})")
     print("-"*50)
     for metric, value in summary.items():
         print(f"{metric.replace('_', ' ').title()}: {value:.4f}")
     print("="*50)
     
-    # Store predictions and labels for interpretability before deletion
+    # Store data for interpretability
     interp_predictions = None
     interp_labels = None
     if args.interpretability and args.weights_path:
         interp_predictions = predictions.copy()
         interp_labels = labels.copy()
     
-    # After dashboards, optionally release large arrays to save memory before interpretability
-    # (Especially useful on constrained systems)
-    del predictions
-    del labels
-    del source_ids
+    # After dashboards, release large arrays
+    del predictions, labels, source_ids
+    if probabilities is not None:
+        del probabilities
+    if uncertainties is not None:
+        del uncertainties
     import gc; gc.collect()
     
     # Run interpretability analysis if requested
