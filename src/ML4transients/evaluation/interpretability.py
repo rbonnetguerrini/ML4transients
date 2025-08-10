@@ -131,23 +131,59 @@ class UMAPInterpreter:
         ValueError
             If layer name is not recognized
         """
-        # Map layer names to actual layers for CustomCNN
-        layer_mapping = {
-            'conv1': self.trainer.model.conv1,
-            'conv2': self.trainer.model.conv2, 
-            'fc1': self.trainer.model.fc1,
-            'output': None  # Special case - use final model output
-        }
-        
-        if layer_name == 'flatten':
-            # For flatten, we'll hook after conv2 and manually flatten
-            return self.trainer.model.conv2
-        
-        if layer_name in layer_mapping:
-            return layer_mapping[layer_name]
+        # Handle CustomCNN's dynamic conv_blocks structure
+        if hasattr(self.trainer.model, 'conv_blocks'):
+            # CustomCNN uses ModuleList for conv blocks
+            if layer_name == 'conv1':
+                if len(self.trainer.model.conv_blocks) >= 1:
+                    return self.trainer.model.conv_blocks[0]
+                else:
+                    raise ValueError("Model doesn't have conv1 layer")
+            elif layer_name == 'conv2':
+                if len(self.trainer.model.conv_blocks) >= 2:
+                    return self.trainer.model.conv_blocks[1]
+                else:
+                    raise ValueError("Model doesn't have conv2 layer")
+            elif layer_name == 'flatten':
+                # For flatten, use the last conv block
+                if len(self.trainer.model.conv_blocks) >= 1:
+                    return self.trainer.model.conv_blocks[-1]
+                else:
+                    raise ValueError("Model doesn't have any conv blocks")
+            elif layer_name == 'fc1':
+                if hasattr(self.trainer.model, 'fc1'):
+                    return self.trainer.model.fc1
+                else:
+                    raise ValueError("Model doesn't have fc1 layer")
+            elif layer_name == 'output':
+                return None  # Special case - use final model output
+            else:
+                available_layers = ['conv1', 'conv2', 'fc1', 'output', 'flatten']
+                # Filter available layers based on actual model structure
+                actual_layers = ['output', 'fc1']  # These are always available
+                if len(self.trainer.model.conv_blocks) >= 1:
+                    actual_layers.extend(['conv1', 'flatten'])
+                if len(self.trainer.model.conv_blocks) >= 2:
+                    actual_layers.append('conv2')
+                raise ValueError(f"Layer '{layer_name}' not found. Available layers: {actual_layers}")
         else:
-            available_layers = list(layer_mapping.keys()) + ['flatten']
-            raise ValueError(f"Layer '{layer_name}' not found. Available layers: {available_layers}")
+            # Fallback for models with different structure
+            layer_mapping = {
+                'conv1': getattr(self.trainer.model, 'conv1', None),
+                'conv2': getattr(self.trainer.model, 'conv2', None),
+                'fc1': getattr(self.trainer.model, 'fc1', None),
+                'output': None  # Special case - use final model output
+            }
+            
+            if layer_name == 'flatten':
+                # Try conv2 first, then conv1
+                return getattr(self.trainer.model, 'conv2', getattr(self.trainer.model, 'conv1', None))
+            
+            if layer_name in layer_mapping and layer_mapping[layer_name] is not None:
+                return layer_mapping[layer_name]
+            else:
+                available_layers = [k for k, v in layer_mapping.items() if v is not None] + ['flatten']
+                raise ValueError(f"Layer '{layer_name}' not found. Available layers: {available_layers}")
     
     def _hook_fn(self, module, input, output):
         """Hook function to capture layer activations.
@@ -197,13 +233,9 @@ class UMAPInterpreter:
         features = []
         total_batches = len(data_loader)
         
-        # Use hooks to extract from intermediate layers
-        target_layer = self._get_layer_by_name(layer_name)
-        
-        # Register hook
-        self.hook_handle = target_layer.register_forward_hook(self._hook_fn)
-        
-        try:
+        # Handle special case for output layer
+        if layer_name == 'output':
+            # Extract final model outputs directly
             with torch.no_grad():
                 for batch_idx, batch in enumerate(data_loader):
                     if batch_idx % 10 == 0:  # Progress every 10 batches
@@ -212,33 +244,51 @@ class UMAPInterpreter:
                     images, *_ = batch
                     images = images.to(self.device)
                     
-                    # Forward pass (hook will capture the features)
-                    _ = self.trainer.model(images)
-                    
-                    # Process the captured features
-                    if layer_name == 'flatten':
-                        # Apply the same processing as in the model's forward pass
-                        feat = self.hook_features
-                        # Apply pooling and dropout if we're at conv2
-                        if hasattr(self.trainer.model, 'pool2'):
-                            feat = self.trainer.model.pool2(feat)
-                        if hasattr(self.trainer.model, 'dropout2'):
-                            feat = self.trainer.model.dropout2(feat)
-                        feat_flat = feat.view(feat.size(0), -1)
-                    else:
-                        feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
-                    
-                    features.append(feat_flat.cpu().numpy())
+                    # Get model output
+                    outputs = self.trainer.model(images)
+                    features.append(outputs.cpu().numpy())
                     
                     # Clear GPU memory after each batch
-                    del images, feat_flat
+                    del images, outputs
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-        finally:
-            # Always remove the hook
-            if self.hook_handle:
-                self.hook_handle.remove()
-                self.hook_handle = None
+        else:
+            # Use hooks to extract from intermediate layers
+            target_layer = self._get_layer_by_name(layer_name)
+            
+            # Register hook
+            self.hook_handle = target_layer.register_forward_hook(self._hook_fn)
+            
+            try:
+                with torch.no_grad():
+                    for batch_idx, batch in enumerate(data_loader):
+                        if batch_idx % 10 == 0:  # Progress every 10 batches
+                            print(f"Processing batch {batch_idx+1}/{total_batches}")
+                        
+                        images, *_ = batch
+                        images = images.to(self.device)
+                        
+                        # Forward pass (hook will capture the features)
+                        _ = self.trainer.model(images)
+                        
+                        # Process the captured features
+                        if layer_name == 'flatten':
+                            # For flatten, just flatten the hook features
+                            feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
+                        else:
+                            feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
+                        
+                        features.append(feat_flat.cpu().numpy())
+                        
+                        # Clear GPU memory after each batch
+                        del images, feat_flat
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+            finally:
+                # Always remove the hook
+                if self.hook_handle:
+                    self.hook_handle.remove()
+                    self.hook_handle = None
         
         # Stack all features
         all_features = np.vstack(features)
