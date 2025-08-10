@@ -7,6 +7,7 @@ import os
 from .models import CustomCNN
 from .losses import get_loss_function
 import torch.nn.functional as F
+from pathlib import Path
 
 class BaseTrainer(ABC):
     """Base trainer class"""
@@ -538,6 +539,7 @@ class EnsembleTrainer(BaseTrainer):
         }
     
     def save_checkpoint(self, epoch, suffix):
+        output_dir = self.config.get('output_dir')
         for i, model in enumerate(self.models):
             torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
 

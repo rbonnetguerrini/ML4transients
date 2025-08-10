@@ -38,18 +38,53 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
         
         print(f"Loading model from {weights_path}...")
         config = load_config(f"{weights_path}/config.yaml")
-        trainer = get_trainer(config["training"]["trainer_type"], config["training"])
-        state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
-        trainer.model.load_state_dict(state_dict)
-        trainer.model.to(device)
-        trainer.model.eval()
+        trainer_type = config["training"]["trainer_type"]
+        trainer = get_trainer(trainer_type, config["training"])
+        print(trainer_type)
+        if trainer_type == "ensemble":
+            num_models = config["training"]["num_models"]
+            print(f"Ensemble model, loading {num_models} models.")
+            for i in range(num_models):
+                
+                model_path = f"{weights_path}/ensemble_model_{i}_best.pth"   
+                               
+                print(f"Loading model {i} from {model_path}")
+                state_dict = torch.load(model_path, map_location=device)
+                trainer.models[i].load_state_dict(state_dict)
+                trainer.models[i].to(device)
+                trainer.models[i].eval()
+        elif trainer_type == "coteaching":
+            # Load both models for co-teaching
+            state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
+            state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
+            trainer.model1.load_state_dict(state_dict1)
+            trainer.model2.load_state_dict(state_dict2)
+            trainer.model1.to(device)
+            trainer.model2.to(device)
+            trainer.model1.eval()
+            trainer.model2.eval()
+        else:
+            # Standard single model
+            state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
+            trainer.model.load_state_dict(state_dict)
+            trainer.model.to(device)
+            trainer.model.eval()
     else:
         print(f"Using cached model{visit_str}...")
 
-    model = trainer.model
-    # Ensure model is in eval mode and on correct device
-    model.eval()
-    model.to(device)
+    # Set all models to eval mode and correct device
+    if hasattr(trainer, 'models'):  # Ensemble
+        for model in trainer.models:
+            model.eval()
+            model.to(device)
+    elif hasattr(trainer, 'model1'):  # CoTeaching
+        trainer.model1.eval()
+        trainer.model1.to(device)
+        trainer.model2.eval()
+        trainer.model2.to(device)
+    else:  # Standard
+        trainer.model.eval()
+        trainer.model.to(device)
 
     all_preds = []
     all_labels = []
@@ -68,8 +103,29 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                 
                 images, labels, *_ = batch
                 images = images.to(device)
-                outputs = model(images)
-                preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float().cpu().numpy()
+                
+                # Get predictions based on trainer type
+                if hasattr(trainer, 'models'):  # Ensemble
+                    predictions = []
+                    for model in trainer.models:
+                        outputs = model(images)
+                        model_preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
+                        predictions.append(model_preds)
+                    # Majority vote ensemble
+                    ensemble_preds = torch.stack(predictions).mean(dim=0)
+                    preds = (ensemble_preds > 0.5).float().cpu().numpy()
+                elif hasattr(trainer, 'model1'):  # CoTeaching
+                    outputs1 = trainer.model1(images)
+                    outputs2 = trainer.model2(images)
+                    preds1 = (torch.sigmoid(outputs1.squeeze()) > 0.5).float()
+                    preds2 = (torch.sigmoid(outputs2.squeeze()) > 0.5).float()
+                    # Average the two models
+                    ensemble_preds = (preds1 + preds2) / 2
+                    preds = (ensemble_preds > 0.5).float().cpu().numpy()
+                else:  # Standard
+                    outputs = trainer.model(images)
+                    preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float().cpu().numpy()
+                
                 labels = labels.cpu().numpy()
 
                 if return_preds:
@@ -77,7 +133,7 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                     all_labels.append(labels)
                 
                 # Clear batch from GPU memory immediately
-                del images, outputs
+                del images
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
