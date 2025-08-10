@@ -418,11 +418,36 @@ class DatasetLoader:
             
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             config = load_config(f"{weights_path}/config.yaml")
-            trainer = get_trainer(config["training"]["trainer_type"], config["training"])
-            state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
-            trainer.model.load_state_dict(state_dict)
-            trainer.model.to(device)
-            trainer.model.eval()
+            trainer_type = config["training"]["trainer_type"]
+            trainer = get_trainer(trainer_type, config["training"])
+            
+            # Load models based on trainer type (same logic as inference.py)
+            if trainer_type == "ensemble":
+                num_models = config["training"]["num_models"]
+                print(f"Ensemble model, loading {num_models} models.")
+                for i in range(num_models):
+                    model_path = f"{weights_path}/ensemble_model_{i}_best.pth"
+                    print(f"Loading model {i} from {model_path}")
+                    state_dict = torch.load(model_path, map_location=device)
+                    trainer.models[i].load_state_dict(state_dict)
+                    trainer.models[i].to(device)
+                    trainer.models[i].eval()
+            elif trainer_type == "coteaching":
+                # Load both models for co-teaching
+                state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
+                state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
+                trainer.model1.load_state_dict(state_dict1)
+                trainer.model2.load_state_dict(state_dict2)
+                trainer.model1.to(device)
+                trainer.model2.to(device)
+                trainer.model1.eval()
+                trainer.model2.eval()
+            else:
+                # Standard single model
+                state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
+                trainer.model.load_state_dict(state_dict)
+                trainer.model.to(device)
+                trainer.model.eval()
             
             self._cached_trainers[weights_path] = trainer
             print(f"Model loaded and cached for {weights_path}")

@@ -14,7 +14,7 @@ training:
   epoch_decay_start: 80
   num_workers: 4
   output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized"
-  num_models: 4                         # Optimized: 4 models in ensemble
+  num_models: 20                        # Optimized: 4 models in ensemble
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"

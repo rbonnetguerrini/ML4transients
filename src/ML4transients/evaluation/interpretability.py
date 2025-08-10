@@ -97,22 +97,56 @@ class UMAPInterpreter:
         
         # Load model
         config = load_config(self.model_path / "config.yaml")
-        self.trainer = get_trainer(config["training"]["trainer_type"], config["training"])
-        state_dict = torch.load(self.model_path / "model_best.pth", map_location=self.device)
-        self.trainer.model.load_state_dict(state_dict)
-        self.trainer.model.to(self.device)
-        self.trainer.model.eval()
+        trainer_type = config["training"]["trainer_type"]
+        self.trainer = get_trainer(trainer_type, config["training"])
         
+        # Load models based on trainer type
+        if trainer_type == "ensemble":
+            num_models = config["training"]["num_models"]
+            print(f"Loading ensemble model with {num_models} models...")
+            for i in range(num_models):
+                model_path = self.model_path / f"ensemble_model_{i}_best.pth"
+                state_dict = torch.load(model_path, map_location=self.device)
+                self.trainer.models[i].load_state_dict(state_dict)
+                self.trainer.models[i].to(self.device)
+                self.trainer.models[i].eval()
+        elif trainer_type == "coteaching":
+            print("Loading co-teaching model...")
+            state_dict1 = torch.load(self.model_path / "model1_best.pth", map_location=self.device)
+            state_dict2 = torch.load(self.model_path / "model2_best.pth", map_location=self.device)
+            self.trainer.model1.load_state_dict(state_dict1)
+            self.trainer.model2.load_state_dict(state_dict2)
+            self.trainer.model1.to(self.device)
+            self.trainer.model2.to(self.device)
+            self.trainer.model1.eval()
+            self.trainer.model2.eval()
+        else:
+            print("Loading standard model...")
+            state_dict = torch.load(self.model_path / "model_best.pth", map_location=self.device)
+            self.trainer.model.load_state_dict(state_dict)
+            self.trainer.model.to(self.device)
+            self.trainer.model.eval()
+        
+        self.trainer_type = trainer_type
         self.umap_reducer = None
         self.features = None
         self.umap_embedding = None
         self.high_dim_clusters = None
-        self.sample_indices = None  # Add this line
+        self.sample_indices = None
     
         # For hook-based feature extraction
         self.hook_features = None
         self.hook_handle = None
-    
+
+    def _get_model_for_layer_extraction(self, layer_name: str):
+        """Get the appropriate model for layer extraction based on trainer type."""
+        if hasattr(self.trainer, 'models'):  # Ensemble
+            return self.trainer.models[0]  # Use first model for feature extraction
+        elif hasattr(self.trainer, 'model1'):  # CoTeaching
+            return self.trainer.model1  # Use first model for feature extraction
+        else:  # Standard
+            return self.trainer.model
+
     def _get_layer_by_name(self, layer_name: str):
         """Get a layer by name from the model.
         
@@ -131,28 +165,30 @@ class UMAPInterpreter:
         ValueError
             If layer name is not recognized
         """
+        model = self._get_model_for_layer_extraction(layer_name)
+        
         # Handle CustomCNN's dynamic conv_blocks structure
-        if hasattr(self.trainer.model, 'conv_blocks'):
+        if hasattr(model, 'conv_blocks'):
             # CustomCNN uses ModuleList for conv blocks
             if layer_name == 'conv1':
-                if len(self.trainer.model.conv_blocks) >= 1:
-                    return self.trainer.model.conv_blocks[0]
+                if len(model.conv_blocks) >= 1:
+                    return model.conv_blocks[0]
                 else:
                     raise ValueError("Model doesn't have conv1 layer")
             elif layer_name == 'conv2':
-                if len(self.trainer.model.conv_blocks) >= 2:
-                    return self.trainer.model.conv_blocks[1]
+                if len(model.conv_blocks) >= 2:
+                    return model.conv_blocks[1]
                 else:
                     raise ValueError("Model doesn't have conv2 layer")
             elif layer_name == 'flatten':
                 # For flatten, use the last conv block
-                if len(self.trainer.model.conv_blocks) >= 1:
-                    return self.trainer.model.conv_blocks[-1]
+                if len(model.conv_blocks) >= 1:
+                    return model.conv_blocks[-1]
                 else:
                     raise ValueError("Model doesn't have any conv blocks")
             elif layer_name == 'fc1':
-                if hasattr(self.trainer.model, 'fc1'):
-                    return self.trainer.model.fc1
+                if hasattr(model, 'fc1'):
+                    return model.fc1
                 else:
                     raise ValueError("Model doesn't have fc1 layer")
             elif layer_name == 'output':
@@ -161,30 +197,30 @@ class UMAPInterpreter:
                 available_layers = ['conv1', 'conv2', 'fc1', 'output', 'flatten']
                 # Filter available layers based on actual model structure
                 actual_layers = ['output', 'fc1']  # These are always available
-                if len(self.trainer.model.conv_blocks) >= 1:
+                if len(model.conv_blocks) >= 1:
                     actual_layers.extend(['conv1', 'flatten'])
-                if len(self.trainer.model.conv_blocks) >= 2:
+                if len(model.conv_blocks) >= 2:
                     actual_layers.append('conv2')
                 raise ValueError(f"Layer '{layer_name}' not found. Available layers: {actual_layers}")
         else:
             # Fallback for models with different structure
             layer_mapping = {
-                'conv1': getattr(self.trainer.model, 'conv1', None),
-                'conv2': getattr(self.trainer.model, 'conv2', None),
-                'fc1': getattr(self.trainer.model, 'fc1', None),
+                'conv1': getattr(model, 'conv1', None),
+                'conv2': getattr(model, 'conv2', None),
+                'fc1': getattr(model, 'fc1', None),
                 'output': None  # Special case - use final model output
             }
             
             if layer_name == 'flatten':
                 # Try conv2 first, then conv1
-                return getattr(self.trainer.model, 'conv2', getattr(self.trainer.model, 'conv1', None))
+                return getattr(model, 'conv2', getattr(model, 'conv1', None))
             
             if layer_name in layer_mapping and layer_mapping[layer_name] is not None:
                 return layer_mapping[layer_name]
             else:
                 available_layers = [k for k, v in layer_mapping.items() if v is not None] + ['flatten']
                 raise ValueError(f"Layer '{layer_name}' not found. Available layers: {available_layers}")
-    
+
     def _hook_fn(self, module, input, output):
         """Hook function to capture layer activations.
         
@@ -225,13 +261,16 @@ class UMAPInterpreter:
         For extremely large datasets, a streaming reservoir approach could
         replace this to reduce peak memory usage.
         """
-        print(f"Extracting features from layer: {layer_name}")
+        print(f"Extracting features from layer: {layer_name} using {self.trainer_type} model")
         if max_samples is not None:
             print(f"Will sample up to {max_samples} samples for UMAP computation")
         
         # First pass: extract all features
         features = []
         total_batches = len(data_loader)
+        
+        # Use the appropriate model for feature extraction
+        model = self._get_model_for_layer_extraction(layer_name)
         
         # Handle special case for output layer
         if layer_name == 'output':
@@ -245,7 +284,7 @@ class UMAPInterpreter:
                     images = images.to(self.device)
                     
                     # Get model output
-                    outputs = self.trainer.model(images)
+                    outputs = model(images)
                     features.append(outputs.cpu().numpy())
                     
                     # Clear GPU memory after each batch
@@ -269,7 +308,7 @@ class UMAPInterpreter:
                         images = images.to(self.device)
                         
                         # Forward pass (hook will capture the features)
-                        _ = self.trainer.model(images)
+                        _ = model(images)
                         
                         # Process the captured features
                         if layer_name == 'flatten':
@@ -315,7 +354,95 @@ class UMAPInterpreter:
         gc.collect()
         
         return self.features
-    
+
+    def extract_prediction_uncertainties(self, data_loader, max_samples: Optional[int] = None, 
+                                      random_state: int = 42) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract prediction probabilities and uncertainties for ensemble/coteaching models.
+        
+        Parameters
+        ----------
+        data_loader : DataLoader
+            Source of input tensors.
+        max_samples : int, optional
+            If set, random subset used.
+        random_state : int
+            Seed for reproducible subsampling.
+            
+        Returns
+        -------
+        tuple
+            (probabilities, uncertainties) arrays
+        """
+        if self.trainer_type == "standard":
+            print("Standard model detected - no uncertainty quantification available")
+            return None, None
+            
+        print(f"Extracting prediction uncertainties from {self.trainer_type} model...")
+        
+        probabilities = []
+        uncertainties = []
+        total_batches = len(data_loader)
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(data_loader):
+                if batch_idx % 10 == 0:
+                    print(f"Processing batch {batch_idx+1}/{total_batches}")
+                
+                images, *_ = batch
+                images = images.to(self.device)
+                
+                if hasattr(self.trainer, 'models'):  # Ensemble
+                    individual_probs = []
+                    for model in self.trainer.models:
+                        outputs = model(images)
+                        probs = torch.sigmoid(outputs.squeeze())
+                        individual_probs.append(probs)
+                    
+                    # Stack all model probabilities
+                    ensemble_probs = torch.stack(individual_probs)  # [num_models, batch_size]
+                    
+                    # Mean probability and uncertainty
+                    mean_probs = ensemble_probs.mean(dim=0)
+                    uncertainty = ensemble_probs.std(dim=0)  # Standard deviation as uncertainty
+                    
+                elif hasattr(self.trainer, 'model1'):  # CoTeaching
+                    outputs1 = self.trainer.model1(images)
+                    outputs2 = self.trainer.model2(images)
+                    probs1 = torch.sigmoid(outputs1.squeeze())
+                    probs2 = torch.sigmoid(outputs2.squeeze())
+                    
+                    # Average the two models
+                    mean_probs = (probs1 + probs2) / 2
+                    uncertainty = torch.abs(probs1 - probs2)  # Disagreement as uncertainty
+                
+                probabilities.append(mean_probs.cpu().numpy())
+                uncertainties.append(uncertainty.cpu().numpy())
+                
+                # Clear GPU memory after each batch
+                del images
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        # Concatenate all results
+        all_probabilities = np.concatenate(probabilities)
+        all_uncertainties = np.concatenate(uncertainties)
+        
+        # Apply sampling if needed (use same indices as features if available)
+        if max_samples is not None and len(all_probabilities) > max_samples:
+            if self.sample_indices is not None:
+                # Use the same indices as feature extraction
+                indices = self.sample_indices
+            else:
+                np.random.seed(random_state)
+                indices = np.random.choice(len(all_probabilities), size=max_samples, replace=False)
+                indices = np.sort(indices)
+            
+            all_probabilities = all_probabilities[indices]
+            all_uncertainties = all_uncertainties[indices]
+        
+        print(f"Extracted {len(all_probabilities)} prediction probabilities and uncertainties")
+        return all_probabilities, all_uncertainties
+
     def optimize_umap_parameters(self, param_grid: Dict = None, 
                                 n_samples: int = 1000, random_state: int = 42) -> Dict:
         """Grid-search heuristic for approximate UMAP parameter selection.
@@ -480,7 +607,7 @@ class UMAPInterpreter:
     def create_interpretability_dataframe(self, predictions: np.ndarray, labels: np.ndarray,
                                 data_loader, sample_indices: Optional[np.ndarray] = None,
                                 additional_features: Optional[Dict[str, np.ndarray]] = None) -> pd.DataFrame:
-        """Build DataFrame joining UMAP output + classification + hover images."""
+        """Build DataFrame joining UMAP output + classification + hover images + uncertainties."""
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         
@@ -515,6 +642,17 @@ class UMAPInterpreter:
         if self.high_dim_clusters is not None:
             cluster_strings = np.where(self.high_dim_clusters == -1, "Noise", self.high_dim_clusters.astype(str))
             df['high_dim_cluster'] = cluster_strings
+        
+        # Extract and add prediction uncertainties for ensemble/coteaching models
+        if self.trainer_type in ["ensemble", "coteaching"]:
+            print("Extracting prediction uncertainties for uncertainty visualization...")
+            probabilities, uncertainties = self.extract_prediction_uncertainties(
+                data_loader, max_samples=len(sample_indices)
+            )
+            if probabilities is not None and uncertainties is not None:
+                df['prediction_probability'] = probabilities
+                df['prediction_uncertainty'] = uncertainties
+                print(f"Added prediction uncertainties (mean: {uncertainties.mean():.4f}, std: {uncertainties.std():.4f})")
         
         # Add embeddable images
         print("Creating embeddable images for hover tooltips...")

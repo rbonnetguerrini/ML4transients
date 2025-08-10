@@ -107,313 +107,218 @@ class FeatureLoader:
             return store.select('features', where=f'index == {dia_source_id}')
             
 class InferenceLoader:
-    """Loader for inference results with automatic inference running capability.
+    """Handles inference results loading and running inference on datasets."""
     
-    Manages loading of inference results from HDF5 files and can automatically
-    run inference if results don't exist.
-    """
-
     def __init__(self, data_path: Path, visit: int, weights_path: str = None):
         """
-        Initialize InferenceLoader for a specific visit.
+        Initialize InferenceLoader.
         
         Args:
-            data_path: Path to the data directory
+            data_path: Path to data directory
             visit: Visit number
-            weights_path: Path to trained model weights directory
+            weights_path: Path to model weights (optional, for running inference)
         """
         self.data_path = Path(data_path)
         self.visit = visit
         self.weights_path = weights_path
-        self._inference_file = None
+        
+        # Generate model hash from weights path if provided
+        self.model_hash = None
+        if weights_path:
+            import hashlib
+            self.model_hash = hashlib.md5(str(weights_path).encode()).hexdigest()[:8]
+        
+        # Set up inference file path
+        self.inference_dir = self.data_path / "inference"
+        self.inference_dir.mkdir(exist_ok=True)
+        
+        if self.model_hash:
+            self._inference_file = self.inference_dir / f"visit_{visit}_inference_{self.model_hash}.h5"
+        else:
+            self._inference_file = None
+            
+        # Lazy loading attributes
         self._predictions = None
         self._labels = None
+        self._probabilities = None
+        self._uncertainties = None
         self._ids = None
-        self._metrics = None
-        
-        if weights_path:
-            self._check_inference_availability()
-    
-    def _get_model_hash(self):
-        """Generate a hash for the model configuration to identify inference runs.
-        
-        Returns
-        -------
-        str or None
-            8-character hash based on config and model modification time,
-            or None if weights_path is invalid
-        """
-        if not self.weights_path:
-            return None
-            
-        config_path = Path(self.weights_path) / "config.yaml"
-        weights_file = Path(self.weights_path) / "model_best.pth"
-        
-        if not (config_path.exists() and weights_file.exists()):
-            return None
-        
-        # Create hash from config and model file modification time
-        with open(config_path, 'r') as f:
-            config_str = f.read()
-        
-        weights_mtime = weights_file.stat().st_mtime
-        hash_string = f"{config_str}_{weights_mtime}"
-        
-        return hashlib.md5(hash_string.encode()).hexdigest()[:8]
-    
-    def _get_inference_filename(self):
-        """Generate inference results filename for this visit.
-        
-        Returns
-        -------
-        str or None
-            Filename in format 'visit_{visit}_inference_{hash}.h5',
-            or None if model hash cannot be generated
-        """
-        model_hash = self._get_model_hash()
-        if not model_hash:
-            return None
-        return f"visit_{self.visit}_inference_{model_hash}.h5"
-    
-    def _check_inference_availability(self):
-        """Check if inference results exist for the given model and visit.
-        
-        Returns
-        -------
-        bool
-            True if inference file exists, False otherwise
-        """
-        inference_filename = self._get_inference_filename()
-        if not inference_filename:
-            return False
-            
-        inference_dir = self.data_path / "inference"
-        self._inference_file = inference_dir / inference_filename
-        
-        return self._inference_file.exists()
-    
-    def has_inference_results(self):
-        """Check if inference results are available."""
-        # If _inference_file is already set (e.g., by get_inference_loader_by_hash), check that
-        if self._inference_file:
-            return self._inference_file.exists()
-        
-        # Otherwise, check using the model hash method (requires weights_path)
-        if self.weights_path:
-            inference_filename = self._get_inference_filename()
-            if inference_filename:
-                inference_dir = self.data_path / "inference"
-                self._inference_file = inference_dir / inference_filename
-                return self._inference_file.exists()
-        
-        return False
-    
-    @property
-    def predictions(self):
-        """Lazy load predictions."""
-        if self._predictions is None and self.has_inference_results():
-            with h5py.File(self._inference_file, 'r') as f:
-                self._predictions = f['predictions'][:]
-        return self._predictions
-    
-    @property
-    def labels(self):
-        """Lazy load true labels."""
-        if self._labels is None and self.has_inference_results():
-            with h5py.File(self._inference_file, 'r') as f:
-                self._labels = f['labels'][:]
-        return self._labels
-    
-    @property
-    def ids(self):
-        """Lazy load diaSourceIds."""
-        if self._ids is None and self.has_inference_results():
-            with h5py.File(self._inference_file, 'r') as f:
-                self._ids = f['diaSourceId'][:]
-        return self._ids
-    
-    @property
-    def metrics(self):
-        """Lazy load computed metrics."""
-        if self._metrics is None and self.has_inference_results():
-            with h5py.File(self._inference_file, 'r') as f:
-                self._metrics = {
-                    'accuracy': f.attrs.get('accuracy', None),
-                    'confusion_matrix': f['confusion_matrix'][:] if 'confusion_matrix' in f else None
-                }
-        return self._metrics
-    
-    def get_results_by_id(self, dia_source_id: int):
-        """Get prediction and label for specific diaSourceId.
-        
-        Parameters
-        ----------
-        dia_source_id : int
-            The diaSourceId to retrieve results for
-            
-        Returns
-        -------
-        dict or None
-            Dictionary with 'prediction', 'label', and 'dia_source_id' keys,
-            or None if ID not found or no inference results available
-        """
-        if not self.has_inference_results():
-            return None
-            
-        idx = np.where(self.ids == dia_source_id)[0]
-        if len(idx) == 0:
-            return None
-            
-        idx = idx[0]
-        return {
-            'prediction': self.predictions[idx],
-            'label': self.labels[idx],
-            'dia_source_id': dia_source_id
-        }
-    
+
     def run_inference(self, dataset_loader, trainer=None, force=False):
         """
-        Run inference for this specific visit only.
+        Run inference for this visit and save results.
         
         Args:
             dataset_loader: DatasetLoader instance
-            trainer: Optional pre-loaded trainer (avoids reloading model)
-            force: Whether to force re-running inference even if results exists
+            trainer: Pre-loaded trainer (optional, for efficiency)
+            force: Force re-run even if results exist
         """
-        if self.has_inference_results() and not force:
+        if not force and self.has_inference_results():
             print(f"Inference results already exist for visit {self.visit}")
             return
         
-        if not self.weights_path and trainer is None:
-            raise ValueError("No weights path or trainer provided. Cannot run inference.")
-        
-        # Check if this visit has data
-        if self.visit not in dataset_loader.visits:
-            print(f"Warning: Visit {self.visit} not found in dataset")
-            return
-        
-        if self.visit not in dataset_loader.cutouts or self.visit not in dataset_loader.features:
-            print(f"Warning: Visit {self.visit} missing cutouts or features")
-            return
+        if not self.weights_path:
+            raise ValueError("weights_path required for running inference")
+            
+        if not self._inference_file:
+            raise ValueError("Cannot determine inference file path without model hash")
         
         print(f"Running inference for visit {self.visit}...")
         
-        # Import here to avoid circular imports
+        # Create inference dataset for this visit
         from ML4transients.training.pytorch_dataset import PytorchDataset
-        from ML4transients.evaluation.inference import infer
-        from torch.utils.data import DataLoader
         
-        # Create inference dataset with optimized DataLoader
+        print(f"Creating inference dataset for visit {self.visit}...")
         inference_dataset = PytorchDataset.create_inference_dataset(dataset_loader, visit=self.visit)
+        print(f"Created inference dataset for visit {self.visit} with {len(inference_dataset)} samples")
         
-        # Use larger batch size and optimized settings for inference
-        batch_size = 128  # Larger batch size for inference efficiency
-        inference_dataloader = DataLoader(
-            inference_dataset, 
-            batch_size=batch_size,
+        # Create DataLoader
+        inference_loader = torch.utils.data.DataLoader(
+            inference_dataset,
+            batch_size=128,
             shuffle=False,
-            num_workers=0,  # Disable multiprocessing to avoid memory issues
-            pin_memory=False,  # Disable pin_memory to save GPU memory
+            num_workers=0,
+            pin_memory=False,
             drop_last=False
         )
         
-        # Ensure inference directory exists
-        inference_dir = self.data_path / "inference"
-        inference_dir.mkdir(exist_ok=True)
+        print(f"Created lazy dataset for visit {self.visit} with {len(inference_dataset)} samples")
+        print(f"Processing {len(inference_dataset)} samples in batches of 128...")
         
-        # Get model hash for registration
-        model_hash = self._get_model_hash()
+        # Import inference function
+        from ML4transients.evaluation.inference import infer
         
-        try:
-            print(f"Processing {len(inference_dataset)} samples in batches of {batch_size}...")
-            
-            # Run inference
-            results = infer(
-                inference_loader=inference_dataloader,
-                trainer=trainer,
-                weights_path=self.weights_path if trainer is None else None,
-                return_preds=True,
-                compute_metrics=True,
-                save_path=self._inference_file,
-                dia_source_ids=inference_dataset.dia_source_ids,
-                visit=self.visit,
-                model_hash=model_hash
-            )
-            
-            # Register the new inference file
-            if model_hash:
-                dataset_loader._register_inference_file(
-                    data_path=self.data_path,
-                    visit=self.visit,
-                    model_hash=model_hash,
-                    weights_path=self.weights_path,
-                    metadata={
-                        'accuracy': results.get('accuracy'),
-                        'n_samples': len(results.get('y_pred', []))
-                    }
-                )
-            
+        # Get diaSourceIds for saving
+        dia_source_ids = inference_dataset.get_dia_source_ids()
+        
+        # Run inference with proper save_path - THIS IS THE KEY FIX
+        results = infer(
+            inference_loader=inference_loader,
+            trainer=trainer,
+            weights_path=self.weights_path,
+            return_preds=True,
+            compute_metrics=True,
+            device=None,
+            save_path=str(self._inference_file),  # Make sure to pass save_path!
+            dia_source_ids=dia_source_ids,
+            visit=self.visit,
+            model_hash=self.model_hash,
+            return_probabilities=None  # Auto-detect based on model type
+        )
+        
+        if results:
             print(f"Inference completed for visit {self.visit}")
+            # Clear cached data to force reload from saved file
+            self._clear_cache()
+        else:
+            print(f"Warning: No inference results returned for visit {self.visit}")
             
-        except Exception as e:
-            print(f"Error during inference for visit {self.visit}: {e}")
-            raise
-            
-        finally:
-            # Always cleanup memory after inference
-            if hasattr(inference_dataset, 'cleanup_memory'):
-                inference_dataset.cleanup_memory()
-            del inference_dataset, inference_dataloader
-            
-            # Force garbage collection
-            import gc
-            gc.collect()
-            
-            # Clear CUDA cache if using GPU
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        
-        # Clear cached data to force reload
+        # Cleanup memory
+        print("Cleaned up memory for dataset")
+        del inference_dataset, inference_loader
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _clear_cache(self):
+        """Clear cached data to force reload from file."""
         self._predictions = None
         self._labels = None
+        self._probabilities = None
+        self._uncertainties = None
         self._ids = None
-        self._metrics = None
-    
-    def prompt_and_run_inference(self, dataset_loader):
-        """Check for existing results and prompt user to run inference if needed.
+
+    def has_inference_results(self) -> bool:
+        """Check if inference results exist."""
+        if not self._inference_file:
+            return False
+        return self._inference_file.exists()
+
+    def _load_data(self):
+        """Load inference data from HDF5 file."""
+        if not self.has_inference_results():
+            raise FileNotFoundError(f"No inference results found for visit {self.visit}")
         
-        Parameters
-        ----------
-        dataset_loader : DatasetLoader
-            Dataset loader instance
+        try:
+            with h5py.File(self._inference_file, 'r') as f:
+                self._predictions = f['predictions'][:]
+                self._labels = f['labels'][:]
+                
+                # Load probabilities and uncertainties if available
+                if 'probabilities' in f:
+                    self._probabilities = f['probabilities'][:]
+                if 'uncertainties' in f:
+                    self._uncertainties = f['uncertainties'][:]
+                    
+                if 'diaSourceId' in f:
+                    self._ids = f['diaSourceId'][:]
+                else:
+                    # Fallback: generate sequential IDs
+                    self._ids = np.arange(len(self._predictions))
+                    
+        except Exception as e:
+            print(f"Error loading inference results for visit {self.visit}: {e}")
+            raise
+
+    @property
+    def predictions(self) -> np.ndarray:
+        """Get predictions array."""
+        if self._predictions is None:
+            self._load_data()
+        return self._predictions
+
+    @property
+    def labels(self) -> np.ndarray:
+        """Get labels array."""
+        if self._labels is None:
+            self._load_data()
+        return self._labels
+        
+    @property
+    def probabilities(self) -> Optional[np.ndarray]:
+        """Get probabilities array (if available)."""
+        if self._probabilities is None and self.has_inference_results():
+            self._load_data()
+        return self._probabilities
+        
+    @property
+    def uncertainties(self) -> Optional[np.ndarray]:
+        """Get uncertainties array (if available)."""
+        if self._uncertainties is None and self.has_inference_results():
+            self._load_data()
+        return self._uncertainties
+
+    @property
+    def ids(self) -> np.ndarray:
+        """Get diaSourceId array."""
+        if self._ids is None:
+            self._load_data()
+        return self._ids
+
+    def get_results_by_id(self, dia_source_id: int) -> Optional[Dict]:
+        """Get inference results for a specific diaSourceId."""
+        try:
+            idx = np.where(self.ids == dia_source_id)[0]
+            if len(idx) == 0:
+                return None
             
-        Returns
-        -------
-        bool
-            True if inference results are available after this call,
-            False if inference failed or was declined
-        """
-        if self.has_inference_results():
-            print(f"Found existing inference results: {self._inference_file}")
-            return True
-        
-        if not self.weights_path:
-            print("No weights path provided. Cannot run inference.")
-            return False
-        
-        print(f"No inference results found for model: {self.weights_path}")
-        response = input("Would you like to run inference now? (Y/n): ").lower().strip()
-        
-        if response in ['', 'y', 'yes']:
-            try:
-                self.run_inference(dataset_loader)
-                return True
-            except Exception as e:
-                print(f"Error running inference: {e}")
-                return False
-        else:
-            print("Inference not run. No results available.")
-            return False
+            idx = idx[0]
+            result = {
+                'prediction': self.predictions[idx],
+                'label': self.labels[idx],
+                'dia_source_id': dia_source_id
+            }
+            
+            if self.probabilities is not None:
+                result['probability'] = self.probabilities[idx]
+            if self.uncertainties is not None:
+                result['uncertainty'] = self.uncertainties[idx]
+                
+            return result
+        except Exception as e:
+            print(f"Error getting results for ID {dia_source_id}: {e}")
+            return None
 
 class LightCurveLoader:
     """Placeholder for future lightcurve loading."""

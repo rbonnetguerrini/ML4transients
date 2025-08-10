@@ -364,6 +364,126 @@ class UMAPVisualizer:
         p.legend.location = "top_right"
         
         return p
+    
+    def plot_uncertainty_coloring(self, df: pd.DataFrame, 
+                                title: str = "UMAP: Prediction Uncertainty") -> figure:
+        """Plot UMAP colored by prediction uncertainty."""
+        if 'prediction_uncertainty' not in df.columns:
+            raise ValueError("No prediction uncertainty data available. Requires ensemble or co-teaching model.")
+        
+        # Handle missing values
+        df_clean = df.dropna(subset=['prediction_uncertainty'])
+        source = ColumnDataSource(df_clean)
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create color mapper for uncertainty
+        color_mapper = LinearColorMapper(
+            palette=Viridis256,
+            low=df_clean['prediction_uncertainty'].min(),
+            high=df_clean['prediction_uncertainty'].max()
+        )
+        
+        p.scatter('umap_x', 'umap_y', source=source, size=8, alpha=0.7,
+                 color={'field': 'prediction_uncertainty', 'transform': color_mapper})
+        
+        # Add color bar
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0))
+        p.add_layout(color_bar, 'right')
+        
+        # Create hover tooltip HTML for uncertainty
+        tooltip_html = """
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>Uncertainty:</span>
+                <span style='font-size: 14px'>@prediction_uncertainty{0.000}</span><br>
+                <span style='font-size: 14px; color: #224499'>Probability:</span>
+                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        return p
+
+    def plot_uncertainty_vs_correctness(self, df: pd.DataFrame,
+                                      title: str = "UMAP: Uncertainty vs Correctness") -> figure:
+        """Plot UMAP with uncertainty and correctness combined visualization."""
+        if 'prediction_uncertainty' not in df.columns:
+            raise ValueError("No prediction uncertainty data available.")
+        
+        # Create separate sources for correct and incorrect predictions
+        correct_data = ColumnDataSource(df[df['correct'] == True])
+        incorrect_data = ColumnDataSource(df[df['correct'] == False])
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create color mapper for uncertainty
+        uncertainty_range = (df['prediction_uncertainty'].min(), df['prediction_uncertainty'].max())
+        
+        # Plot correct predictions with one color scheme
+        p.scatter('umap_x', 'umap_y', source=correct_data, 
+                 size=8, alpha=0.7, color='green', marker='circle',
+                 legend_label="Correct predictions")
+        
+        # Plot incorrect predictions with uncertainty coloring
+        color_mapper = LinearColorMapper(
+            palette=['red', 'orange', 'yellow'],
+            low=uncertainty_range[0],
+            high=uncertainty_range[1]
+        )
+        
+        p.scatter('umap_x', 'umap_y', source=incorrect_data,
+                 size=8, alpha=0.8, marker='x',
+                 color={'field': 'prediction_uncertainty', 'transform': color_mapper},
+                 legend_label="Incorrect predictions (colored by uncertainty)")
+        
+        # Add color bar for uncertainty
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title="Uncertainty (incorrect only)")
+        p.add_layout(color_bar, 'right')
+        
+        # Combined hover tooltip
+        tooltip_html = """
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>Correct:</span>
+                <span style='font-size: 14px'>@correct</span><br>
+                <span style='font-size: 14px; color: #224499'>Uncertainty:</span>
+                <span style='font-size: 14px'>@prediction_uncertainty{0.000}</span><br>
+                <span style='font-size: 14px; color: #224499'>Probability:</span>
+                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
 
 # Dashboard creation functions
 def create_evaluation_dashboard(metrics: EvaluationMetrics,
@@ -430,27 +550,20 @@ def create_interpretability_dashboard(interpreter,
                                     output_path: Optional[Path] = None,
                                     additional_features: Optional[Dict[str, np.ndarray]] = None,
                                     config: Optional[Dict] = None) -> Tabs:
-    """Create UMAP-based interpretability dashboard.
-
-    Notes
-    -----
-    Separates sample count for:
-      - UMAP computation (max_samples)
-      - Visualization (max_visualization_samples)
-    """
-    # Get configuration parameters
+    """Create UMAP-based interpretability dashboard with uncertainty visualization."""
+    # Get configuration parameters 
     if config and 'interpretability' in config:
         interp_config = config['interpretability']
         feature_config = interp_config.get('feature_extraction', {})
         layer_name = feature_config.get('layer_name', 'fc1')
         max_umap_samples = interp_config.get('max_samples', 30000)  # Main parameter for UMAP computation
-        max_viz_samples = feature_config.get('max_visualization_samples', 100)  # For final visualization
+        max_viz_samples = interp_config.get('max_visualization_samples', 3000)  # Fixed: Read from correct location
         umap_config = interp_config.get('umap', {})
         clustering_config = interp_config.get('clustering', {})
     else:
         layer_name = 'fc1'
         max_umap_samples = 30000
-        max_viz_samples = 100
+        max_viz_samples = 3000
         umap_config = {}
         clustering_config = {}
     
@@ -484,7 +597,7 @@ def create_interpretability_dashboard(interpreter,
         else:
             print("High-dimensional clustering disabled - skipping clustering step")
         
-        # Create visualization dataframe - potentially subsample further for visualization
+        # Create visualization dataframe
         print(f"Creating visualization dataframe...")
         df = interpreter.create_interpretability_dataframe(
             predictions, labels, data_loader, 
@@ -498,6 +611,7 @@ def create_interpretability_dashboard(interpreter,
         
         print(f"Created visualization dataframe with {len(df)} samples using {layer_name} features")
         print(f"UMAP was computed on up to {max_umap_samples} samples")
+        print(f"Dashboard will display up to {max_viz_samples} samples for performance")
         
         # Create visualizer and plots
         visualizer = UMAPVisualizer()
@@ -510,7 +624,26 @@ def create_interpretability_dashboard(interpreter,
         )
         tabs.append(TabPanel(child=class_plot, title="Classification Results"))
         
-        # Tab 2: Feature-based coloring (if additional features provided)
+        # Tab 2: Uncertainty visualization (if available)
+        if 'prediction_uncertainty' in df.columns:
+            uncertainty_plots = []
+            
+            # Uncertainty coloring plot
+            uncertainty_plot = visualizer.plot_uncertainty_coloring(
+                df, title=f"UMAP: Prediction Uncertainty{title_suffix}"
+            )
+            uncertainty_plots.append(uncertainty_plot)
+            
+            # Uncertainty vs correctness plot
+            uncertainty_correctness_plot = visualizer.plot_uncertainty_vs_correctness(
+                df, title=f"UMAP: Uncertainty vs Correctness{title_suffix}"
+            )
+            uncertainty_plots.append(uncertainty_correctness_plot)
+            
+            uncertainty_layout = row(*uncertainty_plots)
+            tabs.append(TabPanel(child=uncertainty_layout, title="Uncertainty Analysis"))
+        
+        # Tab 3: Feature-based coloring (if additional features provided)
         if additional_features:
             feature_plots = []
             for feature_name in additional_features.keys():
@@ -527,7 +660,7 @@ def create_interpretability_dashboard(interpreter,
                     feature_layout = gridplot([feature_plots[i:i+2] for i in range(0, len(feature_plots), 2)])
                 tabs.append(TabPanel(child=feature_layout, title="Feature Analysis"))
         
-        # Tab 3: High-dimensional clusters (if available and enabled)
+        # Tab 4: High-dimensional clusters (if available and enabled)
         if clustering_enabled and 'high_dim_cluster' in df.columns:
             cluster_plot = visualizer.plot_clusters(
                 df, cluster_column='high_dim_cluster',

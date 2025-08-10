@@ -95,9 +95,8 @@ Configure search space in the config file under `bayes_search` section. Best par
 ## Perform Inference: 
 
 ```sh
-python .scripts/run_inference.py \
---dataset-path /path/to/dataset/folder/ \ # The folder with features, images etc...
-  --weights-path /path/to/weight/folder/
+python scripts/run_inference.py \
+--dataset-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm       --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized
 
 ```
 More details in `notebooks/inference_example.ipynb`

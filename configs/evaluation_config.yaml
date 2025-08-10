@@ -27,6 +27,7 @@ evaluation:
 interpretability:
   enabled: true
   max_samples: 100000  # Maximum samples for UMAP analysis
+  max_visualization_samples: 3000  # Max samples to show in plots (for performance)
   
   # Feature extraction settings
   feature_extraction:
@@ -37,7 +38,6 @@ interpretability:
     # - "flatten": After flattening convolution features
     # - "fc1": After first fully connected layer + ReLU + dropout (recommended)
     # - "output": Final model output (1D logits)
-    max_visualization_samples: 3000  # Max samples to show in plots (for performance)
     random_state: 42  # Add this for reproducible sampling
   
   # UMAP parameters
@@ -49,7 +49,7 @@ interpretability:
     optimize_params: false  # Set to true to optimize UMAP parameters
     
   # High-dimensional clustering parameters (performed before UMAP)
-  high_dim_clustering:
+  clustering:
     enabled: false  # Set to true to enable HDBSCAN clustering on high-dimensional features
     # HDBSCAN parameters for high-dimensional feature clustering
     min_cluster_size: 10
