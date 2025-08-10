@@ -26,7 +26,7 @@ evaluation:
 # Interpretability analysis settings
 interpretability:
   enabled: true
-  max_samples: 30000  # Maximum samples for UMAP analysis
+  max_samples: 100000  # Maximum samples for UMAP analysis
   
   # Feature extraction settings
   feature_extraction:
@@ -37,7 +37,7 @@ interpretability:
     # - "flatten": After flattening convolution features
     # - "fc1": After first fully connected layer + ReLU + dropout (recommended)
     # - "output": Final model output (1D logits)
-    max_visualization_samples: 300  # Max samples to show in plots (for performance)
+    max_visualization_samples: 3000  # Max samples to show in plots (for performance)
     random_state: 42  # Add this for reproducible sampling
   
   # UMAP parameters
