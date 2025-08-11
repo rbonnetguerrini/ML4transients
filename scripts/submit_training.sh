@@ -2,10 +2,10 @@
 #SBATCH --job-name=transient_bayes
 #SBATCH --output=logs/trainings/training_%j.out
 #SBATCH --error=logs/trainings/training_%j.err
-#SBATCH --time=20:00:00
+#SBATCH --time=38:00:00
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:v100:1
-#SBATCH --cpus-per-task=5
+#SBATCH --gres=gpu:h100:4
+#SBATCH --cpus-per-task=12
 #SBATCH --mem=10G
 
 # Create logs directory if it doesn't exist
@@ -18,7 +18,7 @@ conda activate env_ML
 # Get arguments
 CONFIG_FILE=${1:-"configs/standard_training.yaml"}
 EXPERIMENT_NAME=${2:-"bayes_opt_${SLURM_JOB_ID}"}
-USE_HPO=${3:-"--hpo"}
+USE_HPO=${3:-""}
 
 echo "=== Bayesian Optimization Job ==="
 echo "Config: $CONFIG_FILE"
