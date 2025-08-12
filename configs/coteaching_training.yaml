@@ -22,15 +22,15 @@ training:
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "coteaching_optimized"
+  experiment_name: "coteaching"
   log_interval: 100
   
   early_stopping:
     enabled: true
-    monitor: "loss"
-    mode: "min"
-    patience_lr_changes: 5
-    min_delta: 0.0
+    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
+    mode: "min"                         # Want to minimize FNR
+    patience: 80
+    min_delta: 0.001                    # Minimum improvement required
     
   bayes_search:
     enabled: false
