@@ -187,63 +187,80 @@ def main():
     
     args = parser.parse_args()
     
-    # Load configuration
-    config = load_config(args.config)
-    # Override experiment name if specified
-    if args.experiment_name:
-        config['training']['experiment_name'] = args.experiment_name
-    # Create output directory (facilitating inference and weight loading)
-    output_dir = config['training'].get('output_dir', 'output')
-    os.makedirs(output_dir, exist_ok=True)
+    try:
+        # Load configuration
+        if not os.path.exists(args.config):
+            raise FileNotFoundError(f"Config file not found: {args.config}")
+        
+        config = load_config(args.config)
+        print(f"Loaded config from: {args.config}")
+        
+        # Override experiment name if specified
+        if args.experiment_name:
+            config['training']['experiment_name'] = args.experiment_name
+            
+        # Create output directory (facilitating inference and weight loading)
+        output_dir = config['training'].get('output_dir', 'output')
+        os.makedirs(output_dir, exist_ok=True)
 
-    # Save a copy of the config in the output directory
-    config_copy_path = os.path.join(output_dir, 'config.yaml')
-    with open(config_copy_path, 'w') as f:
-        yaml.dump(config, f)
-    print(f"Config saved to: {config_copy_path}")
-    
-    # Determine training mode
-    run_hpo = args.hpo or config['training'].get('bayes_search', {}).get('enabled', False)
-    
-    if run_hpo:
-        print("=== BAYESIAN HYPERPARAMETER OPTIMIZATION MODE ===")
-        print(f"Using trainer: {config['training']['trainer_type']}")
-        run_bayesian_optimization(config)
-        return
-    else:
-        print("=== NORMAL TRAINING MODE ===")
-        print(f"Using trainer: {config['training']['trainer_type']}")
-    
-    # Print TensorBoard info
-    if config['training'].get('use_tensorboard', True):
-        log_dir = config['training'].get('tensorboard_log_dir', 'runs')
-        exp_name = config['training'].get('experiment_name', 'experiment')
-        print(f"TensorBoard will log to: {log_dir}/{exp_name}")
-        print(f"To view logs, run: tensorboard --logdir={log_dir}")
-    
-    # Create data loaders
-    print("Creating data loaders...")
-    train_loader, val_loader, test_loader = create_data_loaders(config)
-    
-    print(f"Train samples: {len(train_loader.dataset)}")
-    print(f"Test samples: {len(test_loader.dataset)}")
-    if val_loader:
-        print(f"Val samples: {len(val_loader.dataset)}")
-    
-    # Create trainer
-    trainer = get_trainer(config['training']['trainer_type'], config['training'])
-    
-    # Train model
-    print("Starting training...")
-    best_metric = trainer.fit(train_loader, val_loader, test_loader)
-    
-    monitor_key = config['training'].get('early_stopping', {}).get('monitor', 'accuracy')
-    print(f"Training completed. Best {monitor_key}: {best_metric:.4f}")
+        # Save a copy of the config in the output directory
+        config_copy_path = os.path.join(output_dir, 'config.yaml')
+        with open(config_copy_path, 'w') as f:
+            yaml.dump(config, f)
+        print(f"Config saved to: {config_copy_path}")
+        
+        # Determine training mode
+        run_hpo = args.hpo or config['training'].get('bayes_search', {}).get('enabled', False)
+        
+        if run_hpo:
+            print("=== BAYESIAN HYPERPARAMETER OPTIMIZATION MODE ===")
+            print(f"Using trainer: {config['training']['trainer_type']}")
+            run_bayesian_optimization(config)
+            return
+        else:
+            print("=== NORMAL TRAINING MODE ===")
+            print(f"Using trainer: {config['training']['trainer_type']}")
+        
+        # Print TensorBoard info
+        if config['training'].get('use_tensorboard', True):
+            log_dir = config['training'].get('tensorboard_log_dir', 'runs')
+            exp_name = config['training'].get('experiment_name', 'experiment')
+            print(f"TensorBoard will log to: {log_dir}/{exp_name}")
+            print(f"To view logs, run: tensorboard --logdir={log_dir}")
+        
+        # Create data loaders
+        print("Creating data loaders...")
+        train_loader, val_loader, test_loader = create_data_loaders(config)
+        
+        print(f"Train samples: {len(train_loader.dataset)}")
+        print(f"Test samples: {len(test_loader.dataset)}")
+        if val_loader:
+            print(f"Val samples: {len(val_loader.dataset)}")
+        
+        # Create trainer
+        trainer = get_trainer(config['training']['trainer_type'], config['training'])
+        
+        # Train model
+        print("Starting training...")
+        best_metric = trainer.fit(train_loader, val_loader, test_loader)
+        
+        monitor_key = config['training'].get('early_stopping', {}).get('monitor', 'accuracy')
+        print(f"Training completed. Best {monitor_key}: {best_metric:.4f}")
 
-    if test_loader:  
-        test_results = infer(test_loader, trainer= trainer, return_preds=True, compute_metrics=True)
-        print(f"Accuracy on the validation: {test_results['accuracy']}")
-        print(f"TP on the validation: {test_results['confusion_matrix'][0][0]}")
-        print(f"FP on the validation: {test_results['confusion_matrix'][0][1]}")
-        print(f"FN on the validation: {test_results['confusion_matrix'][1][0]}")
-        print(f"TN on the validation: {test_results['confusion_matrix'][1][1]}")
+        if test_loader:  
+            print("Running inference on test set...")
+            test_results = infer(test_loader, trainer=trainer, return_preds=True, compute_metrics=True)
+            print(f"Accuracy on the test set: {test_results['accuracy']}")
+            print(f"TP on the test set: {test_results['confusion_matrix'][0][0]}")
+            print(f"FP on the test set: {test_results['confusion_matrix'][0][1]}")
+            print(f"FN on the test set: {test_results['confusion_matrix'][1][0]}")
+            print(f"TN on the test set: {test_results['confusion_matrix'][1][1]}")
+            
+    except Exception as e:
+        print(f"ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise e
+
+if __name__ == "__main__":
+    main()
