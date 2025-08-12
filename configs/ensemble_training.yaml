@@ -13,20 +13,20 @@ training:
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized_20"
-  num_models: 50                        # Optimized: 4 models in ensemble
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_50"
+  num_models: 50                      
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "ensemble_optimized_20"
+  experiment_name: "ensemble_50"
   log_interval: 100
   
   early_stopping:
     enabled: true
-    monitor: "loss"
-    mode: "min"
-    patience_lr_changes: 5
-    min_delta: 0.0
+    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
+    mode: "min"                         # Want to minimize FNR
+    patience: 80
+    min_delta: 0.001   
     
   bayes_search:
     enabled: false
@@ -44,4 +44,3 @@ training:
     dropout_3: 0.37                     # Optimized: 0.3733545404663609
     units: 256                          # Optimized
 random_state: 42
-

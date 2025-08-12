@@ -23,10 +23,10 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "loss"       
-    mode: "min"            
-    patience_lr_changes: 5  # Stop after 5 LR changes without improvement
-    min_delta: 0.0
+    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
+    mode: "min"                         # Want to minimize FNR
+    patience: 80
+    min_delta: 0.001  
     
   bayes_search:
     enabled: false
