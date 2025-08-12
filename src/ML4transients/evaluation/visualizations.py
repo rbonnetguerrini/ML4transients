@@ -46,12 +46,12 @@ class BokehEvaluationPlots:
         # Data for visualization
         data = ColumnDataSource(data=dict(
             labels=['True Positive', 'False Negative', 'False Positive', 'True Negative',
-                   'Sensitivity', 'Specificity', 'Precision', 'NPV', 'Accuracy'],
+                    'Specificity', 'Sensitivity','Precision', 'NPV', 'Accuracy'],
             counts=[stats['true_positive'], stats['false_negative'], 
                    stats['false_positive'], stats['true_negative'],
                    None, None, None, None, None],
             percentages=[tp_pct, fn_pct, fp_pct, tn_pct, 
-                        sensitivity_pct, specificity_pct, precision_pct, npv_pct, accuracy_pct],
+                        specificity_pct, sensitivity_pct, precision_pct, npv_pct, accuracy_pct],
             x=[0, 1, 0, 1, 2, 2, 0, 1, 2],
             y=[2, 2, 1, 1, 1, 2, 0, 0, 0],
             colors=['#FFC300', '#b3b6b7', '#FF5733', '#C70039', 
