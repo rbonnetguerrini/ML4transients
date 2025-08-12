@@ -17,7 +17,7 @@ sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')
 
 from ML4transients.data_access import DatasetLoader
 from ML4transients.evaluation.metrics import EvaluationMetrics, load_inference_metrics
-from ML4transients.evaluation.visualizations import create_evaluation_dashboard, create_interpretability_dashboard
+from ML4transients.evaluation.visualizations import create_evaluation_dashboard, create_interpretability_dashboard, create_combined_dashboard
 from ML4transients.evaluation.interpretability import UMAPInterpreter
 from ML4transients.training.pytorch_dataset import PytorchDataset
 from ML4transients.utils import load_config
@@ -220,11 +220,12 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
     # Use optimized DataLoader settings for evaluation
     return DataLoader(
         eval_dataset,
-        batch_size=64,  # Larger batch size for evaluation efficiency
+        batch_size=128,  # Increase batch size for better GPU utilization
         shuffle=False,
         num_workers=0,  # Avoid multiprocessing overhead for evaluation
         pin_memory=False,  # Save memory
-        drop_last=False
+        drop_last=False,
+        prefetch_factor=2 if hasattr(DataLoader, 'prefetch_factor') else None  # Prefetch next batch
     )
 
 def main():
@@ -325,6 +326,14 @@ def main():
     metrics = EvaluationMetrics(predictions, labels, probabilities)
     print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
+    # Print enhanced summary
+    summary = metrics.summary()
+    print("\n" + "="*50)
+    print("EVALUATION SUMMARY")
+    print("="*50)
+    for key, value in summary.items():
+        print(f"{key}: {value:.4f}")
+    
     # Determine model name for dashboard title
     if args.weights_path:
         model_name = Path(args.weights_path).name
@@ -344,39 +353,75 @@ def main():
     else:
         model_name = f"Model Hash {args.model_hash}"
     
-    # Create metrics dashboard
-    print("Creating metrics dashboard...")
-    step_start = time.time()
-    metrics_dashboard = create_evaluation_dashboard(
-        metrics, 
-        output_path=output_dir / "metrics_dashboard.html",
-        title=f"Model Evaluation - {model_name}"
-    )
-    print(f"Metrics dashboard created in {time.time() - step_start:.2f}s")
-    
-    # Print enhanced summary
-    summary = metrics.summary()
-    print("\n" + "="*50)
-    print("EVALUATION SUMMARY")
-    print("="*50)
-    print(f"Model: {model_name}")
-    print(f"Total samples: {len(predictions):,}")
-    print(f"Visits evaluated: {len(visits_to_eval)} {visits_to_eval}")
-    if probabilities is not None:
-        print(f"Probabilistic predictions: Yes")
-    if uncertainties is not None:
-        print(f"Uncertainty quantification: Yes (mean: {uncertainties.mean():.4f})")
-    print("-"*50)
-    for metric, value in summary.items():
-        print(f"{metric.replace('_', ' ').title()}: {value:.4f}")
-    print("="*50)
-    
     # Store data for interpretability
     interp_predictions = None
     interp_labels = None
+    interpreter = None
+    eval_data_loader = None
+    
     if args.interpretability and args.weights_path:
         interp_predictions = predictions.copy()
         interp_labels = labels.copy()
+        
+        # Initialize interpretability components
+        try:
+            print("Creating evaluation data loader...")
+            step_start = time.time()
+            eval_data_loader = create_evaluation_data_loader(
+                dataset_loader, visits_to_eval, 
+                max_samples=config.get('interpretability', {}).get('max_samples', 3000)
+            )
+            print(f"Data loader created in {time.time() - step_start:.2f}s")
+            
+            print("Initializing UMAP interpreter...")
+            step_start = time.time()
+            interpreter = UMAPInterpreter(args.weights_path)
+            print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
+            
+            # Update config with command line overrides
+            interp_config = config.copy()
+            if 'interpretability' not in interp_config:
+                interp_config['interpretability'] = {}
+            if 'umap' not in interp_config['interpretability']:
+                interp_config['interpretability']['umap'] = {}
+            if 'clustering' not in interp_config['interpretability']:
+                interp_config['interpretability']['clustering'] = {}
+            
+            if args.optimize_umap:
+                interp_config['interpretability']['umap']['optimize_params'] = True
+            if args.enable_clustering:
+                interp_config['interpretability']['clustering']['enabled'] = True
+                
+        except Exception as e:
+            print(f"Error initializing interpretability components: {e}")
+            print("Will create metrics-only dashboard...")
+            interpreter = None
+            eval_data_loader = None
+    
+    # Create combined dashboard
+    print("Creating combined dashboard...")
+    step_start = time.time()
+    
+    # Get additional features if specified in config
+    additional_features = {}
+    if args.interpretability and 'features' in config.get('interpretability', {}):
+        # Add SNR or other features here if available
+        pass
+    
+    dashboard_path = create_combined_dashboard(
+        metrics=metrics,
+        interpreter=interpreter,
+        data_loader=eval_data_loader,
+        predictions=interp_predictions,
+        labels=interp_labels,
+        output_path=output_dir / "evaluation_dashboard.html",
+        additional_features=additional_features if args.interpretability else None,
+        config=interp_config if args.interpretability and interpreter else None,
+        title=f"Model Evaluation - {model_name}",
+        probabilities=probabilities,  # Pass pre-computed probabilities
+        uncertainties=uncertainties   # Pass pre-computed uncertainties
+    )
+    print(f"Combined dashboard created in {time.time() - step_start:.2f}s")
     
     # After dashboards, release large arrays
     del predictions, labels, source_ids
@@ -384,89 +429,19 @@ def main():
         del probabilities
     if uncertainties is not None:
         del uncertainties
-    import gc; gc.collect()
+    if interp_predictions is not None:
+        del interp_predictions
+    if interp_labels is not None:
+        del interp_labels
     
-    # Run interpretability analysis if requested
-    if args.interpretability:
-        if not args.weights_path:
-            print("Warning: Interpretability analysis requires --weights-path, skipping...")
-        else:
-            print("\nRunning interpretability analysis...")
-            interp_start = time.time()
-            
-            try:
-                # Create data loader for UMAP analysis
-                print("Creating evaluation data loader...")
-                step_start = time.time()
-                eval_data_loader = create_evaluation_data_loader(
-                    dataset_loader, visits_to_eval, 
-                    max_samples=config.get('interpretability', {}).get('max_samples', 3000)
-                )
-                print(f"Data loader created in {time.time() - step_start:.2f}s")
-                
-                # Initialize UMAP interpreter
-                print("Initializing UMAP interpreter...")
-                step_start = time.time()
-                interpreter = UMAPInterpreter(args.weights_path)
-                print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
-                
-                # Get additional features if specified in config
-                additional_features = {}
-                if 'features' in config.get('interpretability', {}):
-                    # Add SNR or other features here
-                    pass
-                
-                # Update config with UMAP optimization and clustering from command line
-                interp_config = config.copy()
-                if 'interpretability' not in interp_config:
-                    interp_config['interpretability'] = {}
-                if 'umap' not in interp_config['interpretability']:
-                    interp_config['interpretability']['umap'] = {}
-                if 'clustering' not in interp_config['interpretability']:
-                    interp_config['interpretability']['clustering'] = {}
-                
-                # Override UMAP optimization from command line
-                if args.optimize_umap:
-                    interp_config['interpretability']['umap']['optimize_params'] = True
-                
-                # Override clustering enablement from command line
-                if args.enable_clustering:
-                    interp_config['interpretability']['clustering']['enabled'] = True
-
-                # Create interpretability dashboard with configuration
-                print("Creating interpretability dashboard...")
-                step_start = time.time()
-                interp_dashboard = create_interpretability_dashboard(
-                    interpreter,
-                    eval_data_loader,
-                    interp_predictions,  # Use the stored copy
-                    interp_labels,       # Use the stored copy
-                    output_path=output_dir / "interpretability_dashboard.html",
-                    additional_features=additional_features,
-                    config=interp_config
-                )
-                print(f"Interpretability dashboard created in {time.time() - step_start:.2f}s")
-                print(f"Total interpretability analysis time: {time.time() - interp_start:.2f}s")
-                
-                print(f"Interpretability dashboard saved to {output_dir / 'interpretability_dashboard.html'}")
-                
-            except Exception as e:
-                print(f"Error in interpretability analysis: {e}")
-                print("Continuing with basic evaluation...")
-            
-            finally:
-                # Cleanup memory after interpretability analysis
-                if 'eval_data_loader' in locals():
-                    del eval_data_loader
-                if 'interpreter' in locals():
-                    del interpreter
-                if 'interp_predictions' in locals():
-                    del interp_predictions
-                if 'interp_labels' in locals():
-                    del interp_labels
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+    # Cleanup memory after dashboard creation
+    if eval_data_loader is not None:
+        del eval_data_loader
+    if interpreter is not None:
+        del interpreter
+    import gc; gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Save detailed results
     print("Saving evaluation results...")
@@ -493,9 +468,11 @@ def main():
     print(f"\nEvaluation complete!")
     print(f"Total execution time: {total_time:.2f}s ({total_time/60:.1f} minutes)")
     print(f"Results saved to: {output_dir}")
-    print(f"Open metrics dashboard: file://{output_dir / 'metrics_dashboard.html'}")
+    print(f"Open dashboard: file://{output_dir / 'evaluation_dashboard.html'}")
     if args.interpretability and args.weights_path:
-        print(f"Open interpretability dashboard: file://{output_dir / 'interpretability_dashboard.html'}")
+        print("Dashboard includes both metrics and interpretability tabs")
+    else:
+        print("Dashboard includes metrics tab only")
 
 if __name__ == "__main__":
     main()

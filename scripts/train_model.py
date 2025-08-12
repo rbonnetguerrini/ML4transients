@@ -183,7 +183,7 @@ def main():
     parser = argparse.ArgumentParser(description='Train transient bogus classifier')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--experiment-name', type=str, required=True, help='Name of the training')
-    parser.add_argument('--hpo', action='store_true', help='Run Bayesian hyperparameter optimization')
+    parser.add_argument('--hpo', action='store_true', help='Run Bayesian hyperparameter optimization instead of normal training')
     
     args = parser.parse_args()
     
@@ -201,7 +201,18 @@ def main():
     with open(config_copy_path, 'w') as f:
         yaml.dump(config, f)
     print(f"Config saved to: {config_copy_path}")
-    print(f"Using trainer: {config['training']['trainer_type']}")
+    
+    # Determine training mode
+    run_hpo = args.hpo or config['training'].get('bayes_search', {}).get('enabled', False)
+    
+    if run_hpo:
+        print("=== BAYESIAN HYPERPARAMETER OPTIMIZATION MODE ===")
+        print(f"Using trainer: {config['training']['trainer_type']}")
+        run_bayesian_optimization(config)
+        return
+    else:
+        print("=== NORMAL TRAINING MODE ===")
+        print(f"Using trainer: {config['training']['trainer_type']}")
     
     # Print TensorBoard info
     if config['training'].get('use_tensorboard', True):
@@ -218,11 +229,6 @@ def main():
     print(f"Test samples: {len(test_loader.dataset)}")
     if val_loader:
         print(f"Val samples: {len(val_loader.dataset)}")
-    
-    # If Bayesian search enabled via flag or config
-    if args.hpo or config['training'].get('bayes_search', {}).get('enabled', False):
-        run_bayesian_optimization(config)
-        return
     
     # Create trainer
     trainer = get_trainer(config['training']['trainer_type'], config['training'])
@@ -241,7 +247,3 @@ def main():
         print(f"FP on the validation: {test_results['confusion_matrix'][0][1]}")
         print(f"FN on the validation: {test_results['confusion_matrix'][1][0]}")
         print(f"TN on the validation: {test_results['confusion_matrix'][1][1]}")
-
-
-if __name__ == "__main__":
-    main()
