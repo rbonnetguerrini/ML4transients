@@ -1,3 +1,9 @@
+"""
+Main dataset loader for transient detection data.
+
+This module provides the primary interface for accessing multi-visit astronomical datasets, including cutouts, features, and inference results. It supports lazy loading, efficient memory management, and automatic discovery of data files.
+"""
+
 import yaml
 import json
 import torch
@@ -7,23 +13,34 @@ from typing import List, Dict, Optional, Union
 from .data_loaders import CutoutLoader, FeatureLoader, LightCurveLoader, InferenceLoader
 
 class DatasetLoader:
-    """Lazy loading dataset class data."""
+    """Main interface for accessing astronomical transient detection datasets.
+    
+    Provides unified access to cutout images, tabular features, and model inference results across multiple visits. Supports lazy loading and efficient memory
+    management for large-scale datasets.
+    
+    Parameters
+    ----------
+    data_paths : str, Path, or list
+        Single path or list of paths to data directories
+        
+    Attributes
+    ----------
+    data_paths : list of Path
+        List of data directory paths
+    visits : list of int
+        Available visit numbers in the dataset
+    """
 
     def __init__(self, data_paths: Union[str, Path, List[Union[str, Path]]]):
-        """
-        Initialize with one or more data directories.
-        
-        Args:
-            data_paths: Single path or list of paths to data directories
-        """
-
+        # Normalize paths to list of Path objects
         if isinstance(data_paths, (str, Path)):
             data_paths = [Path(data_paths)]
         else:
             data_paths = [Path(p) for p in data_paths]
         
-
         self.data_paths = data_paths
+        
+        # Initialize internal storage
         self._cutout_loaders = {}
         self._feature_loaders = {}
         self._lightcurve_loaders = {}
@@ -31,17 +48,17 @@ class DatasetLoader:
         self._visits = None
         self._config_summary = None
         self._global_id_index = None 
-        self._cached_trainers = {}  # Cache trainers by weights_path
-        self._inference_registry = {}  # Registry of available inference files
+        self._cached_trainers = {}  # Cache trained models
+        self._inference_registry = {}  # Registry of inference files
 
+        # Discover available data files
         self._discover_data()
         self._load_inference_registries()
 
     def _build_global_index(self):
-        """Build a global index mapping diaSourceId to visit.
+        """Build global index mapping diaSourceId to visit number.
         
-        Creates a dictionary mapping each diaSourceId to its corresponding
-        visit number for efficient cross-visit lookups.
+        Creates an efficient lookup table for finding which visit contains a specific diaSourceId,enabling fast cross-visit searches.
         """
         if self._global_id_index is not None:
             return
@@ -49,19 +66,24 @@ class DatasetLoader:
         print("Building global index...")
         self._global_id_index = {}
         
-        # Index feature
         for visit, loader in self._feature_loaders.items():
             for dia_id in loader.ids:
                 self._global_id_index[dia_id] = visit
                         
     @property
-    def global_index(self):
-        """Lazy build and return global ID index."""
+    def global_index(self) -> Dict[int, int]:
+        """Get global ID index (lazy built).
+        
+        Returns
+        -------
+        dict
+            Mapping from diaSourceId to visit number
+        """
         if self._global_id_index is None:
             self._build_global_index()
         return self._global_id_index
     
-    def get_cutout_by_id(self, dia_source_id: int):
+    def get_cutout_by_id(self, dia_source_id: int) -> Optional[np.ndarray]:
         """Get cutout by diaSourceId (searches all visits).
         
         Parameters
@@ -72,14 +94,14 @@ class DatasetLoader:
         Returns
         -------
         np.ndarray or None
-            Cutout array, or None if not found
+            Cutout array if found, None otherwise
         """
         visit = self.global_index.get(dia_source_id)
         if visit and visit in self._cutout_loaders:
             return self._cutout_loaders[visit].get_by_id(dia_source_id)
         return None
     
-    def get_features_by_id(self, dia_source_id: int):
+    def get_features_by_id(self, dia_source_id: int) -> Optional[pd.DataFrame]:
         """Get features by diaSourceId (searches all visits).
         
         Parameters
@@ -90,7 +112,7 @@ class DatasetLoader:
         Returns
         -------
         pd.DataFrame or None
-            Features DataFrame, or None if not found
+            Features DataFrame if found, None otherwise
         """
         visit = self.global_index.get(dia_source_id)
         if visit and visit in self._feature_loaders:
@@ -98,7 +120,7 @@ class DatasetLoader:
         return None
     
     def find_visit(self, dia_source_id: int) -> Optional[int]:
-        """Find which visit contains this diaSourceId.
+        """Find which visit contains a specific diaSourceId.
         
         Parameters
         ----------
@@ -108,28 +130,38 @@ class DatasetLoader:
         Returns
         -------
         int or None
-            Visit number containing the ID, or None if not found
+            Visit number containing the ID, None if not found
         """
         return self.global_index.get(dia_source_id)
 
-    def get_inference_loader(self, visit: int, weights_path: str = None, model_hash: str = None, data_path: Path = None):
-        """
-        Get or create an InferenceLoader for the given visit.
-        Can work with either weights_path (for new inference) or model_hash (for existing results).
+    def get_inference_loader(self, visit: int, weights_path: str = None, 
+                           model_hash: str = None, data_path: Path = None) -> Optional[InferenceLoader]:
+        """Get or create InferenceLoader for a specific visit.
         
-        Args:
-            visit: Visit number
-            weights_path: Path to trained model weights directory (for new inference)
-            model_hash: Model hash from existing inference filename (for loading existing results)
-            data_path: Specific data path to use (defaults to first data path)
+        Parameters
+        ----------
+        visit : int
+            Visit number
+        weights_path : str, optional
+            Path to model weights directory (for new inference)
+        model_hash : str, optional
+            Model hash for existing inference results
+        data_path : Path, optional
+            Specific data path (defaults to first data path)
             
-        Returns:
-            InferenceLoader: Configured inference loader for the visit
+        Returns
+        -------
+        InferenceLoader or None
+            Configured inference loader, None if not found/creatable
+            
+        Raises
+        ------
+        ValueError
+            If neither weights_path nor model_hash provided
         """
         if not data_path:
             data_path = self.data_paths[0]
         
-        # Ensure we have either weights_path or model_hash
         if not weights_path and not model_hash:
             raise ValueError("Must provide either weights_path or model_hash")
         
@@ -137,19 +169,18 @@ class DatasetLoader:
         if model_hash:
             data_path_str = str(data_path)
             
-            # Check registry first
+            # Check registry for existing results
             if (data_path_str in self._inference_registry and 
                 str(visit) in self._inference_registry[data_path_str] and
                 model_hash in self._inference_registry[data_path_str][str(visit)]):
                 
-                # Create cache key for this specific inference file
                 cache_key = f"{data_path}_{visit}_{model_hash}"
                 
                 if cache_key not in self._inference_loaders:
-                    # Create InferenceLoader without weights_path since we're loading existing results
+                    # Create loader for existing results
                     inference_loader = InferenceLoader(data_path, visit, weights_path=None)
                     
-                    # Manually set the inference file based on the registry info
+                    # Set inference file from registry
                     inference_info = self._inference_registry[data_path_str][str(visit)][model_hash]
                     inference_file = data_path / "inference" / inference_info['filename']
                     
@@ -168,7 +199,6 @@ class DatasetLoader:
         
         # Case 2: Creating new inference or loading by weights_path
         else:
-            # Use weights path and visit as key to cache inference loaders
             cache_key = f"{data_path}_{visit}_{weights_path}"
             
             if cache_key not in self._inference_loaders:
@@ -176,15 +206,27 @@ class DatasetLoader:
             
             return self._inference_loaders[cache_key]
 
-    def run_inference_all_visits(self, weights_path: str, data_path: Path = None, force=False):
-        """
-        Run inference on all visits sequentially for memory efficiency.
-        Uses cached model to avoid reloading.
+    def run_inference_all_visits(self, weights_path: str, data_path: Path = None, force: bool = False) -> Dict[int, InferenceLoader]:
+        """Run inference on all visits sequentially for memory efficiency.
+        
+        Parameters
+        ----------
+        weights_path : str 
+            Path to model weights directory
+        data_path : Path, optional
+            Specific data path (defaults to first data path)
+        force : bool
+            Force re-run even if results exist
+            
+        Returns
+        -------
+        dict
+            Mapping from visit number to InferenceLoader with results
         """
         if not data_path:
             data_path = self.data_paths[0]
         
-        # Pre-load the model once
+        # Pre-load model once for efficiency
         print("Loading model (will be cached for all visits)...")
         trainer = self._get_or_load_trainer(weights_path)
         
@@ -197,14 +239,16 @@ class DatasetLoader:
             print(f"\n--- Processing visit {visit} ({i+1}/{len(self.visits)}) ---")
             
             try:
-                inference_loader = self.get_inference_loader(visit, weights_path=weights_path, data_path=data_path)
+                inference_loader = self.get_inference_loader(
+                    visit, weights_path=weights_path, data_path=data_path
+                )
                 
                 if inference_loader.has_inference_results() and not force:
                     print(f"Inference results already exist for visit {visit}")
                     results[visit] = inference_loader
                     continue
                 
-                # Pass the cached trainer to avoid reloading
+                # Run inference using cached trainer
                 inference_loader.run_inference(self, trainer=trainer, force=force)
                 results[visit] = inference_loader
                 print(f"✓ Completed inference for visit {visit}")
@@ -271,16 +315,15 @@ class DatasetLoader:
             return existing_loaders
 
     def _discover_data(self):
-        """Discover available data files in the directories.
+        """Discover available data files in directories.
         
-        Scans data paths for cutout and feature files, automatically
-        detecting visit numbers from filenames and creating appropriate loaders.
+        Scans data paths for cutout and feature files, automatically detecting visit numbers from filenames and creating appropriate loaders.
         """
         for data_path in self.data_paths:
             if not data_path.exists():
                 continue
                 
-            # Find cutout files
+            # Discover cutout files
             cutout_dir = data_path / "cutouts"
             if cutout_dir.exists():
                 for file in cutout_dir.glob("visit_*.h5"):
@@ -288,7 +331,7 @@ class DatasetLoader:
                     if visit:
                         self._cutout_loaders[visit] = CutoutLoader(file)
             
-            # Find feature files
+            # Discover feature files
             feature_dir = data_path / "features"
             if feature_dir.exists():
                 for file in feature_dir.glob("visit_*_features.h5"):
@@ -296,24 +339,19 @@ class DatasetLoader:
                     if visit:
                         self._feature_loaders[visit] = FeatureLoader(file)
 
-            
-            # Load config summary if available
+            # Load configuration summary if available
             config_file = data_path / "config_summary.yaml"
             if config_file.exists() and self._config_summary is None:
                 with open(config_file) as f:
                     self._config_summary = yaml.safe_load(f)
-    @property
-    def config_summary(self) -> Optional[Dict]:
-        """Get config summary if available."""
-        return self._config_summary
-        
+
     def _extract_visit_from_filename(self, filename: str) -> Optional[int]:
-        """Extract visit number from filename like 'visit_12345.h5'.
+        """Extract visit number from filename pattern.
         
         Parameters
         ----------
         filename : str
-            Filename to parse
+            Filename to parse (e.g., 'visit_12345.h5')
             
         Returns
         -------
@@ -331,7 +369,13 @@ class DatasetLoader:
     
     @property
     def visits(self) -> List[int]:
-        """Get list of available visits."""
+        """Get sorted list of available visits.
+        
+        Returns
+        -------
+        list of int
+            Available visit numbers
+        """
         if self._visits is None:
             all_visits = set(self._cutout_loaders.keys()) | set(self._feature_loaders.keys())
             self._visits = sorted(all_visits)
@@ -339,28 +383,25 @@ class DatasetLoader:
     
     @property
     def cutouts(self) -> Dict[int, CutoutLoader]:
-        """Access cutout loaders by visit."""
+        """Access cutout loaders by visit number.
+        
+        Returns
+        -------
+        dict
+            Mapping from visit number to CutoutLoader
+        """
         return self._cutout_loaders
     
     @property
     def features(self) -> Dict[int, FeatureLoader]:
-        """Access feature loaders by visit."""
+        """Access feature loaders by visit number.
+        
+        Returns
+        -------
+        dict
+            Mapping from visit number to FeatureLoader
+        """
         return self._feature_loaders
-    
-    @property
-    def lightcurves(self) -> Dict[int, LightCurveLoader]:
-        """Access lightcurve loaders by visit (placeholder)."""
-        return self._lightcurve_loaders
-    
-    @property
-    def inference(self) -> Dict[str, InferenceLoader]:
-        """Access inference loaders by cache key."""
-        return self._inference_loaders
-    
-    @property
-    def config_summary(self) -> Optional[Dict]:
-        """Get config summary if available."""
-        return self._config_summary
     
     def get_cutout(self, visit: int, dia_source_id: int):
         """Get specific cutout by visit and diaSourceId."""
@@ -386,15 +427,6 @@ class DatasetLoader:
             return self._feature_loaders[visit].data
         return None
 
-    def get_inference_results_by_id(self, dia_source_id: int, weights_path: str = None, model_hash: str = None):
-        """Get inference results by diaSourceId across all visits."""
-        visit = self.find_visit(dia_source_id)
-        if visit:
-            inference_loader = self.get_inference_loader(visit, weights_path=weights_path, model_hash=model_hash)
-            if inference_loader and inference_loader.has_inference_results():
-                return inference_loader.get_results_by_id(dia_source_id)
-        return None
-
     def _get_or_load_trainer(self, weights_path: str):
         """Get cached trainer or load it if not cached.
         
@@ -411,7 +443,6 @@ class DatasetLoader:
         if weights_path not in self._cached_trainers:
             print(f"Loading model from {weights_path}...")
             
-            # Import here to avoid circular imports
             from ML4transients.training import get_trainer
             from ML4transients.utils import load_config
             import torch
@@ -421,7 +452,7 @@ class DatasetLoader:
             trainer_type = config["training"]["trainer_type"]
             trainer = get_trainer(trainer_type, config["training"])
             
-            # Load models based on trainer type (same logic as inference.py)
+            # Load models based on trainer type
             if trainer_type == "ensemble":
                 num_models = config["training"]["num_models"]
                 print(f"Ensemble model, loading {num_models} models.")
@@ -433,7 +464,6 @@ class DatasetLoader:
                     trainer.models[i].to(device)
                     trainer.models[i].eval()
             elif trainer_type == "coteaching":
-                # Load both models for co-teaching
                 state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
                 state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
                 trainer.model1.load_state_dict(state_dict1)
@@ -443,14 +473,13 @@ class DatasetLoader:
                 trainer.model1.eval()
                 trainer.model2.eval()
             else:
-                # Standard single model
                 state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
                 trainer.model.load_state_dict(state_dict)
                 trainer.model.to(device)
                 trainer.model.eval()
             
             self._cached_trainers[weights_path] = trainer
-            print(f"Model loaded and cached for {weights_path}")
+            print(f"Model loaded and cached")
         
         return self._cached_trainers[weights_path]
 
@@ -659,6 +688,7 @@ class DatasetLoader:
         print(f"Registry sync complete: added {added_count}, removed {removed_count} entries")
 
     def __repr__(self):
+        """String representation with dataset statistics"""
         total_cutouts = 0
         total_features = 0
         visits_with_cutouts = 0
@@ -676,8 +706,3 @@ class DatasetLoader:
         return (f"DatasetLoader({len(self.visits)} visits, {len(self.data_paths)} paths)\n"
                 f"  Cutouts: {total_cutouts} across {visits_with_cutouts} visits\n"
                 f"  Features: {total_features} across {visits_with_features} visits")
-
-    def __str__(self):
-        return self.__repr__()
-    def __str__(self):
-        return self.__repr__()

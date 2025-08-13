@@ -629,8 +629,9 @@ class UMAPVisualizer:
                          title: str = "UMAP: SNR Analysis") -> figure:
         """Plot UMAP colored by SNR values with high/low SNR regions highlighted.
         
-        Uses bounded SNR values (0-15) for visualization to focus on the 
-        scientifically relevant range, while preserving original values in tooltips.
+        Uses bounded SNR values (5th-95th percentile) for visualization to avoid
+        extreme values dominating the color scale, while preserving original
+        values in tooltips.
         
         Parameters
         ----------
@@ -655,25 +656,17 @@ class UMAPVisualizer:
         if len(df_clean) == 0:
             raise ValueError("No valid SNR data found")
         
-        # BOUND SNR VALUES to 0-15 range for better visualization of scientific range
+        # BOUND SNR VALUES to avoid extreme values dominating the plot
         snr_values = df_clean['snr'].values
-        snr_min = 0.0    # Lower bound for scientific range
-        snr_max = 15.0   # Upper bound for scientific range
+        snr_p5 = np.percentile(snr_values, 5)   # 5th percentile  
+        snr_p95 = np.percentile(snr_values, 95) # 95th percentile
         
         # Create bounded SNR column for visualization
         df_clean = df_clean.copy()
-        df_clean['snr_bounded'] = np.clip(snr_values, snr_min, snr_max)
+        df_clean['snr_bounded'] = np.clip(snr_values, snr_p5, snr_p95)
         
-        original_range = (snr_values.min(), snr_values.max())
-        print(f"SNR range before bounding: [{original_range[0]:.2f}, {original_range[1]:.2f}]")
-        print(f"SNR range after bounding: [{snr_min:.1f}, {snr_max:.1f}] (scientific range)")
-        
-        # Count how many values were clipped
-        clipped_low = np.sum(snr_values < snr_min)
-        clipped_high = np.sum(snr_values > snr_max)
-        total_samples = len(snr_values)
-        print(f"Clipped {clipped_low} values below {snr_min} and {clipped_high} values above {snr_max}")
-        print(f"Visualizing {total_samples - clipped_low - clipped_high}/{total_samples} samples in scientific range")
+        print(f"SNR range before bounding: [{snr_values.min():.2f}, {snr_values.max():.2f}]")
+        print(f"SNR range after bounding: [{snr_p5:.2f}, {snr_p95:.2f}] (5th-95th percentile)")
         
         p = figure(title=title, width=self.width, height=self.height,
                   tools=['pan', 'wheel_zoom', 'reset', 'save'])
@@ -685,13 +678,13 @@ class UMAPVisualizer:
             snr_threshold = df_clean['snr'].median()
         
         # Add threshold and bounding info to title
-        p.title.text = f"{title} (threshold: {snr_threshold:.2f}, range: [{snr_min:.0f}, {snr_max:.0f}])"
+        p.title.text = f"{title} (threshold: {snr_threshold:.2f}, bounded: [{snr_p5:.1f}, {snr_p95:.1f}])"
         
         # Create SNR color mapper using BOUNDED values
         color_mapper = LinearColorMapper(
             palette=cc.fire,  # Fire colormap works well for SNR (low=dark, high=bright)
-            low=snr_min,
-            high=snr_max
+            low=snr_p5,
+            high=snr_p95
         )
         
         # Use helper method with BOUNDED SNR coloring
@@ -703,7 +696,7 @@ class UMAPVisualizer:
         
         # Add color bar with bounded range
         color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
-                           title="SNR (0-15)")
+                           title="SNR (bounded)")
         p.add_layout(color_bar, 'right')
         
         # Create enhanced hover tooltip with ORIGINAL SNR values
@@ -723,7 +716,7 @@ class UMAPVisualizer:
                 <span style='font-size: 14px; color: #224499'>SNR Group:</span>
                 <span style='font-size: 14px'>@snr_group</span><br>
             """
-            # Add SNR group classification using ORIGINAL values
+            
             df_clean['snr_group'] = np.where(df_clean['snr'] >= snr_threshold, 'High SNR', 'Low SNR')
         
         tooltip_html += """
@@ -761,7 +754,7 @@ class UMAPVisualizer:
         return p
     
     def create_snr_metrics_div(self, snr_metrics: Dict) -> Div:
-        """Create a compact summary div with SNR-stratified metrics.
+        """Create a summary div with SNR-stratified metrics.
         
         Parameters
         ----------
@@ -771,53 +764,56 @@ class UMAPVisualizer:
         Returns
         -------
         Div
-            Bokeh Div with SNR metrics summary (compact version)
+            Bokeh Div with SNR metrics summary
         """
         if not snr_metrics:
-            return Div(text="<p>No SNR metrics available</p>", width=300, height=200)
+            return Div(text="<p>No SNR metrics available</p>", width=400, height=200)
         
         html_content = f"""
         <div style="padding: 10px; background-color: #2F2F2F; border-radius: 5px;">
-            <h3 style="color: white; margin-top: 0;">SNR Analysis</h3>
-            <table style="color: white; width: 100%; font-size: 11px;">
-                <tr><td><strong>Threshold:</strong></td><td>{snr_metrics.get('snr_threshold', 'N/A'):.2f}</td></tr>
-                <tr><td><strong>High SNR:</strong></td><td>{snr_metrics.get('n_high_snr', 0)} samples</td></tr>
-                <tr><td><strong>Low SNR:</strong></td><td>{snr_metrics.get('n_low_snr', 0)} samples</td></tr>
+            <h3 style="color: white; margin-top: 0;">SNR Analysis Summary</h3>
+            <table style="color: white; width: 100%; font-size: 12px;">
+                <tr><td><strong>SNR Threshold:</strong></td><td>{snr_metrics.get('snr_threshold', 'N/A'):.2f}</td></tr>
+                <tr><td><strong>SNR Range:</strong></td><td>[{snr_metrics.get('snr_range', (0,0))[0]:.2f}, {snr_metrics.get('snr_range', (0,0))[1]:.2f}]</td></tr>
+                <tr><td><strong>High SNR samples:</strong></td><td>{snr_metrics.get('n_high_snr', 0)}</td></tr>
+                <tr><td><strong>Low SNR samples:</strong></td><td>{snr_metrics.get('n_low_snr', 0)}</td></tr>
             </table>
             <br>
         """
         
-        # Compact High SNR metrics - only show key metrics
+        # High SNR metrics
         if 'high_snr_metrics' in snr_metrics:
             high_metrics = snr_metrics['high_snr_metrics']
             html_content += """
-            <h4 style="color: #FFC300; margin-bottom: 3px; font-size: 12px;">High SNR</h4>
-            <table style="color: white; width: 100%; font-size: 10px;">
+            <h4 style="color: #FFC300; margin-bottom: 5px;">High SNR Performance</h4>
+            <table style="color: white; width: 100%; font-size: 11px;">
             """
-            # Show only key metrics to save space
-            key_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
-            for key in key_metrics:
-                if key in high_metrics:
-                    html_content += f"<tr><td>{key}:</td><td>{high_metrics[key]:.3f}</td></tr>"
+            for key, value in high_metrics.items():
+                html_content += f"<tr><td>{key}:</td><td>{value:.3f}</td></tr>"
+            
+            if 'high_snr_uncertainty_mean' in snr_metrics:
+                html_content += f"<tr><td>uncertainty_mean:</td><td>{snr_metrics['high_snr_uncertainty_mean']:.3f}</td></tr>"
+            
             html_content += "</table><br>"
         
-        # Compact Low SNR metrics - only show key metrics
+        # Low SNR metrics
         if 'low_snr_metrics' in snr_metrics:
             low_metrics = snr_metrics['low_snr_metrics']
             html_content += """
-            <h4 style="color: #FF7F7F; margin-bottom: 3px; font-size: 12px;">Low SNR</h4>
-            <table style="color: white; width: 100%; font-size: 10px;">
+            <h4 style="color: #FF7F7F; margin-bottom: 5px;">Low SNR Performance</h4>
+            <table style="color: white; width: 100%; font-size: 11px;">
             """
-            # Show only key metrics to save space
-            key_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
-            for key in key_metrics:
-                if key in low_metrics:
-                    html_content += f"<tr><td>{key}:</td><td>{low_metrics[key]:.3f}</td></tr>"
+            for key, value in low_metrics.items():
+                html_content += f"<tr><td>{key}:</td><td>{value:.3f}</td></tr>"
+            
+            if 'low_snr_uncertainty_mean' in snr_metrics:
+                html_content += f"<tr><td>uncertainty_mean:</td><td>{snr_metrics['low_snr_uncertainty_mean']:.3f}</td></tr>"
+            
             html_content += "</table>"
         
         html_content += "</div>"
         
-        return Div(text=html_content, width=300, height=250)
+        return Div(text=html_content, width=400, height=350)
 
 def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = None,
                               title: str = "Model Evaluation Dashboard",
@@ -855,20 +851,18 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
         title="Prediction Distribution"
     )
     
-    # Create first row with confusion matrix and metrics summaries
+    # Start with basic plots layout
+    plots_layout = [
+        row(confusion_plot, metrics_div),
+        row(pred_dist_plot)
+    ]
+    
+    # Add SNR metrics div if available
     if snr_metrics:
         visualizer = UMAPVisualizer()  # Create to access SNR div creation
         snr_div = visualizer.create_snr_metrics_div(snr_metrics)
-        # Put both metrics and SNR summary in the first row
-        first_row = row(confusion_plot, metrics_div, snr_div)
-    else:
-        first_row = row(confusion_plot, metrics_div)
-    
-    # Start with the updated first row
-    plots_layout = [
-        first_row,
-        row(pred_dist_plot)
-    ]
+        # Add SNR metrics next to prediction distribution
+        plots_layout[-1] = row(pred_dist_plot, snr_div)
     
     # Add ROC and PR curves if probabilities are available
     if metrics.probabilities is not None:
