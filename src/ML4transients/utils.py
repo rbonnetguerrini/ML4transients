@@ -42,3 +42,7 @@ def append_config(config):
     with open(final_config_path, "w") as f:
         yaml.dump(frozen, f, sort_keys=False)
 
+def load_config(config_path):
+    """Load configuration from YAML file"""
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
