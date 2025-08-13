@@ -12,6 +12,7 @@ import numpy as np
 import gc
 import time
 from torch.utils.data import DataLoader
+from typing import Dict
 
 sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')
 
@@ -44,6 +45,8 @@ def parse_args():
                        help="Optimize UMAP parameters during interpretability analysis")
     parser.add_argument("--enable-clustering", action="store_true",
                        help="Enable HDBSCAN clustering on high-dimensional features")
+    parser.add_argument("--snr-analysis", action="store_true",
+                       help="Enable SNR-specific analysis and visualizations")
     parser.add_argument("--port", type=int, default=5006,
                        help="Port for Bokeh server (default: 5006)")
     
@@ -210,12 +213,15 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000) -> DataLoader:
     """Return DataLoader tailored for feature extraction / interpretability."""
     print(f"Creating evaluation dataset from {len(visits)} visits...")
+    print(f"Max samples limit: {max_samples}")
     
     # Create inference dataset for the specified visits
     eval_dataset = PytorchDataset.create_inference_dataset(
         dataset_loader, 
         visits=visits
     )
+    
+    print(f"Dataset created with {len(eval_dataset)} total samples")
     
     # Use optimized DataLoader settings for evaluation
     return DataLoader(
@@ -227,6 +233,167 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
         drop_last=False,
         prefetch_factor=2 if hasattr(DataLoader, 'prefetch_factor') else None  # Prefetch next batch
     )
+
+def extract_snr_data(dataset_loader: DatasetLoader, visits: list, source_ids: np.ndarray) -> np.ndarray:
+    """Extract SNR values for given source IDs from the dataset.
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader instance
+    visits : list
+        List of visits to search
+    source_ids : np.ndarray
+        Array of diaSourceIds to get SNR for
+        
+    Returns
+    -------
+    np.ndarray
+        SNR values corresponding to the source IDs
+    """
+    print("Extracting SNR data for analysis...")
+    
+    # Create mapping of source_id to index for efficient lookup
+    id_to_index = {sid: idx for idx, sid in enumerate(source_ids)}
+    snr_array = np.full(len(source_ids), np.nan)  # Initialize with NaN
+    
+    for visit in visits:
+        if visit in dataset_loader.features:
+            feature_loader = dataset_loader.features[visit]
+            
+            try:
+                # OPTIMIZATION: Load the full features DataFrame once per visit
+                # Use the data property to get all features, not just labels
+                print(f"Loading SNR data for visit {visit}...")
+                
+                # Access the full features data instead of just labels
+                if hasattr(feature_loader, '_data') and feature_loader._data is not None:
+                    features_df = feature_loader._data
+                else:
+                    # Load the full features data
+                    import pandas as pd
+                    with pd.HDFStore(feature_loader.file_path, 'r') as store:
+                        features_df = store.select('features')
+                
+                if 'snr' not in features_df.columns:
+                    print(f"SNR column not found in visit {visit} features")
+                    print(f"Available columns: {list(features_df.columns)}")
+                    continue
+                
+                print(f"Found SNR data in visit {visit} - processing {len(features_df)} records")
+                
+                # FAST APPROACH: Use pandas operations instead of individual lookups
+                # Filter to only IDs we care about that exist in this visit
+                visit_ids = features_df.index.values
+                matching_ids = np.intersect1d(source_ids, visit_ids)
+                
+                if len(matching_ids) > 0:
+                    # Get SNR values for matching IDs in one operation
+                    snr_values = features_df.loc[matching_ids, 'snr'].values
+                    
+                    # Map back to original array positions
+                    for i, dia_id in enumerate(matching_ids):
+                        array_idx = id_to_index[dia_id]
+                        snr_array[array_idx] = snr_values[i]
+                    
+                    print(f"Extracted SNR for {len(matching_ids)} samples from visit {visit}")
+                else:
+                    print(f"No matching IDs found in visit {visit}")
+                            
+            except Exception as e:
+                print(f"Error extracting SNR from visit {visit}: {e}")
+                continue
+    
+    # Count how many SNR values we found
+    valid_snr_count = np.sum(~np.isnan(snr_array))
+    print(f"Successfully extracted SNR for {valid_snr_count}/{len(source_ids)} samples")
+    
+    return snr_array
+
+def compute_snr_stratified_metrics(predictions: np.ndarray, labels: np.ndarray, 
+                                 snr_values: np.ndarray, probabilities: np.ndarray = None,
+                                 uncertainties: np.ndarray = None) -> Dict:
+    """Compute metrics stratified by SNR (high vs low).
+    
+    Parameters
+    ----------
+    predictions : np.ndarray
+        Model predictions
+    labels : np.ndarray
+        True labels  
+    snr_values : np.ndarray
+        SNR values
+    probabilities : np.ndarray, optional
+        Prediction probabilities
+    uncertainties : np.ndarray, optional
+        Prediction uncertainties
+        
+    Returns
+    -------
+    Dict
+        Dictionary containing high/low SNR metrics and thresholds
+    """
+    # Remove samples with missing SNR
+    valid_mask = ~np.isnan(snr_values)
+    valid_predictions = predictions[valid_mask]
+    valid_labels = labels[valid_mask]
+    valid_snr = snr_values[valid_mask]
+    
+    if probabilities is not None:
+        valid_probabilities = probabilities[valid_mask]
+    else:
+        valid_probabilities = None
+        
+    if uncertainties is not None:
+        valid_uncertainties = uncertainties[valid_mask]
+    else:
+        valid_uncertainties = None
+    
+    if len(valid_snr) == 0:
+        print("Warning: No valid SNR data found for stratified analysis")
+        return {}
+    
+    # Use median as threshold for high/low SNR
+    snr_threshold = np.median(valid_snr)
+    print(f"Using SNR threshold of {snr_threshold:.2f} (median)")
+    
+    high_snr_mask = valid_snr >= snr_threshold
+    low_snr_mask = valid_snr < snr_threshold
+    
+    results = {
+        'snr_threshold': snr_threshold,
+        'n_high_snr': np.sum(high_snr_mask),
+        'n_low_snr': np.sum(low_snr_mask),
+        'snr_range': (valid_snr.min(), valid_snr.max())
+    }
+    
+    # Compute metrics for high SNR
+    if np.sum(high_snr_mask) > 0:
+        high_snr_metrics = EvaluationMetrics(
+            valid_predictions[high_snr_mask],
+            valid_labels[high_snr_mask], 
+            valid_probabilities[high_snr_mask] if valid_probabilities is not None else None
+        )
+        results['high_snr_metrics'] = high_snr_metrics.summary()
+        
+        if valid_uncertainties is not None:
+            results['high_snr_uncertainty_mean'] = np.mean(valid_uncertainties[high_snr_mask])
+            results['high_snr_uncertainty_std'] = np.std(valid_uncertainties[high_snr_mask])
+    
+    # Compute metrics for low SNR  
+    if np.sum(low_snr_mask) > 0:
+        low_snr_metrics = EvaluationMetrics(
+            valid_predictions[low_snr_mask],
+            valid_labels[low_snr_mask],
+            valid_probabilities[low_snr_mask] if valid_probabilities is not None else None
+        )
+        results['low_snr_metrics'] = low_snr_metrics.summary()
+        
+        if valid_uncertainties is not None:
+            results['low_snr_uncertainty_mean'] = np.mean(valid_uncertainties[low_snr_mask])
+            results['low_snr_uncertainty_std'] = np.std(valid_uncertainties[low_snr_mask])
+    
+    return results
 
 def main():
     """Orchestrate full evaluation with ensemble model support."""
@@ -339,10 +506,11 @@ def main():
         model_name = Path(args.weights_path).name
         # Add model type information
         try:
-            config = load_config(Path(args.weights_path) / "config.yaml")
-            trainer_type = config["training"]["trainer_type"]
+            config_path = Path(args.weights_path) / "config.yaml"
+            model_config = load_config(config_path)
+            trainer_type = model_config["training"]["trainer_type"]
             if trainer_type == "ensemble":
-                num_models = config["training"]["num_models"]
+                num_models = model_config["training"]["num_models"]
                 model_name += f" (Ensemble-{num_models})"
             elif trainer_type == "coteaching":
                 model_name += " (Co-Teaching)"
@@ -358,6 +526,16 @@ def main():
     interp_labels = None
     interpreter = None
     eval_data_loader = None
+    snr_metrics = None  # Initialize SNR metrics variable
+    
+    # Initialize config for interpretability
+    interp_config = config.copy()
+    if 'interpretability' not in interp_config:
+        interp_config['interpretability'] = {}
+    if 'umap' not in interp_config['interpretability']:
+        interp_config['interpretability']['umap'] = {}
+    if 'clustering' not in interp_config['interpretability']:
+        interp_config['interpretability']['clustering'] = {}
     
     if args.interpretability and args.weights_path:
         interp_predictions = predictions.copy()
@@ -367,9 +545,17 @@ def main():
         try:
             print("Creating evaluation data loader...")
             step_start = time.time()
+    
+            max_samples_config = config.get('interpretability', {}).get('max_samples', 100000)
+
+            max_viz_samples_config = config.get('interpretability', {}).get('max_visualization_samples', max_samples_config)
+            
+            print(f"Using max_samples for data loading: {max_samples_config}")
+            print(f"Using max_visualization_samples for dashboard: {max_viz_samples_config}")
+            
             eval_data_loader = create_evaluation_data_loader(
                 dataset_loader, visits_to_eval, 
-                max_samples=config.get('interpretability', {}).get('max_samples', 3000)
+                max_samples=max_samples_config  
             )
             print(f"Data loader created in {time.time() - step_start:.2f}s")
             
@@ -378,19 +564,14 @@ def main():
             interpreter = UMAPInterpreter(args.weights_path)
             print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
             
-            # Update config with command line overrides
-            interp_config = config.copy()
-            if 'interpretability' not in interp_config:
-                interp_config['interpretability'] = {}
-            if 'umap' not in interp_config['interpretability']:
-                interp_config['interpretability']['umap'] = {}
-            if 'clustering' not in interp_config['interpretability']:
-                interp_config['interpretability']['clustering'] = {}
-            
             if args.optimize_umap:
                 interp_config['interpretability']['umap']['optimize_params'] = True
             if args.enable_clustering:
                 interp_config['interpretability']['clustering']['enabled'] = True
+            interp_config['interpretability']['max_samples'] = max_samples_config
+            interp_config['interpretability']['max_visualization_samples'] = max_viz_samples_config
+            print(f"Set max_samples in interpretability config: {max_samples_config}")
+            print(f"Set max_visualization_samples in interpretability config: {max_viz_samples_config}")
                 
         except Exception as e:
             print(f"Error initializing interpretability components: {e}")
@@ -398,15 +579,54 @@ def main():
             interpreter = None
             eval_data_loader = None
     
-    # Create combined dashboard
-    print("Creating combined dashboard...")
-    step_start = time.time()
-    
     # Get additional features if specified in config
     additional_features = {}
     if args.interpretability and 'features' in config.get('interpretability', {}):
         # Add SNR or other features here if available
         pass
+    
+    # Add SNR analysis if requested
+    if args.snr_analysis:
+        print("Extracting SNR data for analysis...")
+        snr_data = extract_snr_data(dataset_loader, visits_to_eval, source_ids)
+        
+        # Compute SNR-stratified metrics
+        print("Computing SNR-stratified metrics...")
+        snr_metrics = compute_snr_stratified_metrics(
+            predictions, labels, snr_data, probabilities, uncertainties
+        )
+        
+        # Print SNR analysis summary
+        if snr_metrics:
+            print("\n" + "="*50)
+            print("SNR ANALYSIS SUMMARY")
+            print("="*50)
+            print(f"SNR threshold: {snr_metrics['snr_threshold']:.2f}")
+            print(f"SNR range: [{snr_metrics['snr_range'][0]:.2f}, {snr_metrics['snr_range'][1]:.2f}]")
+            print(f"High SNR samples: {snr_metrics['n_high_snr']}")
+            print(f"Low SNR samples: {snr_metrics['n_low_snr']}")
+            
+            if 'high_snr_metrics' in snr_metrics:
+                print(f"\nHigh SNR Metrics:")
+                for key, value in snr_metrics['high_snr_metrics'].items():
+                    print(f"  {key}: {value:.4f}")
+                if 'high_snr_uncertainty_mean' in snr_metrics:
+                    print(f"  uncertainty_mean: {snr_metrics['high_snr_uncertainty_mean']:.4f}")
+                    
+            if 'low_snr_metrics' in snr_metrics:
+                print(f"\nLow SNR Metrics:")
+                for key, value in snr_metrics['low_snr_metrics'].items():
+                    print(f"  {key}: {value:.4f}")
+                if 'low_snr_uncertainty_mean' in snr_metrics:
+                    print(f"  uncertainty_mean: {snr_metrics['low_snr_uncertainty_mean']:.4f}")
+        
+        # Add SNR data to additional features for interpretability visualization only
+        if args.interpretability:
+            additional_features['snr'] = snr_data
+    
+    # Create combined dashboard
+    print("Creating combined dashboard...")
+    step_start = time.time()
     
     dashboard_path = create_combined_dashboard(
         metrics=metrics,
@@ -416,10 +636,11 @@ def main():
         labels=interp_labels,
         output_path=output_dir / "evaluation_dashboard.html",
         additional_features=additional_features if args.interpretability else None,
-        config=interp_config if args.interpretability and interpreter else None,
+        config=interp_config if (args.interpretability and interpreter) else None,
         title=f"Model Evaluation - {model_name}",
         probabilities=probabilities,  # Pass pre-computed probabilities
-        uncertainties=uncertainties   # Pass pre-computed uncertainties
+        uncertainties=uncertainties,   # Pass pre-computed uncertainties
+        snr_metrics=snr_metrics  # Pass SNR metrics to be shown in metrics tab
     )
     print(f"Combined dashboard created in {time.time() - step_start:.2f}s")
     
@@ -458,6 +679,8 @@ def main():
         eval_data['model_path'] = args.weights_path
     if args.model_hash:
         eval_data['model_hash'] = args.model_hash
+    if args.snr_analysis and 'snr_metrics' in locals():
+        eval_data['snr_analysis'] = snr_metrics
     
     with open(results_file, 'w') as f:
         yaml.dump(eval_data, f)

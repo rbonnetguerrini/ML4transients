@@ -12,6 +12,7 @@ from bokeh.io import curdoc, output_file, save
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import colorcet as cc
+import time
 
 from .metrics import EvaluationMetrics
 
@@ -623,9 +624,204 @@ class UMAPVisualizer:
         p.legend.location = "top_right"
         
         return p
+    
+    def plot_snr_analysis(self, df: pd.DataFrame, snr_metrics: Dict = None,
+                         title: str = "UMAP: SNR Analysis") -> figure:
+        """Plot UMAP colored by SNR values with high/low SNR regions highlighted.
+        
+        Uses bounded SNR values (0-15) for visualization to focus on the 
+        scientifically relevant range, while preserving original values in tooltips.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame containing UMAP coordinates and SNR values
+        snr_metrics : Dict, optional
+            SNR analysis results containing threshold and metrics  
+        title : str
+            Plot title
+            
+        Returns
+        -------
+        figure
+            Bokeh figure with SNR analysis
+        """
+        if 'snr' not in df.columns:
+            raise ValueError("SNR column not found in dataframe")
+        
+        # Remove samples with missing SNR
+        df_clean = df.dropna(subset=['snr'])
+        
+        if len(df_clean) == 0:
+            raise ValueError("No valid SNR data found")
+        
+        # BOUND SNR VALUES to 0-15 range for better visualization of scientific range
+        snr_values = df_clean['snr'].values
+        snr_min = 0.0    # Lower bound for scientific range
+        snr_max = 15.0   # Upper bound for scientific range
+        
+        # Create bounded SNR column for visualization
+        df_clean = df_clean.copy()
+        df_clean['snr_bounded'] = np.clip(snr_values, snr_min, snr_max)
+        
+        original_range = (snr_values.min(), snr_values.max())
+        print(f"SNR range before bounding: [{original_range[0]:.2f}, {original_range[1]:.2f}]")
+        print(f"SNR range after bounding: [{snr_min:.1f}, {snr_max:.1f}] (scientific range)")
+        
+        # Count how many values were clipped
+        clipped_low = np.sum(snr_values < snr_min)
+        clipped_high = np.sum(snr_values > snr_max)
+        total_samples = len(snr_values)
+        print(f"Clipped {clipped_low} values below {snr_min} and {clipped_high} values above {snr_max}")
+        print(f"Visualizing {total_samples - clipped_low - clipped_high}/{total_samples} samples in scientific range")
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Determine SNR threshold
+        if snr_metrics and 'snr_threshold' in snr_metrics:
+            snr_threshold = snr_metrics['snr_threshold']
+        else:
+            snr_threshold = df_clean['snr'].median()
+        
+        # Add threshold and bounding info to title
+        p.title.text = f"{title} (threshold: {snr_threshold:.2f}, range: [{snr_min:.0f}, {snr_max:.0f}])"
+        
+        # Create SNR color mapper using BOUNDED values
+        color_mapper = LinearColorMapper(
+            palette=cc.fire,  # Fire colormap works well for SNR (low=dark, high=bright)
+            low=snr_min,
+            high=snr_max
+        )
+        
+        # Use helper method with BOUNDED SNR coloring
+        self._add_classification_scatter(
+            p, df_clean,
+            color_field='snr_bounded',  # Use bounded values for coloring
+            color_mapper=color_mapper
+        )
+        
+        # Add color bar with bounded range
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title="SNR (0-15)")
+        p.add_layout(color_bar, 'right')
+        
+        # Create enhanced hover tooltip with ORIGINAL SNR values
+        tooltip_html = """
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>SNR:</span>
+                <span style='font-size: 14px'>@snr{0.00}</span><br>
+        """
+        
+        if snr_threshold:
+            tooltip_html += f"""
+                <span style='font-size: 14px; color: #224499'>SNR Group:</span>
+                <span style='font-size: 14px'>@snr_group</span><br>
+            """
+            # Add SNR group classification using ORIGINAL values
+            df_clean['snr_group'] = np.where(df_clean['snr'] >= snr_threshold, 'High SNR', 'Low SNR')
+        
+        tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+        """
+        
+        if 'prediction_probability' in df_clean.columns:
+            tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>Probability:</span>
+                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
+            """
+            
+        if 'prediction_uncertainty' in df_clean.columns:
+            tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>Uncertainty:</span>
+                <span style='font-size: 14px'>@prediction_uncertainty{0.000}</span><br>
+            """
+        
+        tooltip_html += """
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def create_snr_metrics_div(self, snr_metrics: Dict) -> Div:
+        """Create a compact summary div with SNR-stratified metrics.
+        
+        Parameters
+        ----------
+        snr_metrics : Dict
+            SNR analysis results
+            
+        Returns
+        -------
+        Div
+            Bokeh Div with SNR metrics summary (compact version)
+        """
+        if not snr_metrics:
+            return Div(text="<p>No SNR metrics available</p>", width=300, height=200)
+        
+        html_content = f"""
+        <div style="padding: 10px; background-color: #2F2F2F; border-radius: 5px;">
+            <h3 style="color: white; margin-top: 0;">SNR Analysis</h3>
+            <table style="color: white; width: 100%; font-size: 11px;">
+                <tr><td><strong>Threshold:</strong></td><td>{snr_metrics.get('snr_threshold', 'N/A'):.2f}</td></tr>
+                <tr><td><strong>High SNR:</strong></td><td>{snr_metrics.get('n_high_snr', 0)} samples</td></tr>
+                <tr><td><strong>Low SNR:</strong></td><td>{snr_metrics.get('n_low_snr', 0)} samples</td></tr>
+            </table>
+            <br>
+        """
+        
+        # Compact High SNR metrics - only show key metrics
+        if 'high_snr_metrics' in snr_metrics:
+            high_metrics = snr_metrics['high_snr_metrics']
+            html_content += """
+            <h4 style="color: #FFC300; margin-bottom: 3px; font-size: 12px;">High SNR</h4>
+            <table style="color: white; width: 100%; font-size: 10px;">
+            """
+            # Show only key metrics to save space
+            key_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
+            for key in key_metrics:
+                if key in high_metrics:
+                    html_content += f"<tr><td>{key}:</td><td>{high_metrics[key]:.3f}</td></tr>"
+            html_content += "</table><br>"
+        
+        # Compact Low SNR metrics - only show key metrics
+        if 'low_snr_metrics' in snr_metrics:
+            low_metrics = snr_metrics['low_snr_metrics']
+            html_content += """
+            <h4 style="color: #FF7F7F; margin-bottom: 3px; font-size: 12px;">Low SNR</h4>
+            <table style="color: white; width: 100%; font-size: 10px;">
+            """
+            # Show only key metrics to save space
+            key_metrics = ['accuracy', 'precision', 'recall', 'f1_score']
+            for key in key_metrics:
+                if key in low_metrics:
+                    html_content += f"<tr><td>{key}:</td><td>{low_metrics[key]:.3f}</td></tr>"
+            html_content += "</table>"
+        
+        html_content += "</div>"
+        
+        return Div(text=html_content, width=300, height=250)
 
 def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = None,
-                              title: str = "Model Evaluation Dashboard") -> Tuple[TabPanel, str]:
+                              title: str = "Model Evaluation Dashboard",
+                              snr_metrics: Dict = None) -> Tuple[TabPanel, str]:
     """Create comprehensive evaluation dashboard tab with all standard metrics plots.
     
     Parameters
@@ -636,6 +832,8 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
         Path to save the HTML dashboard file (only used when called standalone)
     title : str
         Title for the dashboard
+    snr_metrics : Dict, optional
+        SNR analysis results to display in the metrics tab
         
     Returns
     -------
@@ -657,8 +855,18 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
         title="Prediction Distribution"
     )
     
+    # Create first row with confusion matrix and metrics summaries
+    if snr_metrics:
+        visualizer = UMAPVisualizer()  # Create to access SNR div creation
+        snr_div = visualizer.create_snr_metrics_div(snr_metrics)
+        # Put both metrics and SNR summary in the first row
+        first_row = row(confusion_plot, metrics_div, snr_div)
+    else:
+        first_row = row(confusion_plot, metrics_div)
+    
+    # Start with the updated first row
     plots_layout = [
-        row(confusion_plot, metrics_div),
+        first_row,
         row(pred_dist_plot)
     ]
     
@@ -689,8 +897,9 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
 
 def create_interpretability_dashboard(interpreter, data_loader, predictions: np.ndarray, 
                                     labels: np.ndarray, output_path: Path = None,
-                                    additional_features: Dict = None, config: Dict = None,
-                                    probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> Tuple[TabPanel, str]:
+                                    additional_features: Optional[Dict[str, np.ndarray]] = None, config: Dict = None,
+                                    probabilities: Optional[np.ndarray] = None,
+                                    uncertainties: Optional[np.ndarray] = None) -> Tuple[TabPanel, str]:
     """Create UMAP-based interpretability dashboard tab.
     
     Parameters
@@ -706,7 +915,7 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     output_path : Path, optional
         Path to save the HTML dashboard file (only used when called standalone)
     additional_features : Dict, optional
-        Additional features to include in the analysis
+        Additional features to include in the analysis (e.g., {'snr': snr_array})
     config : Dict, optional
         Configuration dictionary with interpretability settings
     probabilities : np.ndarray, optional
@@ -719,7 +928,6 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     tuple
         (TabPanel for use in combined dashboard, layout for standalone use)
     """
-    import time
     
     # Use default config if none provided
     if config is None:
@@ -729,13 +937,23 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     umap_config = interp_config.get('umap', {})
     clustering_config = interp_config.get('clustering', {})
     
+    max_viz_samples = interp_config.get('max_visualization_samples')
+    max_samples = interp_config.get('max_samples', 3000)
+    
+    if max_viz_samples is not None:
+        feature_samples = max_viz_samples
+        print(f"Using max_visualization_samples={max_viz_samples} for dashboard performance")
+    else:
+        feature_samples = max_samples
+        print(f"Using max_samples={max_samples} (no max_visualization_samples specified)")
+    
     # Extract features
     print("Step 1: Extracting features...")
     start_time = time.time()
     features = interpreter.extract_features(
         data_loader,
         layer_name=interp_config.get('layer_name', 'fc1'),
-        max_samples=interp_config.get('max_samples', 3000)
+        max_samples=feature_samples  # Use the correct parameter
     )
     print(f"Feature extraction completed in {time.time() - start_time:.2f}s")
     
@@ -812,10 +1030,17 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         for feature_name in additional_features.keys():
             if feature_name in df.columns:
                 try:
-                    feature_plot = visualizer.plot_feature_coloring(
-                        df, feature_name, title=f"UMAP: {feature_name}"
-                    )
-                    plots_list.append(feature_plot)
+                    if feature_name == 'snr':
+                        # Special handling for SNR with bounding (NO metrics div here)
+                        feature_plot = visualizer.plot_snr_analysis(
+                            df, {}, title=f"UMAP: {feature_name.upper()}"
+                        )
+                        plots_list.append(feature_plot)
+                    else:
+                        feature_plot = visualizer.plot_feature_coloring(
+                            df, feature_name, title=f"UMAP: {feature_name}"
+                        )
+                        plots_list.append(feature_plot)
                 except Exception as e:
                     print(f"Warning: Could not create plot for {feature_name}: {e}")
     
@@ -867,33 +1092,36 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
                             interpreter=None, data_loader=None, predictions=None, labels=None,
                             output_path: Path = None, additional_features: Dict = None, 
                             config: Dict = None, title: str = "Model Evaluation Dashboard",
-                            probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> str:
+                            probabilities: np.ndarray = None, uncertainties: np.ndarray = None,
+                            snr_metrics: Dict = None) -> str:
     """Create combined dashboard with both evaluation metrics and interpretability in tabs.
     
     Parameters
     ----------
     metrics : EvaluationMetrics
-        Evaluation metrics object
+        Evaluation metrics object containing predictions, labels, and optionally probabilities
     interpreter : UMAPInterpreter, optional
         UMAP interpreter for interpretability analysis
     data_loader : DataLoader, optional
-        Data loader for interpretability analysis
+        Data loader for interpretability analysis  
     predictions : np.ndarray, optional
-        Model predictions for interpretability
+        Model predictions for interpretability analysis
     labels : np.ndarray, optional  
-        True labels for interpretability
+        True labels for interpretability analysis
     output_path : Path
         Path to save the combined HTML dashboard
     additional_features : Dict, optional
-        Additional features for interpretability
+        Additional features for interpretability visualization (e.g., {'snr': snr_array})
     config : Dict, optional
-        Configuration for interpretability
+        Configuration dictionary with interpretability settings
     title : str
         Title for the dashboard
     probabilities : np.ndarray, optional
-        Pre-computed prediction probabilities (avoids recomputation)
+        Pre-computed prediction probabilities (avoids recomputation in interpretability)
     uncertainties : np.ndarray, optional
-        Pre-computed prediction uncertainties (avoids recomputation)
+        Pre-computed prediction uncertainties (avoids recomputation in interpretability)
+    snr_metrics : Dict, optional
+        SNR analysis results to display in the metrics tab
         
     Returns
     -------
@@ -904,7 +1132,11 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
     
     # Always create metrics tab
     print("Creating metrics dashboard tab...")
-    metrics_tab, _ = create_evaluation_dashboard(metrics, title="Model Metrics")
+    metrics_tab, _ = create_evaluation_dashboard(
+        metrics, 
+        title="Model Metrics",
+        snr_metrics=snr_metrics  # Pass SNR metrics to be shown in metrics tab
+    )
     tabs.append(metrics_tab)
     
     # Create interpretability tab if data is available

@@ -41,13 +41,12 @@ def embeddable_image(image_array: np.ndarray, cmap: str = 'RdYlGn') -> str:
     """
     # Handle different image shapes - ensure we get a 2D grayscale array
     if len(image_array.shape) == 3:
-        # If 3D, take the middle channel (astronomical images often have 3 identical channels)
         if image_array.shape[2] == 3:
             img_data = image_array[:, :, 1]  # Take middle channel
         elif image_array.shape[0] == 3:
             img_data = image_array[1, :, :]  # Channel first format
         else:
-            img_data = image_array.squeeze()  # Remove singleton dimensions
+            img_data = image_array.squeeze()
     else:
         img_data = image_array
     
@@ -63,20 +62,16 @@ def embeddable_image(image_array: np.ndarray, cmap: str = 'RdYlGn') -> str:
     
     if img_max > img_min:
         if img_min < 0 and img_max > 0:
-            # For data with negative values, center around zero
             abs_max = max(abs(img_min), abs(img_max))
-            # Normalize to [-1, 1] range, then shift to [0, 1] for colormap
-            img_normalized = img_data / abs_max  # Now in [-1, 1]
-            img_normalized = (img_normalized + 1) / 2  # Now in [0, 1] with 0.5 = zero
+            img_normalized = img_data / abs_max
+            img_normalized = (img_normalized + 1) / 2
         else:
-            # Standard normalization for all-positive or all-negative data
             img_normalized = (img_data - img_min) / (img_max - img_min)
     else:
-        # If all values are the same, create a mid-range image
         img_normalized = np.full_like(img_data, 0.5, dtype=np.float32)
     
     # Apply colormap to convert to RGB
-    img_rgb = colormap(img_normalized)  # Returns RGBA values in 0-1 range
+    img_rgb = colormap(img_normalized)
     
     # Convert to 0-255 range and remove alpha channel
     img_rgb_255 = (img_rgb[:, :, :3] * 255).astype(np.uint8)
@@ -280,8 +275,15 @@ class UMAPInterpreter:
         replace this to reduce peak memory usage.
         """
         print(f"Extracting features from layer: {layer_name} using {self.trainer_type} model")
-        if max_samples is not None:
-            print(f"Will sample up to {max_samples} samples for UMAP computation")
+        
+     
+        if max_samples is None:
+            max_samples = 3000  
+            print(f"Using default max_samples={max_samples}")
+        else:
+            print(f"Using configured max_samples={max_samples}")
+        
+        print(f"Will sample up to {max_samples} samples for UMAP computation")
         
         # First pass: extract all features
         features = []
@@ -645,6 +647,8 @@ class UMAPInterpreter:
             else:
                 sample_indices = np.arange(len(predictions))
                 print(f"No sample indices available, using all {len(sample_indices)} samples")
+        
+        print(f"Creating interpretability dataframe with {len(sample_indices)} samples")
     
         # Create base DataFrame with UMAP coordinates
         df = pd.DataFrame({
@@ -704,7 +708,6 @@ class UMAPInterpreter:
         
         print(f"Added prediction probabilities and uncertainties ({uncertainty_type})")
         
-        # OPTIMIZATION: Efficient image processing - only process sampled indices
         print("Creating embeddable images for hover tooltips...")
         images = self._create_embeddable_images_efficient(data_loader, sample_indices)
         df['image'] = images
@@ -713,7 +716,9 @@ class UMAPInterpreter:
         if additional_features:
             for key, values in additional_features.items():
                 df[key] = values[sample_indices]
+                print(f"Added additional feature: {key}")
         
+        print(f"Final dataframe shape: {df.shape}")
         return df
 
     def _extract_uncertainties_efficient(self, data_loader, sample_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -786,7 +791,7 @@ class UMAPInterpreter:
 
     def _create_embeddable_images_efficient(self, data_loader, sample_indices: np.ndarray) -> List[str]:
         """Efficiently create embeddable images only for sampled indices."""
-        print(f"Efficiently creating images for {len(sample_indices)} samples...")
+        print(f"Creating embeddable images for {len(sample_indices)} samples...")
         
         # Create mapping for quick lookup
         indices_set = set(sample_indices)
@@ -797,7 +802,7 @@ class UMAPInterpreter:
         processed_count = 0
         
         for batch_idx, batch in enumerate(data_loader):
-            if batch_idx % 20 == 0 and processed_count > 0:  # Reduce print frequency
+            if batch_idx % 20 == 0 and processed_count > 0:
                 print(f"Processed {processed_count}/{len(sample_indices)} images...")
             
             batch_images, *_ = batch
@@ -814,13 +819,11 @@ class UMAPInterpreter:
             # Process only needed images from this batch
             for i, global_idx in enumerate(batch_indices):
                 if global_idx in indices_set:
-                    # Convert tensor to numpy if needed
                     if hasattr(batch_images, 'cpu'):
                         img_array = batch_images[i].cpu().numpy()
                     else:
                         img_array = batch_images[i]
                     
-                    # Convert to embeddable format with RdYlGn colormap (preserves negatives)
                     embeddable_img = embeddable_image(img_array, cmap='RdYlGn')
                     position = index_to_position[global_idx]
                     images[position] = embeddable_img
@@ -828,8 +831,10 @@ class UMAPInterpreter:
                     
                     # Early exit if we've processed all needed images
                     if processed_count >= len(sample_indices):
+                        print(f"Completed creating {processed_count} embeddable images")
                         return images
             
             current_idx += batch_size
         
+        print(f"Completed creating {len(images)} embeddable images")
         return images
