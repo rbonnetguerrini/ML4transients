@@ -6,6 +6,8 @@ from torch.utils.tensorboard import SummaryWriter
 import os
 from .models import CustomCNN
 from .losses import get_loss_function
+import torch.nn.functional as F
+from pathlib import Path
 
 class BaseTrainer(ABC):
     """Base trainer class"""
@@ -17,6 +19,7 @@ class BaseTrainer(ABC):
         # Setup TensorBoard
         self.setup_tensorboard()
         self.setup_training()
+        self._init_early_stopping()
     
     def setup_tensorboard(self):
         """Setup TensorBoard logging"""
@@ -29,6 +32,34 @@ class BaseTrainer(ABC):
         else:
             self.writer = None
     
+    def _init_early_stopping(self):
+        es_cfg = self.config.get('early_stopping', {})
+        self.es_enabled = es_cfg.get('enabled', False)
+        self.es_monitor = es_cfg.get('monitor', 'loss')
+        self.es_mode = es_cfg.get('mode', 'min')
+        self.es_patience = es_cfg.get('patience', 100)
+        self.es_min_delta = es_cfg.get('min_delta', 0.0)
+        self.best_metric = float('-inf') if self.es_mode == 'max' else float('inf')
+        self.epochs_no_improve = 0
+        self.best_epoch = -1
+
+    def _is_improvement(self, current):
+        if current is None:
+            return False
+        if self.es_mode == 'max':
+            return current > self.best_metric + self.es_min_delta
+        else:
+            return current < self.best_metric - self.es_min_delta
+
+    def _get_current_lr(self):
+        if hasattr(self, 'optimizer'):
+            return self.optimizer.param_groups[0]['lr']
+        if hasattr(self, 'optimizers') and len(self.optimizers) > 0:
+            return self.optimizers[0].param_groups[0]['lr']
+        if hasattr(self, 'optimizer1'):
+            return self.optimizer1.param_groups[0]['lr']
+        return None
+
     @abstractmethod
     def setup_training(self):
         """Setup models, optimizers, loss functions"""
@@ -44,38 +75,45 @@ class BaseTrainer(ABC):
         """Evaluate model"""
         pass
     
-    def fit(self, train_loader, test_loader, val_loader=None):
-        """Main training loop"""
-        best_acc = 0.0
-        
+    def fit(self, train_loader, val_loader=None, test_loader=None):
+        """Main training loop (order: train, val, test)."""
         for epoch in range(self.config['epochs']):
-            # Training
             train_metrics = self.train_one_epoch(epoch, train_loader)
-            
-            # Evaluation
-            test_metrics = self.evaluate(test_loader)
-            
-            # Validation if available
-            val_metrics = None
-            if val_loader is not None:
-                val_metrics = self.evaluate(val_loader)
-            
+            val_metrics = self.evaluate(val_loader) if val_loader else {}
+            test_metrics = self.evaluate(test_loader) if test_loader else {}
+
+            # Select metrics source for monitoring - prefer validation, fallback to test
+            monitor_source = val_metrics if val_metrics else test_metrics
+            current_monitored = monitor_source.get(self.es_monitor)
+
             # TensorBoard logging
             self.log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
-            
+
             # Console logging
             self.log_epoch(epoch, train_metrics, test_metrics, val_metrics)
-            
-            # Save best model
-            if test_metrics['accuracy'] > best_acc:
-                best_acc = test_metrics['accuracy']
-                self.save_checkpoint(epoch, 'best')
-        
-        # Save final model and close TensorBoard
+
+            # Early stopping / best checkpoint
+            if current_monitored is not None:
+                if self._is_improvement(current_monitored):
+                    self.best_metric = current_monitored
+                    self.best_epoch = epoch
+                    self.epochs_no_improve = 0
+                    self.save_checkpoint(epoch, 'best')
+                    print(f"New best {self.es_monitor}: {current_monitored:.6f} at epoch {epoch+1}")
+                else:
+                    self.epochs_no_improve += 1
+
+                # Simple early stopping based on epochs without improvement
+                if self.es_enabled and self.epochs_no_improve >= self.es_patience:
+                    print(f"Early stopping: {self.epochs_no_improve} epochs without improvement")
+                    print(f"Early stopping at epoch {epoch+1} (best {self.es_monitor}: {self.best_metric:.6f} at epoch {self.best_epoch+1})")
+                    break
+
+        # Save final model
         self.save_checkpoint(epoch, 'final')
         if self.writer:
             self.writer.close()
-        return best_acc
+        return self.best_metric if self.best_epoch >= 0 else (current_monitored if current_monitored is not None else float('nan'))
     
     def log_tensorboard(self, epoch, train_metrics, test_metrics, val_metrics=None):
         """Log metrics to TensorBoard"""
@@ -95,9 +133,10 @@ class BaseTrainer(ABC):
             for key, value in val_metrics.items():
                 self.writer.add_scalar(f'Validation/{key}', value, epoch)
         
-        # Log learning rate
-        if hasattr(self, 'alpha_plan'):
-            self.writer.add_scalar('Learning_Rate', self.alpha_plan[epoch], epoch)
+        # Log learning rate 
+        current_lr = self._get_current_lr()
+        if current_lr is not None:
+            self.writer.add_scalar('Learning_Rate', current_lr, epoch)
     
     def log_epoch(self, epoch, train_metrics, test_metrics, val_metrics=None):
         """Log epoch results"""
@@ -119,6 +158,36 @@ class BaseTrainer(ABC):
         preds = (probs > 0.5).float()
         correct = (preds.squeeze() == targets).sum().item()
         return correct / len(targets)
+    
+    def compute_confusion_metrics(self, predictions, labels):
+        """Compute confusion matrix metrics including FNR"""
+        predictions = predictions.cpu() if torch.is_tensor(predictions) else predictions
+        labels = labels.cpu() if torch.is_tensor(labels) else labels
+        
+        # Convert to binary predictions if not already
+        if torch.is_tensor(predictions):
+            preds = (predictions > 0.5).float()
+        else:
+            preds = (predictions > 0.5).astype(float)
+        
+        # Calculate confusion matrix components
+        tp = ((preds == 1) & (labels == 1)).sum().item()
+        fp = ((preds == 1) & (labels == 0)).sum().item()
+        tn = ((preds == 0) & (labels == 0)).sum().item()
+        fn = ((preds == 0) & (labels == 1)).sum().item()
+        
+        # Calculate metrics
+        accuracy = (tp + tn) / (tp + fp + tn + fn) if (tp + fp + tn + fn) > 0 else 0.0
+        fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0  # False Negative Rate
+        
+        return {
+            'accuracy': accuracy,
+            'fnr': fnr,
+            'tp': tp,
+            'fp': fp,
+            'tn': tn,
+            'fn': fn
+        }
 
 
 class StandardTrainer(BaseTrainer):
@@ -151,9 +220,9 @@ class StandardTrainer(BaseTrainer):
                 (self.config['epochs'] - epoch_decay_start) * 
                 self.config['learning_rate']
             )
-    
+
     def adjust_learning_rate(self, epoch):
-        """Adjust learning rate"""
+        """Adjust learning rate according to schedule"""
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = self.alpha_plan[epoch]
 
@@ -184,10 +253,11 @@ class StandardTrainer(BaseTrainer):
             
             # Log batch metrics to TensorBoard
             if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
-                step = epoch * len(train_loader) + batch_idx
-                self.writer.add_scalar('Batch/Loss', loss.item(), step)
+                # Use fractional epoch for batch-level logging
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                self.writer.add_scalar('Batch/Loss', loss.item(), fractional_epoch)
                 batch_acc = (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item() / len(labels)
-                self.writer.add_scalar('Batch/Accuracy', batch_acc, step)
+                self.writer.add_scalar('Batch/Accuracy', batch_acc, fractional_epoch)
         
         return {
             'loss': total_loss / len(train_loader),
@@ -195,22 +265,29 @@ class StandardTrainer(BaseTrainer):
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         self.model.eval()
         total_correct = 0
         total_samples = 0
-        
+        total_loss = 0.0
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
                 outputs = self.model(images)
+                loss = self.loss_fn(outputs, labels)
+                total_loss += loss.item()
                 preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
                 total_correct += (preds == labels).sum().item()
                 total_samples += len(labels)
-        
-        return {'accuracy': total_correct / total_samples}
+        return {
+            'accuracy': total_correct / total_samples,
+            'loss': total_loss / len(test_loader)
+        }
     
     def save_checkpoint(self, epoch, suffix):
         torch.save(self.model.state_dict(), f"{self.config.get('output_dir')}/model_{suffix}.pth")
+
 
 class CoTeachingTrainer(BaseTrainer):
     """Co-teaching trainer with two networks"""
@@ -283,7 +360,7 @@ class CoTeachingTrainer(BaseTrainer):
         total_loss1, total_loss2 = 0.0, 0.0
         
         for batch_idx, (images, labels, _) in enumerate(train_loader):
-            if batch_idx >= c('num_iter_per_epoch', float('inf')):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
                 break
                 
             images, labels = images.to(self.device), labels.to(self.device)
@@ -315,9 +392,9 @@ class CoTeachingTrainer(BaseTrainer):
             
             # Log batch metrics to TensorBoard
             if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
-                step = epoch * len(train_loader) + batch_idx
-                self.writer.add_scalar('Batch/Loss1', loss_1.item(), step)
-                self.writer.add_scalar('Batch/Loss2', loss_2.item(), step)
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                self.writer.add_scalar('Batch/Loss1', loss_1.item(), fractional_epoch)
+                self.writer.add_scalar('Batch/Loss2', loss_2.item(), fractional_epoch)
         
         return {
             'accuracy1': total_correct1 / total_samples,
@@ -327,32 +404,54 @@ class CoTeachingTrainer(BaseTrainer):
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         self.model1.eval()
         self.model2.eval()
         
-        total_correct1, total_correct2 = 0, 0
-        total_samples = 0
+        all_preds1 = []
+        all_preds2 = []
+        all_labels = []
+        total_loss = 0.0
         
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
-                
                 logits1 = self.model1(images)
                 logits2 = self.model2(images)
+                loss1 = F.binary_cross_entropy_with_logits(logits1.squeeze(), labels.float())
+                loss2 = F.binary_cross_entropy_with_logits(logits2.squeeze(), labels.float())
+                total_loss += 0.5 * (loss1.item() + loss2.item())
                 
-                preds1 = (torch.sigmoid(logits1.squeeze()) > 0.5).float()
-                preds2 = (torch.sigmoid(logits2.squeeze()) > 0.5).float()
-                
-                total_correct1 += (preds1 == labels).sum().item()
-                total_correct2 += (preds2 == labels).sum().item()
-                total_samples += len(labels)
+                preds1 = torch.sigmoid(logits1.squeeze())
+                preds2 = torch.sigmoid(logits2.squeeze())
+                all_preds1.append(preds1)
+                all_preds2.append(preds2)
+                all_labels.append(labels)
         
-        # Return ensemble accuracy (average of both models)
-        ensemble_acc = (total_correct1 + total_correct2) / (2 * total_samples)
+        # Concatenate all predictions and labels
+        all_preds1 = torch.cat(all_preds1)
+        all_preds2 = torch.cat(all_preds2)
+        all_labels = torch.cat(all_labels)
+        
+        # Ensemble prediction (average of both models)
+        ensemble_preds = (all_preds1 + all_preds2) / 2
+        
+        # Compute metrics for ensemble
+        metrics = self.compute_confusion_metrics(ensemble_preds, all_labels)
+        
+        # Also compute individual model metrics
+        metrics1 = self.compute_confusion_metrics(all_preds1, all_labels)
+        metrics2 = self.compute_confusion_metrics(all_preds2, all_labels)
+        
         return {
-            'accuracy': ensemble_acc,
-            'accuracy1': total_correct1 / total_samples,
-            'accuracy2': total_correct2 / total_samples
+            'accuracy': metrics['accuracy'],
+            'fnr': metrics['fnr'],
+            'loss': total_loss / len(test_loader),
+            'accuracy1': metrics1['accuracy'],
+            'accuracy2': metrics2['accuracy'],
+            'fnr1': metrics1['fnr'],
+            'fnr2': metrics2['fnr']
         }
     
     def save_checkpoint(self, epoch, suffix):
@@ -408,7 +507,6 @@ class EnsembleTrainer(BaseTrainer):
         model_accuracies = [0] * self.num_models
         model_losses = [0.0] * self.num_models
         total_samples = 0
-        
         for batch_idx, (images, labels, _) in enumerate(train_loader):
             if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
                 break
@@ -422,55 +520,66 @@ class EnsembleTrainer(BaseTrainer):
                 loss.backward()
                 optimizer.step()
                 
-                # Track accuracy and loss
                 model_accuracies[i] += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
                 model_losses[i] += loss.item()
             
             total_samples += len(labels)
-            
-            # Log batch metrics to TensorBoard
+            # Average accuracy and loss across models
             if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
-                step = epoch * len(train_loader) + batch_idx
-                avg_loss = sum(model_losses) / (self.num_models * (batch_idx + 1))
-                self.writer.add_scalar('Batch/Average_Loss', avg_loss, step)
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                avg_loss = sum(loss / (batch_idx + 1) for loss in model_losses) / self.num_models
+                self.writer.add_scalar('Batch/Average_Loss', avg_loss, fractional_epoch)
         
         # Average accuracy and loss across models
         avg_accuracy = sum(acc / total_samples for acc in model_accuracies) / self.num_models
         avg_loss = sum(loss / len(train_loader) for loss in model_losses) / self.num_models
-        
         return {
             'accuracy': avg_accuracy,
             'loss': avg_loss
         }
     
     def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
         for model in self.models:
             model.eval()
         
-        ensemble_correct = 0
-        total_samples = 0
+        all_ensemble_preds = []
+        all_labels = []
+        total_loss = 0.0
         
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
                 
                 # Get predictions from all models
-                predictions = []
+                batch_preds = []
+                batch_losses = []
                 for model in self.models:
                     outputs = model(images)
-                    preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
-                    predictions.append(preds)
+                    loss = self.loss_fn(outputs, labels)
+                    batch_losses.append(loss.item())
+                    preds = torch.sigmoid(outputs.squeeze())
+                    batch_preds.append(preds)
                 
-                # Ensemble prediction (majority vote)
-                ensemble_preds = torch.stack(predictions).mean(dim=0)
-                ensemble_preds = (ensemble_preds > 0.5).float()
-                
-                ensemble_correct += (ensemble_preds == labels).sum().item()
-                total_samples += len(labels)
+                # Ensemble prediction (average of all models)
+                ensemble_preds = torch.stack(batch_preds).mean(dim=0)
+                all_ensemble_preds.append(ensemble_preds)
+                all_labels.append(labels)
+                total_loss += np.mean(batch_losses)
         
-        return {'accuracy': ensemble_correct / total_samples}
+        # Concatenate all predictions and labels
+        all_ensemble_preds = torch.cat(all_ensemble_preds)
+        all_labels = torch.cat(all_labels)
+        
+        # Compute metrics
+        metrics = self.compute_confusion_metrics(all_ensemble_preds, all_labels)
+        metrics['loss'] = total_loss / len(test_loader)
+        
+        return metrics
     
     def save_checkpoint(self, epoch, suffix):
+        output_dir = self.config.get('output_dir')
         for i, model in enumerate(self.models):
             torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
 

@@ -69,10 +69,46 @@ print(dataset)
 `DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
 when creating this set, it creates a dictionary that assigned each diaSourceId their visit number
 
+## Hyperparameter Optimization:
+
+Run Bayesian optimization to find optimal hyperparameters:
+
+```sh
+# Standard CNN optimization
+sbatch scripts/submit_training.sh configs/standard_training.yaml "standard_bayes_opt" "--hpo"
+
+# Ensemble optimization  
+sbatch scripts/submit_training.sh configs/ensemble_training.yaml "ensemble_bayes_opt" "--hpo"
+
+# Co-teaching optimization
+sbatch scripts/submit_training.sh configs/coteaching_training.yaml "coteaching_bayes_opt" "--hpo"
+```
+
+Configure search space in the config file under `bayes_search` section. Best parameters are saved to `bayes_best_params.yaml` in the output directory. Each optimization runs short trials (max_epochs) to efficiently explore hyperparameter space.
+
 ## Launch a training:
-```sh 
-sbatch scripts/submit_training.sh
+```sh
+sbatch scripts/submit_training.sh configs/standard_training.yaml "standard_training"
+
+sbatch scripts/submit_training.sh configs/ensemble_training.yaml "ensemble_training"
+
+sbatch scripts/submit_training.sh configs/coteaching_training.yaml "coteaching_training"
 ```
 Allows to submit job to your GPU. The number of workers can be change in the config, as well as all the training parameter. 
 
+## Perform Inference: 
 
+```sh
+python scripts/run_inference.py \
+--dataset-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm       --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized
+
+```
+More details in `notebooks/inference_example.ipynb`
+
+## Perform evaluation: 
+
+```sh
+python scripts/run_evaluation.py     --config configs/evaluation_config.yaml     --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm     --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized     --output-dir saved/test_eval/ensemble_umap_uncertainty     --interpretability     --optimize-umap   --run-inference
+```
+
+More details in `notebooks/evaluation_example.ipynb`
