@@ -65,6 +65,8 @@ def create_batch_configs(base_config_path, batch_size=50):
         # Create batch config
         batch_config = base_config.copy()
         batch_config["visits"] = batch_visits
+        # Skip global index creation in batch mode
+        batch_config["skip_global_index"] = True
         
         # Save batch config
         batch_config_path = configs_dir / f"batch_{batch_num:03d}_{base_config_path.stem}.yaml"

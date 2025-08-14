@@ -107,6 +107,78 @@ def save_cutouts_hdf5(cutouts: np.ndarray, diaSourceIds: np.ndarray, path: str):
         # Save corresponding source IDs as int64 to prevent overflow
         f.create_dataset("diaSourceId", data=np.array(diaSourceIds, dtype="int64"))
 
+def create_global_cutout_index(config: dict):
+    """
+    Create a global index mapping diaSourceId to visit for efficient lookups.
+    This should be called after all cutouts are processed.
+    
+    Args:
+        config (dict): Configuration dictionary
+    """
+    print("Creating global cutout index...")
+    
+    path_features = f"{config['path']}/features"
+    
+    if not os.path.exists(path_features):
+        print(f"Features directory not found: {path_features}")
+        return
+    
+    index_data = []
+    
+    # Scan all feature files to build the index
+    for feature_file in os.listdir(path_features):
+        if feature_file.startswith("visit_") and feature_file.endswith("_features.h5"):
+            # Extract visit number from filename
+            try:
+                visit = int(feature_file.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+                
+            feature_path = os.path.join(path_features, feature_file)
+            
+            try:
+                # Load just the diaSourceIds from the features file
+                with pd.HDFStore(feature_path, 'r') as store:
+                    dia_source_ids = store.select_column('features', 'index')
+                
+                # Add to index
+                for dia_source_id in dia_source_ids:
+                    index_data.append({
+                        'diaSourceId': dia_source_id,
+                        'visit': visit
+                    })
+                    
+                print(f"  Indexed visit {visit}: {len(dia_source_ids)} sources")
+                
+            except Exception as e:
+                print(f"  Warning: Failed to process {feature_file}: {e}")
+                continue
+    
+    if not index_data:
+        print("No cutout data found for indexing")
+        return
+    
+    # Create DataFrame and save
+    index_df = pd.DataFrame(index_data)
+    index_df['diaSourceId'] = index_df['diaSourceId'].astype(np.int64)
+    index_df['visit'] = index_df['visit'].astype(np.int32)
+    
+    # Sort by diaSourceId for efficient lookups
+    index_df = index_df.sort_values('diaSourceId').reset_index(drop=True)
+    
+    # Save to HDF5 with diaSourceId as index
+    index_path = os.path.join(config['path'], "cutout_global_index.h5")
+    index_df.set_index('diaSourceId').to_hdf(
+        index_path, 
+        key="global_index", 
+        mode="w", 
+        format='table', 
+        data_columns=['visit']
+    )
+    
+    print(f"Global cutout index saved: {len(index_df)} entries in {index_path}")
+    return index_df
+
 def save_cutouts(config: dict):
     """
     Main function to extract, process, and save astronomical cutouts and features.
@@ -231,3 +303,11 @@ def save_cutouts(config: dict):
 
         # Progress reporting
         print(f"Saved visit {visit}: {len(normalized_cutouts)} cutouts, {len(features_df)} features")
+    
+    # Create global index after all visits are processed - but only if not in batch mode
+    skip_global_index = config.get("skip_global_index", False)
+    if not skip_global_index:
+        print("\n=== Creating global cutout index ===")
+        create_global_cutout_index(config)
+    else:
+        print("\n=== Skipping global cutout index creation (batch mode) ===")

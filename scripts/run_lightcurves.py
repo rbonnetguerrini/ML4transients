@@ -1,7 +1,7 @@
+#!/usr/bin/env python3
 import sys
 import yaml
 from pathlib import Path
-from ML4transients.data_preparation.cutouts import save_cutouts
 from ML4transients.data_preparation.lightcurves import extract_and_save_lightcurves_with_index
 from datetime import datetime
 from ML4transients.utils import realtime_update, append_config
@@ -13,16 +13,18 @@ def main():
     with open(config_path) as f:
         config = yaml.safe_load(f)
 
+    print(f"Creating lightcurve data from config: {config_path}")
+    print(f"Output path from config: {config.get('path', 'NOT SPECIFIED')}")
+    
+    # Ensure path is correctly set
+    if 'path' not in config or not config['path']:
+        raise ValueError("No output path specified in config")
+
     realtime_update(config_path, "running")
 
     try:
-        save_cutouts(config)
-        
-        # Extract lightcurves with cross-reference indices
-        if config.get("extract_lightcurves", True):  # Add this flag to config
-            print("\n=== Extracting lightcurves and creating indices ===")
-            extract_and_save_lightcurves_with_index(config)
-        
+        print("=== Extracting lightcurves and creating indices ===")
+        extract_and_save_lightcurves_with_index(config)
         config["run_info"]["status"] = "completed"
     except Exception as e:
         config["run_info"]["status"] = "failed"
