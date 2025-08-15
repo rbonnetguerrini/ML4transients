@@ -536,9 +536,27 @@ class InferenceLoader:
             return None
 
 class LightCurveLoader:
-    """Lightcurve loader with patch-based caching and cross-reference index."""
+    """Lightcurve loader with patch-based caching and cross-reference index.
+    
+    Provides efficient access to lightcurve data stored in patch-based
+    HDF5 files with caching and cross-reference indices for fast lookups.
+    
+    Attributes:
+        lightcurve_path: Path to lightcurve data directory
+        _index: Cached lightcurve index (diaObjectId -> patch mapping)
+        _diasource_index: Cached diaSourceId -> patch mapping
+        _patch_cache: Cache for loaded patch data
+        _cache_hits: Number of cache hits for performance tracking
+        _cache_misses: Number of cache misses for performance tracking
+        _max_cache_size: Maximum number of patches to keep in cache
+    """
     
     def __init__(self, lightcurve_path: Path):
+        """Initialize LightCurveLoader.
+        
+        Args:
+            lightcurve_path: Path to directory containing lightcurve data files
+        """
         self.lightcurve_path = Path(lightcurve_path)
         self._index = None
         self._diasource_index = None
@@ -549,7 +567,14 @@ class LightCurveLoader:
     
     @property
     def index(self) -> pd.DataFrame:
-        """Lazy load the lightcurve index."""
+        """Lazy load the lightcurve index.
+        
+        Returns:
+            pd.DataFrame: Index mapping diaObjectId to patch information
+            
+        Raises:
+            FileNotFoundError: If lightcurve index file is not found
+        """
         if self._index is None:
             index_file = self.lightcurve_path / "lightcurve_index.h5"
             if index_file.exists():
@@ -561,7 +586,11 @@ class LightCurveLoader:
     
     @property
     def diasource_index(self) -> pd.DataFrame:
-        """Lazy load the diaSourceId→patch index."""
+        """Lazy load the diaSourceId→patch index.
+        
+        Returns:
+            pd.DataFrame: Index mapping diaSourceId to patch and object information
+        """
         if self._diasource_index is None:
             index_file = self.lightcurve_path / "diasource_patch_index.h5"
             if index_file.exists():
@@ -571,7 +600,14 @@ class LightCurveLoader:
         return self._diasource_index
     
     def find_patch_by_source_id(self, dia_source_id: int) -> Optional[str]:
-        """Find which patch contains the given diaSourceId."""
+        """Find which patch contains the given diaSourceId.
+        
+        Args:
+            dia_source_id: The diaSourceId to locate
+            
+        Returns:
+            Optional[str]: Patch key if found, None otherwise
+        """
         if self.diasource_index.empty:
             return None
         
@@ -582,11 +618,18 @@ class LightCurveLoader:
         except (KeyError, IndexError):
             pass
         return None
-    
+
     def get_lightcurve_by_source_id(self, dia_source_id: int) -> Optional[pd.DataFrame]:
-        """
-        Get full lightcurve for a diaObjectId given any diaSourceId from that lightcurve.
-        This is the key function for your use case!
+        """Get full lightcurve for a diaObjectId given any diaSourceId from that lightcurve.
+        
+        Allows retrieving the complete lightcurve
+        when you only know one diaSourceId from that lightcurve.
+        
+        Args:
+            dia_source_id: Any diaSourceId from the desired lightcurve
+            
+        Returns:
+            Optional[pd.DataFrame]: Complete lightcurve data sorted by time, or None if not found
         """
         if self.diasource_index.empty:
             return None
@@ -639,9 +682,15 @@ class LightCurveLoader:
             return None
 
     def get_lightcurve(self, dia_object_id: int) -> Optional[pd.DataFrame]:
-        """
-        Get lightcurve for a specific diaObjectId.
-        Uses efficient patch lookup and caching.
+        """Get lightcurve for a specific diaObjectId.
+        
+        Uses efficient patch lookup and caching for fast retrieval.
+        
+        Args:
+            dia_object_id: The diaObjectId to retrieve lightcurve for
+            
+        Returns:
+            Optional[pd.DataFrame]: Lightcurve data sorted by time, or None if not found
         """
         # Find the patch containing this object
         patch_key = self.find_patch(dia_object_id)
@@ -669,9 +718,15 @@ class LightCurveLoader:
         return lc_data if len(lc_data) > 0 else None
     
     def get_multiple_lightcurves(self, dia_object_ids: List[int]) -> Dict[int, pd.DataFrame]:
-        """
-        Efficiently get lightcurves for multiple objects.
-        Groups requests by patch to minimize I/O.
+        """Efficiently get lightcurves for multiple objects.
+        
+        Groups requests by patch to minimize I/O operations.
+        
+        Args:
+            dia_object_ids: List of diaObjectIds to retrieve
+            
+        Returns:
+            Dict[int, pd.DataFrame]: Dictionary mapping diaObjectId to lightcurve DataFrame
         """
         print(f"Getting lightcurves for {len(dia_object_ids)} objects...")
         
@@ -724,292 +779,16 @@ class LightCurveLoader:
         
         print(f"Retrieved {len(results)} lightcurves from {total_patches} patches")
         return results
-    
-    def get_lightcurve_stats(self, dia_object_id: int) -> Optional[Dict]:
-        """Get basic statistics for a lightcurve without loading full data."""
-        lc = self.get_lightcurve(dia_object_id)
-        if lc is None or len(lc) == 0:
-            return None
-        
-        stats = {
-            'num_points': len(lc),
-            'time_span_days': None,
-            'bands': [],
-            'patch_key': self.find_patch(dia_object_id)
-        }
-        
 
-        if 'midpointMjdTai' in lc.columns:
-            time_span = lc['midpointMjdTai'].max() - lc['midpointMjdTai'].min()
-            stats['time_span_days'] = time_span
-        
-        if 'band' in lc.columns:
-            stats['bands'] = lc['band'].unique().tolist()
-        
-        return stats
-    
-    def list_available_patches(self) -> List[str]:
-        """List all available patch files."""
-        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
-        return [f.stem.replace("patch_", "") for f in patch_files]
-    
-    def clear_cache(self):
-        """Clear the patch cache to free memory."""
-        self._patch_cache.clear()
-        self._cache_hits = 0
-        self._cache_misses = 0
-    
-    def set_cache_size(self, max_size: int):
-        """Set maximum cache size."""
-        self._max_cache_size = max_size
-        # Clear excess entries if needed
-        while len(self._patch_cache) > max_size:
-            oldest_key = next(iter(self._patch_cache))
-            del self._patch_cache[oldest_key]
-    
-    @property
-    def cache_stats(self):
-        """Get cache performance statistics."""
-        total = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total if total > 0 else 0
-        return {
-            'hits': self._cache_hits,
-            'misses': self._cache_misses,
-            'hit_rate': hit_rate,
-            'cached_patches': len(self._patch_cache),
-            'cache_size_limit': self._max_cache_size
-        }
-    
     def get_all_source_ids_in_lightcurve(self, dia_source_id: int) -> List[int]:
-        """Get all diaSourceIds that belong to the same lightcurve as the given diaSourceId."""
-        if self.diasource_index.empty:
-            return []
+        """Get all diaSourceIds that belong to the same lightcurve as the given diaSourceId.
         
-        start_time = time.time()
-        try:
-            # Get the diaObjectId for this source
-            lookup_start = time.time()
-            source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
-            if len(source_info) == 0:
-                return []
+        Args:
+            dia_source_id: Any diaSourceId from the desired lightcurve
             
-            dia_object_id = source_info.iloc[0]['diaObjectId']
-            lookup_time = time.time() - lookup_start
-            
-            # Find all sources with the same diaObjectId
-            search_start = time.time()
-            all_sources_for_object = self.diasource_index[self.diasource_index['diaObjectId'] == dia_object_id]
-            result = all_sources_for_object.index.tolist()
-            search_time = time.time() - search_start
-            
-            total_time = time.time() - start_time
-            if total_time > 0.05:  # Only log if operation takes significant time
-                print(f"    Source ID lookup: {total_time:.3f}s (lookup: {lookup_time:.3f}s, search: {search_time:.3f}s, found: {len(result)} sources)")
-            
-            return result
-            
-        except Exception as e:
-            return []
-
-    def get_lightcurve_by_source_id(self, dia_source_id: int) -> Optional[pd.DataFrame]:
+        Returns:
+            List[int]: List of all diaSourceIds in the same lightcurve
         """
-        Get full lightcurve for a diaObjectId given any diaSourceId from that lightcurve.
-        This is the key function for your use case!
-        """
-        if self.diasource_index.empty:
-            return None
-        
-        start_time = time.time()
-        try:
-            # Find the diaObjectId and patch for this diaSourceId
-            lookup_start = time.time()
-            source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
-            if len(source_info) == 0:
-                return None
-            
-            dia_object_id = source_info.iloc[0]['diaObjectId']
-            patch_key = source_info.iloc[0]['patch_key']
-            lookup_time = time.time() - lookup_start
-            
-            # Load the patch data (with caching)
-            cache_start = time.time()
-            if patch_key in self._patch_cache:
-                self._cache_hits += 1
-                patch_data = self._patch_cache[patch_key]
-                cache_time = time.time() - cache_start
-                cache_type = "hit"
-            else:
-                self._cache_misses += 1
-                patch_data = self._load_patch_data(patch_key)
-                if patch_data is None:
-                    return None
-                self._manage_cache(patch_key, patch_data)
-                cache_time = time.time() - cache_start
-                cache_type = "miss/load"
-            
-            # Get all sources for this diaObjectId and sort by time
-            filter_start = time.time()
-            lc_data = patch_data[patch_data['diaObjectId'] == dia_object_id].copy()
-            
-            if len(lc_data) > 0 and 'midpointMjdTai' in lc_data.columns:
-                lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
-            filter_time = time.time() - filter_start
-            
-            total_time = time.time() - start_time
-            lc_points = len(lc_data) if lc_data is not None else 0
-            if total_time > 0.05:  # Only log if operation takes significant time
-                print(f"    Lightcurve by source ID: {total_time:.3f}s (lookup: {lookup_time:.3f}s, "
-                      f"cache {cache_type}: {cache_time:.3f}s, filter: {filter_time:.3f}s, points: {lc_points})")
-            
-            return lc_data if len(lc_data) > 0 else None
-            
-        except Exception as e:
-            return None
-
-    def get_lightcurve(self, dia_object_id: int) -> Optional[pd.DataFrame]:
-        """
-        Get lightcurve for a specific diaObjectId.
-        Uses efficient patch lookup and caching.
-        """
-        # Find the patch containing this object
-        patch_key = self.find_patch(dia_object_id)
-        if not patch_key:
-            return None
-        
-        # Check cache first
-        if patch_key in self._patch_cache:
-            self._cache_hits += 1
-            patch_data = self._patch_cache[patch_key]
-        else:
-            self._cache_misses += 1
-            patch_data = self._load_patch_data(patch_key)
-            if patch_data is None:
-                return None
-            
-            # Manage cache
-            self._manage_cache(patch_key, patch_data)
-        
-        # Filter for the specific object and sort by time
-        lc_data = patch_data[patch_data['diaObjectId'] == dia_object_id].copy()
-        if len(lc_data) > 0 and 'midpointMjdTai' in lc_data.columns:
-            lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
-        
-        return lc_data if len(lc_data) > 0 else None
-    
-    def get_multiple_lightcurves(self, dia_object_ids: List[int]) -> Dict[int, pd.DataFrame]:
-        """
-        Efficiently get lightcurves for multiple objects.
-        Groups requests by patch to minimize I/O.
-        """
-        print(f"Getting lightcurves for {len(dia_object_ids)} objects...")
-        
-        # Group object IDs by patch efficiently
-        patch_mapping = self.find_patches_for_objects(dia_object_ids)
-        
-        patch_groups = {}
-        missing_objects = []
-        
-        for obj_id in dia_object_ids:
-            patch_key = patch_mapping.get(obj_id)
-            if patch_key:
-                if patch_key not in patch_groups:
-                    patch_groups[patch_key] = []
-                patch_groups[patch_key].append(obj_id)
-            else:
-                missing_objects.append(obj_id)
-        
-        if missing_objects:
-            print(f"Warning: {len(missing_objects)} objects not found in index")
-        
-        results = {}
-        total_patches = len(patch_groups)
-        
-        # Process each patch once
-        for i, (patch_key, obj_ids) in enumerate(patch_groups.items()):
-            print(f"Processing patch {patch_key} ({i+1}/{total_patches}) with {len(obj_ids)} objects...")
-            
-            # Load patch data (with caching)
-            if patch_key in self._patch_cache:
-                self._cache_hits += 1
-                patch_data = self._patch_cache[patch_key]
-            else:
-                self._cache_misses += 1
-                patch_data = self._load_patch_data(patch_key)
-                if patch_data is None:
-                    continue
-                
-                # Manage cache
-                self._manage_cache(patch_key, patch_data)
-            
-            # Extract lightcurves for all objects in this patch
-            for obj_id in obj_ids:
-                lc_data = patch_data[patch_data['diaObjectId'] == obj_id].copy()
-                if len(lc_data) > 0:
-                    # Sort by time if available
-                    if 'midpointMjdTai' in lc_data.columns:
-                        lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
-                    results[obj_id] = lc_data
-        
-        print(f"Retrieved {len(results)} lightcurves from {total_patches} patches")
-        return results
-    
-    def get_lightcurve_stats(self, dia_object_id: int) -> Optional[Dict]:
-        """Get basic statistics for a lightcurve without loading full data."""
-        lc = self.get_lightcurve(dia_object_id)
-        if lc is None or len(lc) == 0:
-            return None
-        
-        stats = {
-            'num_points': len(lc),
-            'time_span_days': None,
-            'bands': [],
-            'patch_key': self.find_patch(dia_object_id)
-        }
-        
-
-        if 'midpointMjdTai' in lc.columns:
-            time_span = lc['midpointMjdTai'].max() - lc['midpointMjdTai'].min()
-            stats['time_span_days'] = time_span
-        
-        if 'band' in lc.columns:
-            stats['bands'] = lc['band'].unique().tolist()
-        
-        return stats
-    
-    def list_available_patches(self) -> List[str]:
-        """List all available patch files."""
-        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
-        return [f.stem.replace("patch_", "") for f in patch_files]
-    
-    def clear_cache(self):
-        """Clear the patch cache to free memory."""
-        self._patch_cache.clear()
-        self._cache_hits = 0
-        self._cache_misses = 0
-    
-    def set_cache_size(self, max_size: int):
-        """Set maximum cache size."""
-        self._max_cache_size = max_size
-        # Clear excess entries if needed
-        while len(self._patch_cache) > max_size:
-            oldest_key = next(iter(self._patch_cache))
-            del self._patch_cache[oldest_key]
-    
-    @property
-    def cache_stats(self):
-        """Get cache performance statistics."""
-        total = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total if total > 0 else 0
-        return {
-            'hits': self._cache_hits,
-            'misses': self._cache_misses,
-            'hit_rate': hit_rate,
-            'cached_patches': len(self._patch_cache),
-            'cache_size_limit': self._max_cache_size
-        }
-    
-    def get_all_source_ids_in_lightcurve(self, dia_source_id: int) -> List[int]:
-        """Get all diaSourceIds that belong to the same lightcurve as the given diaSourceId."""
         if self.diasource_index.empty:
             return []
         
@@ -1040,7 +819,14 @@ class LightCurveLoader:
             return []
 
     def get_object_id_for_source(self, dia_source_id: int) -> Optional[int]:
-        """Get diaObjectId for a given diaSourceId."""
+        """Get diaObjectId for a given diaSourceId.
+        
+        Args:
+            dia_source_id: The diaSourceId to look up
+            
+        Returns:
+            Optional[int]: The corresponding diaObjectId, or None if not found
+        """
         if self.diasource_index.empty:
             return None
         
@@ -1053,7 +839,14 @@ class LightCurveLoader:
         return None
 
     def find_patch(self, dia_object_id: int) -> Optional[str]:
-        """Find which patch contains the given diaObjectId."""
+        """Find which patch contains the given diaObjectId.
+        
+        Args:
+            dia_object_id: The diaObjectId to locate
+            
+        Returns:
+            Optional[str]: Patch key if found, None otherwise
+        """
         try:
             result = self.index.loc[self.index.index == dia_object_id]
             if len(result) > 0:
@@ -1063,7 +856,14 @@ class LightCurveLoader:
         return None
     
     def find_patches_for_objects(self, dia_object_ids: List[int]) -> Dict[int, str]:
-        """Efficiently find patches for multiple objects at once."""
+        """Efficiently find patches for multiple objects at once.
+        
+        Args:
+            dia_object_ids: List of diaObjectIds to find patches for
+            
+        Returns:
+            Dict[int, str]: Dictionary mapping diaObjectId to patch key
+        """
         try:
             # Use pandas query for efficiency
             mask = self.index.index.isin(dia_object_ids)
@@ -1073,9 +873,89 @@ class LightCurveLoader:
             print(f"Error in batch patch lookup: {e}")
             # Fallback to individual lookups
             return {obj_id: self.find_patch(obj_id) for obj_id in dia_object_ids}
+
+    def get_lightcurve_stats(self, dia_object_id: int) -> Optional[Dict]:
+        """Get basic statistics for a lightcurve without loading full data.
+        
+        Args:
+            dia_object_id: The diaObjectId to get statistics for
+            
+        Returns:
+            Optional[Dict]: Dictionary containing lightcurve statistics, or None if not found
+        """
+        lc = self.get_lightcurve(dia_object_id)
+        if lc is None or len(lc) == 0:
+            return None
+        
+        stats = {
+            'num_points': len(lc),
+            'time_span_days': None,
+            'bands': [],
+            'patch_key': self.find_patch(dia_object_id)
+        }
+        
+        if 'midpointMjdTai' in lc.columns:
+            time_span = lc['midpointMjdTai'].max() - lc['midpointMjdTai'].min()
+            stats['time_span_days'] = time_span
+        
+        if 'band' in lc.columns:
+            stats['bands'] = lc['band'].unique().tolist()
+        
+        return stats
+    
+    def list_available_patches(self) -> List[str]:
+        """List all available patch files.
+        
+        Returns:
+            List[str]: List of available patch identifiers
+        """
+        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
+        return [f.stem.replace("patch_", "") for f in patch_files]
+    
+    def clear_cache(self):
+        """Clear the patch cache to free memory."""
+        self._patch_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+    
+    def set_cache_size(self, max_size: int):
+        """Set maximum cache size.
+        
+        Args:
+            max_size: Maximum number of patches to keep in cache
+        """
+        self._max_cache_size = max_size
+        # Clear excess entries if needed
+        while len(self._patch_cache) > max_size:
+            oldest_key = next(iter(self._patch_cache))
+            del self._patch_cache[oldest_key]
+    
+    @property
+    def cache_stats(self):
+        """Get cache performance statistics.
+        
+        Returns:
+            Dict: Dictionary containing cache performance metrics
+        """
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'hit_rate': hit_rate,
+            'cached_patches': len(self._patch_cache),
+            'cache_size_limit': self._max_cache_size
+        }
     
     def _load_patch_data(self, patch_key: str) -> Optional[pd.DataFrame]:
-        """Load lightcurve data for a specific patch."""
+        """Load lightcurve data for a specific patch.
+        
+        Args:
+            patch_key: The patch identifier to load
+            
+        Returns:
+            Optional[pd.DataFrame]: Patch data if successful, None otherwise
+        """
         patch_file = self.lightcurve_path / f"patch_{patch_key}.h5"
         
         if patch_file.exists():
@@ -1088,7 +968,12 @@ class LightCurveLoader:
             return None
     
     def _manage_cache(self, new_patch_key: str, new_data: pd.DataFrame):
-        """Manage cache size by removing least recently used items."""
+        """Manage cache size by removing least recently used items.
+        
+        Args:
+            new_patch_key: Key for the new patch data to cache
+            new_data: The patch data to cache
+        """
         if len(self._patch_cache) >= self._max_cache_size:
             # Remove oldest entry (simple FIFO for now)
             oldest_key = next(iter(self._patch_cache))

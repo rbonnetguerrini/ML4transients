@@ -329,7 +329,6 @@ class DatasetLoader:
                     self._config_summary = yaml.safe_load(f)
         
         # Note: Global index is now loaded on-demand, not built here
-
     def get_complete_lightcurve_data(
         self, 
         dia_source_id: int, 
@@ -337,21 +336,42 @@ class DatasetLoader:
         columns: list = None, 
         load_cutouts: bool = False
     ) -> Optional[Dict]:
-        """
-        Get all data for sources in a lightcurve given any diaSourceId from that lightcurve.
-        Only loads selected columns from the patch file for efficiency.
+        """Get all data for sources in a lightcurve given any diaSourceId from that lightcurve.
+        
+        This method efficiently retrieves all related data for a complete lightcurve
+        by using a diaSourceId as the entry point. It only loads the requested columns
+        from the patch file for optimal performance.
         
         Args:
-            dia_source_id: Any diaSourceId from the lightcurve
-            data_path: Path to data directory (optional)
-            columns: List of columns to load from the patch file (default: common lightcurve columns)
-            load_cutouts: If True, also load cutouts for all sources in the lightcurve
+            dia_source_id: Any diaSourceId from the desired lightcurve
+            data_path: Path to data directory. If None, uses first available lightcurve loader
+            columns: List of columns to load from the patch file. If None, uses default
+                    lightcurve columns: ["diaSourceId", "midpointMjdTai", "psFlux", 
+                    "psFluxErr", "mag", "magErr", "band", "ccdVisitId", "visit"]
+            load_cutouts: If True, also loads cutouts for all sources in the lightcurve
         
         Returns:
-            dict with keys: lightcurve, source_ids, cutouts (optional), object_id, num_sources
+            Optional[Dict]: Dictionary containing:
+                - 'lightcurve': pd.DataFrame with lightcurve data sorted by time
+                - 'source_ids': List[int] of all diaSourceIds in the lightcurve
+                - 'cutouts': Dict[int, np.ndarray] mapping diaSourceId to cutout (if load_cutouts=True)
+                - 'object_id': int diaObjectId for this lightcurve
+                - 'num_sources': int number of sources in the lightcurve
+            
+            Returns None if the diaSourceId is not found or data cannot be loaded.
+        
+        Example:
+            >>> data = dataset_loader.get_complete_lightcurve_data(
+            ...     dia_source_id=12345,
+            ...     columns=["diaSourceId", "midpointMjdTai", "psFlux", "band"],
+            ...     load_cutouts=True
+            ... )
+            >>> print(f"Lightcurve has {data['num_sources']} sources")
+            >>> print(f"Object ID: {data['object_id']}")
         """
         start_time = time.time()
         
+        # Determine data path to use
         if not data_path:
             if self._lightcurve_loaders:
                 data_path = Path(list(self._lightcurve_loaders.keys())[0])
@@ -364,7 +384,7 @@ class DatasetLoader:
         
         lc_loader = self._lightcurve_loaders[path_str]
 
-        # Step 1: Get all source IDs in this lightcurve (from diasource index)
+        # Step 1: Get all source IDs in this lightcurve using the diasource index
         step1_start = time.time()
         source_ids = lc_loader.get_all_source_ids_in_lightcurve(dia_source_id)
         if not source_ids:
@@ -372,20 +392,22 @@ class DatasetLoader:
         step1_time = time.time() - step1_start
         print(f"Step 1 - Get source IDs: {step1_time:.3f}s ({len(source_ids)} sources found)")
         
-        # Step 2: Get object ID
+        # Step 2: Get object ID for this lightcurve
         step2_start = time.time()
         object_id = lc_loader.get_object_id_for_source(dia_source_id)
         step2_time = time.time() - step2_start
         print(f"Step 2 - Get object ID: {step2_time:.3f}s (object_id: {object_id})")
         
-        # Step 3: Load only the requested columns from the patch file for this lightcurve
+        # Step 3: Load only the requested columns from the patch file
         step3_start = time.time()
         if columns is None:
+            # Default columns for lightcurve analysis
             columns = [
                 "diaSourceId", "midpointMjdTai", "psFlux", "psFluxErr", 
                 "mag", "magErr", "band", "ccdVisitId", "visit"
             ]
         
+        # Find the patch containing this lightcurve
         patch_key = lc_loader.find_patch_by_source_id(dia_source_id)
         if not patch_key:
             # Fallback: get patch from object ID
@@ -409,7 +431,7 @@ class DatasetLoader:
                 columns=columns
             )
             
-            # Sort by time if available
+            # Sort by time if available for proper lightcurve ordering
             if 'midpointMjdTai' in lc_df.columns and len(lc_df) > 0:
                 lc_df = lc_df.sort_values('midpointMjdTai').reset_index(drop=True)
                 
@@ -425,6 +447,7 @@ class DatasetLoader:
         cutouts = {}
         if load_cutouts and len(source_ids) > 0:
             step4_start = time.time()
+            
             # Group source IDs by visit for efficient batch loading
             visit_groups = {}
             for src_id in source_ids:
@@ -436,7 +459,8 @@ class DatasetLoader:
             
             print(f"Step 4a - Group by visit: ({len(visit_groups)} visits)")
             
-            for i, (visit, src_ids_in_visit) in enumerate(visit_groups.items()):
+            # Load cutouts visit by visit using batch operations
+            for visit, src_ids_in_visit in visit_groups.items():
                 if visit in self._cutout_loaders:
                     batch_cutouts = self._cutout_loaders[visit].get_multiple_by_ids(src_ids_in_visit)
                     cutouts.update(batch_cutouts)
@@ -455,10 +479,11 @@ class DatasetLoader:
             'num_sources': len(source_ids)
         }
 
+    
+
     def get_inference_for_lightcurve(self, dia_source_id: int, weights_path: str = None, 
                                    model_hash: str = None, data_path: Path = None) -> Dict[int, Dict]:
-        """
-        Get inference results for all sources in a lightcurve.
+        """Get inference results for all sources in a lightcurve.
         
         Args:
             dia_source_id: Any diaSourceId from the lightcurve
@@ -467,7 +492,7 @@ class DatasetLoader:
             data_path: Specific data path to search
             
         Returns:
-            Dict mapping diaSourceId to inference results for the entire lightcurve
+            Dict[int, Dict]: Dictionary mapping diaSourceId to inference results for the entire lightcurve
         """
         source_ids = self.get_lightcurve_source_ids(dia_source_id, data_path)
         
@@ -907,190 +932,4 @@ class DatasetLoader:
     def __str__(self):
         return self.__repr__()
 
-    def get_complete_lightcurve_data(
-        self, 
-        dia_source_id: int, 
-        data_path: Path = None, 
-        columns: list = None, 
-        load_cutouts: bool = False
-    ) -> Optional[Dict]:
-        """
-        Get all data for sources in a lightcurve given any diaSourceId from that lightcurve.
-        Only loads selected columns from the patch file for efficiency.
-        
-        Args:
-            dia_source_id: Any diaSourceId from the lightcurve
-            data_path: Path to data directory (optional)
-            columns: List of columns to load from the patch file (default: common lightcurve columns)
-            load_cutouts: If True, also load cutouts for all sources in the lightcurve
-        
-        Returns:
-            dict with keys: lightcurve, source_ids, cutouts (optional), object_id, num_sources
-        """
-        start_time = time.time()
-        
-        if not data_path:
-            if self._lightcurve_loaders:
-                data_path = Path(list(self._lightcurve_loaders.keys())[0])
-            else:
-                return None
-        
-        path_str = str(data_path)
-        if path_str not in self._lightcurve_loaders:
-            return None
-        
-        lc_loader = self._lightcurve_loaders[path_str]
-
-        # Step 1: Get all source IDs in this lightcurve (from diasource index)
-        step1_start = time.time()
-        source_ids = lc_loader.get_all_source_ids_in_lightcurve(dia_source_id)
-        if not source_ids:
-            return None
-        step1_time = time.time() - step1_start
-        print(f"Step 1 - Get source IDs: {step1_time:.3f}s ({len(source_ids)} sources found)")
-        
-        # Step 2: Get object ID
-        step2_start = time.time()
-        object_id = lc_loader.get_object_id_for_source(dia_source_id)
-        step2_time = time.time() - step2_start
-        print(f"Step 2 - Get object ID: {step2_time:.3f}s (object_id: {object_id})")
-        
-        # Step 3: Load only the requested columns from the patch file for this lightcurve
-        step3_start = time.time()
-        if columns is None:
-            columns = [
-                "diaSourceId", "midpointMjdTai", "psFlux", "psFluxErr", 
-                "mag", "magErr", "band", "ccdVisitId", "visit"
-            ]
-        
-        patch_key = lc_loader.find_patch_by_source_id(dia_source_id)
-        if not patch_key:
-            # Fallback: get patch from object ID
-            patch_key = lc_loader.find_patch(object_id)
-        
-        if not patch_key:
-            print(f"No patch found for source {dia_source_id} or object {object_id}")
-            return None
-            
-        patch_file = lc_loader.lightcurve_path / f"patch_{patch_key}.h5"
-        if not patch_file.exists():
-            print(f"Patch file not found: {patch_file}")
-            return None
-
-        try:
-            # Load only the rows for this diaObjectId and requested columns
-            lc_df = pd.read_hdf(
-                patch_file, 
-                key="lightcurves", 
-                where=f"diaObjectId=={object_id}", 
-                columns=columns
-            )
-            
-            # Sort by time if available
-            if 'midpointMjdTai' in lc_df.columns and len(lc_df) > 0:
-                lc_df = lc_df.sort_values('midpointMjdTai').reset_index(drop=True)
-                
-        except Exception as e:
-            print(f"Error loading lightcurve from {patch_file}: {e}")
-            return None
-        
-        step3_time = time.time() - step3_start
-        lc_points = len(lc_df) if lc_df is not None else 0
-        print(f"Step 3 - Get lightcurve data: {step3_time:.3f}s ({lc_points} lightcurve points)")
-
-        # Step 4: Optionally load cutouts for all sources in the lightcurve
-        cutouts = {}
-        if load_cutouts and len(source_ids) > 0:
-            step4_start = time.time()
-            # Group source IDs by visit for efficient batch loading
-            visit_groups = {}
-            for src_id in source_ids:
-                visit = self.find_visit(src_id)
-                if visit:
-                    if visit not in visit_groups:
-                        visit_groups[visit] = []
-                    visit_groups[visit].append(src_id)
-            
-            print(f"Step 4a - Group by visit: ({len(visit_groups)} visits)")
-            
-            for i, (visit, src_ids_in_visit) in enumerate(visit_groups.items()):
-                if visit in self._cutout_loaders:
-                    batch_cutouts = self._cutout_loaders[visit].get_multiple_by_ids(src_ids_in_visit)
-                    cutouts.update(batch_cutouts)
-            
-            step4_time = time.time() - step4_start
-            print(f"Step 4 - Get cutouts: {step4_time:.3f}s ({len(cutouts)} cutouts)")
-
-        total_time = time.time() - start_time
-        print(f"Total lightcurve data retrieval time: {total_time:.3f}s")
-        
-        return {
-            'lightcurve': lc_df,
-            'source_ids': source_ids,
-            'cutouts': cutouts if load_cutouts else None,
-            'object_id': object_id,
-            'num_sources': len(source_ids)
-        }
     
-    def get_lightcurve_source_ids(self, dia_source_id: int, data_path: Path = None) -> List[int]:
-        """Get all diaSourceIds for the same lightcurve as the given diaSourceId."""
-        if not data_path:
-            if self._lightcurve_loaders:
-                data_path = Path(list(self._lightcurve_loaders.keys())[0])
-            else:
-                return []
-        
-        path_str = str(data_path)
-        if path_str in self._lightcurve_loaders:
-            return self._lightcurve_loaders[path_str].get_all_source_ids_in_lightcurve(dia_source_id)
-        
-        return []
-    
-    def get_inference_for_lightcurve(self, dia_source_id: int, weights_path: str = None, 
-                                   model_hash: str = None, data_path: Path = None) -> Dict[int, Dict]:
-        """
-        Get inference results for all sources in a lightcurve.
-        
-        Args:
-            dia_source_id: Any diaSourceId from the lightcurve
-            weights_path: Path to model weights (for new inference)
-            model_hash: Model hash (for existing results)
-            data_path: Specific data path to search
-            
-        Returns:
-            Dict mapping diaSourceId to inference results for the entire lightcurve
-        """
-        source_ids = self.get_lightcurve_source_ids(dia_source_id, data_path)
-        
-        inference_results = {}
-        for src_id in source_ids:
-            result = self.get_inference_results_by_id(src_id, weights_path, model_hash)
-            if result is not None:
-                inference_results[src_id] = result
-        
-        return inference_results
-    
-    def get_inference_for_lightcurve(self, dia_source_id: int, weights_path: str = None, 
-                                   model_hash: str = None, data_path: Path = None) -> Dict[int, Dict]:
-        """
-        Get inference results for all sources in a lightcurve.
-        
-        Args:
-            dia_source_id: Any diaSourceId from the lightcurve
-            weights_path: Path to model weights (for new inference)
-            model_hash: Model hash (for existing results)
-            data_path: Specific data path to search
-            
-        Returns:
-            Dict mapping diaSourceId to inference results for the entire lightcurve
-        """
-        source_ids = self.get_lightcurve_source_ids(dia_source_id, data_path)
-        
-        inference_results = {}
-        for src_id in source_ids:
-            result = self.get_inference_results_by_id(src_id, weights_path, model_hash)
-            if result is not None:
-                inference_results[src_id] = result
-        
-        return inference_results
-
