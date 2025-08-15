@@ -1,6 +1,7 @@
 import h5py
 import pandas as pd
 import numpy as np
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 import hashlib
@@ -48,10 +49,92 @@ class CutoutLoader:
         np.ndarray or None
             Cutout array, or None if ID not found
         """
-        idx = np.where(self.ids == dia_source_id)[0]
-        if len(idx) == 0:
-            return None
-        return self.data[idx[0]]
+        # Try efficient row-based query first
+        try:
+            with h5py.File(self.file_path, 'r') as f:
+                # Get the IDs to find the index
+                ids = f['diaSourceId'][:]
+                idx = np.where(ids == dia_source_id)[0]
+                if len(idx) == 0:
+                    return None
+                
+                # Read only the specific row from cutouts
+                cutout = f['cutouts'][idx[0]]
+                return cutout
+        except Exception as e:
+            # Fallback to property-based loading
+            idx = np.where(self.ids == dia_source_id)[0]
+            if len(idx) == 0:
+                return None
+            return self.data[idx[0]]
+
+    def get_multiple_by_ids(self, dia_source_ids: List[int]) -> Dict[int, np.ndarray]:
+        """Efficiently get multiple cutouts by diaSourceIds from this file.
+        
+        Parameters
+        ----------
+        dia_source_ids : List[int]
+            List of diaSourceIds to retrieve
+            
+        Returns
+        -------
+        Dict[int, np.ndarray]
+            Dictionary mapping diaSourceId to cutout array
+        """
+        if not dia_source_ids:
+            return {}
+        
+        start_time = time.time()
+        results = {}
+        try:
+            file_start = time.time()
+            with h5py.File(self.file_path, 'r') as f:
+                file_open_time = time.time() - file_start
+                
+                # Get all IDs once
+                ids_start = time.time()
+                all_ids = f['diaSourceId'][:]
+                ids_time = time.time() - ids_start
+                
+                # Find indices for all requested IDs
+                index_start = time.time()
+                indices = []
+                id_to_idx = {}
+                for target_id in dia_source_ids:
+                    idx = np.where(all_ids == target_id)[0]
+                    if len(idx) > 0:
+                        indices.append(idx[0])
+                        id_to_idx[target_id] = len(indices) - 1
+                index_time = time.time() - index_start
+                
+                if indices:
+                    # Read only the specific rows we need
+                    read_start = time.time()
+                    cutouts = f['cutouts'][indices]
+                    read_time = time.time() - read_start
+                    
+                    # Map back to original IDs
+                    map_start = time.time()
+                    for target_id in dia_source_ids:
+                        if target_id in id_to_idx:
+                            results[target_id] = cutouts[id_to_idx[target_id]]
+                    map_time = time.time() - map_start
+                    
+                    total_time = time.time() - start_time
+                    if total_time > 0.1:  # Only log if operation takes significant time
+                        print(f"      Cutout batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s "
+                              f"(open: {file_open_time:.3f}s, ids: {ids_time:.3f}s, index: {index_time:.3f}s, "
+                              f"read: {read_time:.3f}s, map: {map_time:.3f}s)")
+        
+        except Exception as e:
+            print(f"Error in batch cutout loading: {e}, falling back to individual loads")
+            # Fallback to individual queries
+            for dia_source_id in dia_source_ids:
+                cutout = self.get_by_id(dia_source_id)
+                if cutout is not None:
+                    results[dia_source_id] = cutout
+        
+        return results
 
 class FeatureLoader:
     """Lazy loader for feature data stored in HDF5/Pandas format.
@@ -65,13 +148,31 @@ class FeatureLoader:
         self._data = None
         self._ids = None
         self._labels = None
+        self._is_table_format = None
+    
+    def _check_table_format(self):
+        """Check if the HDF5 file uses table format (supports queries) or fixed format."""
+        if self._is_table_format is None:
+            try:
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    # Try to get info about the features dataset
+                    info = store.get_storer('features')
+                    self._is_table_format = info is not None and hasattr(info, 'table')
+            except:
+                self._is_table_format = False
+        return self._is_table_format
     
     @property
     def ids(self):
         """Get diaSourceIds without loading full data."""
         if self._ids is None:
-            with pd.HDFStore(self.file_path, 'r') as store:
-                self._ids = store.select_column('features', 'index')
+            if self._check_table_format():
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    self._ids = store.select_column('features', 'index')
+            else:
+                # For fixed format, we need to load the index
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    self._ids = store['features'].index
         return self._ids
     
     @property
@@ -79,9 +180,14 @@ class FeatureLoader:
         """Get only labels without loading all features."""
         if self._labels is None:
             try:
-                with pd.HDFStore(self.file_path, 'r') as store:
-                    # Load only the is_injection column
-                    self._labels = store.select('features', columns=['is_injection'])
+                if self._check_table_format():
+                    with pd.HDFStore(self.file_path, 'r') as store:
+                        # Load only the is_injection column
+                        self._labels = store.select('features', columns=['is_injection'])
+                else:
+                    # Fall back for fixed format
+                    print(f"Warning: Loading full features for labels from {self.file_path}")
+                    self._labels = self.data[['is_injection']]
             except (ValueError, TypeError):
                 # Fall back for fixed format
                 print(f"Warning: Loading full features for labels from {self.file_path}")
@@ -101,9 +207,96 @@ class FeatureLoader:
         pd.DataFrame
             Features for the specified ID
         """
-        with pd.HDFStore(self.file_path, 'r') as store:
-            # Efficient query without loading full data
-            return store.select('features', where=f'index == {dia_source_id}')
+        if self._check_table_format():
+            with pd.HDFStore(self.file_path, 'r') as store:
+                # Efficient query without loading full data
+                return store.select('features', where=f'index == {dia_source_id}')
+        else:
+            # Fallback for fixed format - load all and filter
+            if self._data is None:
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    self._data = store['features']
+            
+            if dia_source_id in self._data.index:
+                return self._data.loc[[dia_source_id]]
+            else:
+                return pd.DataFrame()  # Empty DataFrame if not found
+
+    def get_multiple_by_ids(self, dia_source_ids: List[int]) -> Dict[int, pd.DataFrame]:
+        """Efficiently get multiple features by diaSourceIds from this file.
+        
+        Parameters
+        ----------
+        dia_source_ids : List[int]
+            List of diaSourceIds to retrieve
+            
+        Returns
+        -------
+        Dict[int, pd.DataFrame]
+            Dictionary mapping diaSourceId to features DataFrame
+        """
+        if not dia_source_ids:
+            return {}
+        
+        start_time = time.time()
+        results = {}
+        
+        if self._check_table_format():
+            try:
+                # Create WHERE clause for multiple IDs
+                query_start = time.time()
+                id_list_str = ','.join(map(str, dia_source_ids))
+                where_clause = f'index in [{id_list_str}]'
+                query_prep_time = time.time() - query_start
+                
+                file_start = time.time()
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    file_open_time = time.time() - file_start
+                    
+                    read_start = time.time()
+                    batch_results = store.select('features', where=where_clause)
+                    read_time = time.time() - read_start
+                
+                # Split back into individual DataFrames
+                split_start = time.time()
+                for dia_source_id in dia_source_ids:
+                    if dia_source_id in batch_results.index:
+                        results[dia_source_id] = batch_results.loc[[dia_source_id]]
+                split_time = time.time() - split_start
+                
+                total_time = time.time() - start_time
+                if total_time > 0.1:  # Only log if operation takes significant time
+                    print(f"      Features batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s "
+                          f"(query_prep: {query_prep_time:.3f}s, open: {file_open_time:.3f}s, "
+                          f"read: {read_time:.3f}s, split: {split_time:.3f}s)")
+                
+            except Exception as e:
+                print(f"Error in batch feature loading: {e}, falling back to individual loads")
+                # Fallback to individual queries
+                for dia_source_id in dia_source_ids:
+                    result = self.get_by_id(dia_source_id)
+                    if not result.empty:
+                        results[dia_source_id] = result
+        else:
+            # For fixed format, load once and filter multiple times
+            load_start = time.time()
+            if self._data is None:
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    self._data = store['features']
+            load_time = time.time() - load_start
+            
+            filter_start = time.time()
+            for dia_source_id in dia_source_ids:
+                if dia_source_id in self._data.index:
+                    results[dia_source_id] = self._data.loc[[dia_source_id]]
+            filter_time = time.time() - filter_start
+            
+            total_time = time.time() - start_time
+            if total_time > 0.1:  # Only log if operation takes significant time
+                print(f"      Features batch load fixed format ({len(dia_source_ids)} IDs): {total_time:.3f}s "
+                      f"(load: {load_time:.3f}s, filter: {filter_time:.3f}s)")
+        
+        return results
     
     def get_object_id(self):
         """
@@ -114,10 +307,17 @@ class FeatureLoader:
         pd.DataFrame
             diaObjectId 
         """
-
-        with pd.HDFStore(self.file_path, 'r') as store:
-            # Load only the diaObjectId column
-            dia_obj = store.select('features', columns=['diaObjectId'])
+        if self._check_table_format():
+            with pd.HDFStore(self.file_path, 'r') as store:
+                # Load only the diaObjectId column
+                dia_obj = store.select('features', columns=['diaObjectId'])
+        else:
+            # Fallback for fixed format
+            if self._data is None:
+                with pd.HDFStore(self.file_path, 'r') as store:
+                    self._data = store['features']
+            dia_obj = self._data[['diaObjectId']]
+            
         return dia_obj
 
             
@@ -391,31 +591,47 @@ class LightCurveLoader:
         if self.diasource_index.empty:
             return None
         
+        start_time = time.time()
         try:
             # Find the diaObjectId and patch for this diaSourceId
+            lookup_start = time.time()
             source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
             if len(source_info) == 0:
                 return None
             
             dia_object_id = source_info.iloc[0]['diaObjectId']
             patch_key = source_info.iloc[0]['patch_key']
+            lookup_time = time.time() - lookup_start
             
             # Load the patch data (with caching)
+            cache_start = time.time()
             if patch_key in self._patch_cache:
                 self._cache_hits += 1
                 patch_data = self._patch_cache[patch_key]
+                cache_time = time.time() - cache_start
+                cache_type = "hit"
             else:
                 self._cache_misses += 1
                 patch_data = self._load_patch_data(patch_key)
                 if patch_data is None:
                     return None
                 self._manage_cache(patch_key, patch_data)
+                cache_time = time.time() - cache_start
+                cache_type = "miss/load"
             
             # Get all sources for this diaObjectId and sort by time
+            filter_start = time.time()
             lc_data = patch_data[patch_data['diaObjectId'] == dia_object_id].copy()
             
             if len(lc_data) > 0 and 'midpointMjdTai' in lc_data.columns:
                 lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
+            filter_time = time.time() - filter_start
+            
+            total_time = time.time() - start_time
+            lc_points = len(lc_data) if lc_data is not None else 0
+            if total_time > 0.05:  # Only log if operation takes significant time
+                print(f"    Lightcurve by source ID: {total_time:.3f}s (lookup: {lookup_time:.3f}s, "
+                      f"cache {cache_type}: {cache_time:.3f}s, filter: {filter_time:.3f}s, points: {lc_points})")
             
             return lc_data if len(lc_data) > 0 else None
             
@@ -569,17 +785,256 @@ class LightCurveLoader:
         if self.diasource_index.empty:
             return []
         
+        start_time = time.time()
         try:
             # Get the diaObjectId for this source
+            lookup_start = time.time()
             source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
             if len(source_info) == 0:
                 return []
             
             dia_object_id = source_info.iloc[0]['diaObjectId']
+            lookup_time = time.time() - lookup_start
             
             # Find all sources with the same diaObjectId
+            search_start = time.time()
             all_sources_for_object = self.diasource_index[self.diasource_index['diaObjectId'] == dia_object_id]
-            return all_sources_for_object.index.tolist()
+            result = all_sources_for_object.index.tolist()
+            search_time = time.time() - search_start
+            
+            total_time = time.time() - start_time
+            if total_time > 0.05:  # Only log if operation takes significant time
+                print(f"    Source ID lookup: {total_time:.3f}s (lookup: {lookup_time:.3f}s, search: {search_time:.3f}s, found: {len(result)} sources)")
+            
+            return result
+            
+        except Exception as e:
+            return []
+
+    def get_lightcurve_by_source_id(self, dia_source_id: int) -> Optional[pd.DataFrame]:
+        """
+        Get full lightcurve for a diaObjectId given any diaSourceId from that lightcurve.
+        This is the key function for your use case!
+        """
+        if self.diasource_index.empty:
+            return None
+        
+        start_time = time.time()
+        try:
+            # Find the diaObjectId and patch for this diaSourceId
+            lookup_start = time.time()
+            source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
+            if len(source_info) == 0:
+                return None
+            
+            dia_object_id = source_info.iloc[0]['diaObjectId']
+            patch_key = source_info.iloc[0]['patch_key']
+            lookup_time = time.time() - lookup_start
+            
+            # Load the patch data (with caching)
+            cache_start = time.time()
+            if patch_key in self._patch_cache:
+                self._cache_hits += 1
+                patch_data = self._patch_cache[patch_key]
+                cache_time = time.time() - cache_start
+                cache_type = "hit"
+            else:
+                self._cache_misses += 1
+                patch_data = self._load_patch_data(patch_key)
+                if patch_data is None:
+                    return None
+                self._manage_cache(patch_key, patch_data)
+                cache_time = time.time() - cache_start
+                cache_type = "miss/load"
+            
+            # Get all sources for this diaObjectId and sort by time
+            filter_start = time.time()
+            lc_data = patch_data[patch_data['diaObjectId'] == dia_object_id].copy()
+            
+            if len(lc_data) > 0 and 'midpointMjdTai' in lc_data.columns:
+                lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
+            filter_time = time.time() - filter_start
+            
+            total_time = time.time() - start_time
+            lc_points = len(lc_data) if lc_data is not None else 0
+            if total_time > 0.05:  # Only log if operation takes significant time
+                print(f"    Lightcurve by source ID: {total_time:.3f}s (lookup: {lookup_time:.3f}s, "
+                      f"cache {cache_type}: {cache_time:.3f}s, filter: {filter_time:.3f}s, points: {lc_points})")
+            
+            return lc_data if len(lc_data) > 0 else None
+            
+        except Exception as e:
+            return None
+
+    def get_lightcurve(self, dia_object_id: int) -> Optional[pd.DataFrame]:
+        """
+        Get lightcurve for a specific diaObjectId.
+        Uses efficient patch lookup and caching.
+        """
+        # Find the patch containing this object
+        patch_key = self.find_patch(dia_object_id)
+        if not patch_key:
+            return None
+        
+        # Check cache first
+        if patch_key in self._patch_cache:
+            self._cache_hits += 1
+            patch_data = self._patch_cache[patch_key]
+        else:
+            self._cache_misses += 1
+            patch_data = self._load_patch_data(patch_key)
+            if patch_data is None:
+                return None
+            
+            # Manage cache
+            self._manage_cache(patch_key, patch_data)
+        
+        # Filter for the specific object and sort by time
+        lc_data = patch_data[patch_data['diaObjectId'] == dia_object_id].copy()
+        if len(lc_data) > 0 and 'midpointMjdTai' in lc_data.columns:
+            lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
+        
+        return lc_data if len(lc_data) > 0 else None
+    
+    def get_multiple_lightcurves(self, dia_object_ids: List[int]) -> Dict[int, pd.DataFrame]:
+        """
+        Efficiently get lightcurves for multiple objects.
+        Groups requests by patch to minimize I/O.
+        """
+        print(f"Getting lightcurves for {len(dia_object_ids)} objects...")
+        
+        # Group object IDs by patch efficiently
+        patch_mapping = self.find_patches_for_objects(dia_object_ids)
+        
+        patch_groups = {}
+        missing_objects = []
+        
+        for obj_id in dia_object_ids:
+            patch_key = patch_mapping.get(obj_id)
+            if patch_key:
+                if patch_key not in patch_groups:
+                    patch_groups[patch_key] = []
+                patch_groups[patch_key].append(obj_id)
+            else:
+                missing_objects.append(obj_id)
+        
+        if missing_objects:
+            print(f"Warning: {len(missing_objects)} objects not found in index")
+        
+        results = {}
+        total_patches = len(patch_groups)
+        
+        # Process each patch once
+        for i, (patch_key, obj_ids) in enumerate(patch_groups.items()):
+            print(f"Processing patch {patch_key} ({i+1}/{total_patches}) with {len(obj_ids)} objects...")
+            
+            # Load patch data (with caching)
+            if patch_key in self._patch_cache:
+                self._cache_hits += 1
+                patch_data = self._patch_cache[patch_key]
+            else:
+                self._cache_misses += 1
+                patch_data = self._load_patch_data(patch_key)
+                if patch_data is None:
+                    continue
+                
+                # Manage cache
+                self._manage_cache(patch_key, patch_data)
+            
+            # Extract lightcurves for all objects in this patch
+            for obj_id in obj_ids:
+                lc_data = patch_data[patch_data['diaObjectId'] == obj_id].copy()
+                if len(lc_data) > 0:
+                    # Sort by time if available
+                    if 'midpointMjdTai' in lc_data.columns:
+                        lc_data = lc_data.sort_values('midpointMjdTai').reset_index(drop=True)
+                    results[obj_id] = lc_data
+        
+        print(f"Retrieved {len(results)} lightcurves from {total_patches} patches")
+        return results
+    
+    def get_lightcurve_stats(self, dia_object_id: int) -> Optional[Dict]:
+        """Get basic statistics for a lightcurve without loading full data."""
+        lc = self.get_lightcurve(dia_object_id)
+        if lc is None or len(lc) == 0:
+            return None
+        
+        stats = {
+            'num_points': len(lc),
+            'time_span_days': None,
+            'bands': [],
+            'patch_key': self.find_patch(dia_object_id)
+        }
+        
+
+        if 'midpointMjdTai' in lc.columns:
+            time_span = lc['midpointMjdTai'].max() - lc['midpointMjdTai'].min()
+            stats['time_span_days'] = time_span
+        
+        if 'band' in lc.columns:
+            stats['bands'] = lc['band'].unique().tolist()
+        
+        return stats
+    
+    def list_available_patches(self) -> List[str]:
+        """List all available patch files."""
+        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
+        return [f.stem.replace("patch_", "") for f in patch_files]
+    
+    def clear_cache(self):
+        """Clear the patch cache to free memory."""
+        self._patch_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+    
+    def set_cache_size(self, max_size: int):
+        """Set maximum cache size."""
+        self._max_cache_size = max_size
+        # Clear excess entries if needed
+        while len(self._patch_cache) > max_size:
+            oldest_key = next(iter(self._patch_cache))
+            del self._patch_cache[oldest_key]
+    
+    @property
+    def cache_stats(self):
+        """Get cache performance statistics."""
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'hit_rate': hit_rate,
+            'cached_patches': len(self._patch_cache),
+            'cache_size_limit': self._max_cache_size
+        }
+    
+    def get_all_source_ids_in_lightcurve(self, dia_source_id: int) -> List[int]:
+        """Get all diaSourceIds that belong to the same lightcurve as the given diaSourceId."""
+        if self.diasource_index.empty:
+            return []
+        
+        start_time = time.time()
+        try:
+            # Get the diaObjectId for this source
+            lookup_start = time.time()
+            source_info = self.diasource_index.loc[self.diasource_index.index == dia_source_id]
+            if len(source_info) == 0:
+                return []
+            
+            dia_object_id = source_info.iloc[0]['diaObjectId']
+            lookup_time = time.time() - lookup_start
+            
+            # Find all sources with the same diaObjectId
+            search_start = time.time()
+            all_sources_for_object = self.diasource_index[self.diasource_index['diaObjectId'] == dia_object_id]
+            result = all_sources_for_object.index.tolist()
+            search_time = time.time() - search_start
+            
+            total_time = time.time() - start_time
+            if total_time > 0.05:  # Only log if operation takes significant time
+                print(f"    Source ID lookup: {total_time:.3f}s (lookup: {lookup_time:.3f}s, search: {search_time:.3f}s, found: {len(result)} sources)")
+            
+            return result
             
         except Exception as e:
             return []
