@@ -1000,9 +1000,6 @@ class LightCurveLoader:
             try:
                 # Use pd.read_hdf with columns argument for table format
                 df = pd.read_hdf(f, key=snn_dataset_name, columns=columns)
-                # --- Ensure diaObjectId is present, not SNID ---
-                if "SNID" in df.columns and "diaObjectId" not in df.columns:
-                    df = df.rename(columns={"SNID": "diaObjectId"})
                 dfs.append(df)
             except (KeyError, ValueError) as e:
                 # KeyError if snn_inference not present, ValueError if not table format
@@ -1164,8 +1161,7 @@ class LightCurveLoader:
             (df["prob_class1_mean"] > prob_threshold) &
             (df["prob_class1_std"] < std_threshold)
         )
-        high_conf_df = df.loc[mask]
-        high_conf_objids = set(high_conf_df["diaObjectId"].tolist())
+        high_conf_objids = set(df.loc[mask, "diaObjectId"].tolist())
 
         print(f"Found {len(high_conf_objids)} high-confidence diaObjectId candidates.")
 
@@ -1178,15 +1174,13 @@ class LightCurveLoader:
             print("No diasource_index available.")
             return set()
 
-        diasource_ids = set()
-        # diasource_index: index=diaSourceId, columns include 'diaObjectId'
-        # For each diaObjectId, get all diaSourceIds with that diaObjectId
-        for objid in high_conf_objids:
-            matches = self.diasource_index[self.diasource_index['diaObjectId'] == objid]
-            if not matches.empty:
-                diasource_ids.update(matches.index.astype(np.int64).tolist())
-            else:
-                print(f"Warning: diaObjectId {objid} not found in diasource_index.")
+        # Vectorized lookup: filter diasource_index once for all objids
+        diasource_index = self.diasource_index
+        # If not already, ensure diaObjectId is int64 for join
+        diasource_index = diasource_index.copy()
+        diasource_index['diaObjectId'] = diasource_index['diaObjectId'].astype(np.int64)
+        mask = diasource_index['diaObjectId'].isin(high_conf_objids)
+        high_conf_sources = diasource_index[mask].index.astype(np.int64)
 
-        print(f"Total high-confidence diaSourceIds found: {len(diasource_ids)}")
-        return diasource_ids
+        print(f"Total high-confidence diaSourceIds found: {len(high_conf_sources)}")
+        return set(high_conf_sources)
