@@ -822,8 +822,11 @@ class DatasetLoader:
         return self._feature_loaders
     
     @property
-    def lightcurves(self) -> Dict[int, LightCurveLoader]:
-        """Access lightcurve loaders by visit (placeholder)."""
+    def lightcurves(self):
+        """Access lightcurve loaders by path."""
+        # If only one path, return the loader directly for convenience
+        if len(self._lightcurve_loaders) == 1:
+            return list(self._lightcurve_loaders.values())[0]
         return self._lightcurve_loaders
     
     @property
@@ -932,4 +935,3 @@ class DatasetLoader:
     def __str__(self):
         return self.__repr__()
 
-    

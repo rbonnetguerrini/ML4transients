@@ -392,3 +392,4 @@ def get_lightcurve_for_object(dia_object_id: int, config: dict) -> Optional[pd.D
     
     loader = LightCurveLoader(Path(path_lightcurves))
     return loader.get_lightcurve(dia_object_id)
+

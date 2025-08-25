@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import hashlib
 import yaml
 import torch  
+import matplotlib.pyplot as plt
 
 class CutoutLoader:
     """Lazy loader for cutout data.
@@ -980,3 +981,212 @@ class LightCurveLoader:
             del self._patch_cache[oldest_key]
         
         self._patch_cache[new_patch_key] = new_data
+
+    def load_snn_inference(self, columns=None, snn_dataset_name="snn_inference"):
+        """
+        Efficiently load SNN inference results from all patch HDF5 files.
+        Only loads specified columns for memory efficiency.
+        Returns a concatenated DataFrame.
+        """
+        import glob
+
+        patch_files = sorted(glob.glob(str(self.lightcurve_path / "patch_*.h5")))
+        if not patch_files:
+            print("No patch HDF5 files found.")
+            return None
+
+        dfs = []
+        for f in patch_files:
+            try:
+                # Use pd.read_hdf with columns argument for table format
+                df = pd.read_hdf(f, key=snn_dataset_name, columns=columns)
+                # --- Ensure diaObjectId is present, not SNID ---
+                if "SNID" in df.columns and "diaObjectId" not in df.columns:
+                    df = df.rename(columns={"SNID": "diaObjectId"})
+                dfs.append(df)
+            except (KeyError, ValueError) as e:
+                # KeyError if snn_inference not present, ValueError if not table format
+                continue
+            except Exception as e:
+                print(f"  Failed to read {f}: {e}")
+        if not dfs:
+            print("No valid SNN inference tables loaded from HDF5.")
+            return None
+        return pd.concat(dfs, ignore_index=True)
+
+    @property
+    def inference_snn(self):
+        """
+        Load and analyze SNN ensemble inference results for all patches from HDF5.
+        Returns the concatenated DataFrame and shows summary/plots.
+        """
+        # Only load necessary columns for analysis
+        columns = [
+            "diaObjectId", "prob_class0_mean", "prob_class1_mean", "prob_class0_std",
+            "prob_class1_std", "pred_class"
+        ]
+        ensemble_df = self.load_snn_inference(columns=columns)
+        if ensemble_df is None:
+            print("No SNN inference data found in HDF5 files.")
+            return None
+
+        preds_df = ensemble_df.rename(columns={'prob_class0_mean': 'prob_class0', 'prob_class1_mean': 'prob_class1'})
+
+        # Print summary
+        print(f"Total: {len(ensemble_df)} objects")
+        for class_id, count in ensemble_df['pred_class'].value_counts().sort_index().items():
+            name = "Non-SN" if class_id == 0 else "Supernova"
+            print(f"{name}: {count} ({count/len(ensemble_df)*100:.1f}%)")
+
+        print(f"\nUncertainty Statistics:")
+        print(f"Mean SN probability uncertainty: {ensemble_df['prob_class1_std'].mean():.3f}")
+        print(f"High uncertainty objects (std > 0.1): {(ensemble_df['prob_class1_std'] > 0.1).sum()}")
+
+        sn_candidates = ensemble_df[ensemble_df['pred_class'] == 1]
+        high_conf = sn_candidates[sn_candidates['prob_class1_mean'] > 0.7]
+        low_uncertainty = high_conf[high_conf['prob_class1_std'] < 0.05]
+
+        print(f"\nHigh-confidence SN (mean prob > 0.7): {len(high_conf)}")
+        print(f"High-confidence + Low uncertainty (std < 0.05): {len(low_uncertainty)}")
+
+        if len(high_conf) > 0:
+            print("\nTop 5 candidates (by mean probability):")
+            top_candidates = high_conf.nlargest(5, 'prob_class1_mean')
+            for i, (_, row) in enumerate(top_candidates.iterrows(), 1):
+                print(f"  {i}. diaObjectId {row['diaObjectId']}: {row['prob_class1_mean']:.3f} ± {row['prob_class1_std']:.3f}")
+
+        # Plotting
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+        # 1. Class distribution
+        preds_df['pred_class'].value_counts().sort_index().plot(kind='bar', ax=axes[0,0], color=['orange', 'blue'])
+        axes[0,0].set_title('Ensemble Classification Results')
+        axes[0,0].set_xlabel('Class (0=Non-SN, 1=SN)')
+        axes[0,0].tick_params(axis='x', rotation=0)
+
+        # 2. Full probability distribution (both classes)
+        non_sn_data = preds_df[preds_df['pred_class'] == 0]['prob_class1']
+        sn_data = preds_df[preds_df['pred_class'] == 1]['prob_class1']
+        prob_min = preds_df['prob_class1'].min()
+        prob_max = preds_df['prob_class1'].max()
+        if len(non_sn_data) > 0:
+            axes[0,1].hist(non_sn_data, bins=30, alpha=0.7, color='orange', label=f'Non-SN ({len(non_sn_data)})')
+        if len(sn_data) > 0:
+            axes[0,1].hist(sn_data, bins=30, alpha=0.7, color='blue', label=f'SN ({len(sn_data)})')
+        axes[0,1].set_xlabel('SN Probability (Mean)')
+        axes[0,1].set_ylabel('Count')
+        axes[0,1].set_title('Probability Distribution by Class')
+        axes[0,1].legend()
+        axes[0,1].set_xlim(prob_min-0.01, prob_max+0.01)
+
+        # 3. Uncertainty distribution
+        axes[0,2].hist(ensemble_df['prob_class1_std'], bins=30, alpha=0.7, color='green')
+        axes[0,2].axvline(ensemble_df['prob_class1_std'].mean(), color='red', linestyle='--',
+                          label=f'Mean: {ensemble_df["prob_class1_std"].mean():.3f}')
+        axes[0,2].axvline(0.05, color='orange', linestyle=':', label='Low Uncertainty')
+        axes[0,2].legend()
+        axes[0,2].set_xlabel('SN Probability Std Dev')
+        axes[0,2].set_ylabel('Count')
+        axes[0,2].set_title('Ensemble Uncertainty Distribution')
+
+        # 4. Confidence levels for SN candidates
+        if len(sn_candidates) > 0:
+            conf_counts = pd.cut(sn_candidates['prob_class1_mean'], bins=[0, 0.5, 0.7, 0.9, 1.0],
+                                labels=['Low', 'Med', 'High', 'V.High']).value_counts()
+            conf_counts.plot(kind='bar', ax=axes[1,0], color='skyblue')
+        axes[1,0].set_title('SN Confidence Levels')
+        axes[1,0].tick_params(axis='x', rotation=45)
+
+        # 5. Uncertainty vs Probability scatter plot
+        scatter = axes[1,1].scatter(ensemble_df['prob_class1_mean'], ensemble_df['prob_class1_std'],
+                                   c=ensemble_df['pred_class'], cmap='RdYlBu', alpha=0.6, s=2)
+        axes[1,1].axhline(0.05, color='orange', linestyle=':', alpha=0.7, label='Low Uncertainty')
+        axes[1,1].axvline(0.7, color='red', linestyle='--', alpha=0.7, label='High Confidence')
+        axes[1,1].set_xlabel('SN Probability (Mean)')
+        axes[1,1].set_ylabel('SN Probability (Std Dev)')
+        axes[1,1].set_title(f'Probability vs Uncertainty ({len(ensemble_df)} objects)')
+        axes[1,1].legend()
+        plt.colorbar(scatter, ax=axes[1,1], label='Predicted Class')
+
+        # 6. Summary pie chart with uncertainty categories
+        sizes, labels, colors = [], [], []
+        non_sn = len(ensemble_df[ensemble_df['pred_class'] == 0])
+        high_conf_low_unc = len(high_conf[high_conf['prob_class1_std'] < 0.05]) if len(high_conf) > 0 else 0
+        high_conf_high_unc = len(high_conf[high_conf['prob_class1_std'] >= 0.05]) if len(high_conf) > 0 else 0
+        low_conf_sn = len(sn_candidates) - len(high_conf) if len(sn_candidates) > 0 else 0
+
+        if non_sn > 0:
+            sizes.append(non_sn); labels.append('Non-SN'); colors.append('orange')
+        if low_conf_sn > 0:
+            sizes.append(low_conf_sn); labels.append('Low-Conf SN'); colors.append('lightblue')
+        if high_conf_high_unc > 0:
+            sizes.append(high_conf_high_unc); labels.append('High-Conf SN\n(High Unc)'); colors.append('lightcoral')
+        if high_conf_low_unc > 0:
+            sizes.append(high_conf_low_unc); labels.append('High-Conf SN\n(Low Unc)'); colors.append('darkblue')
+
+        if sizes:
+            axes[1,2].pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%')
+        axes[1,2].set_title('Ensemble Summary with Uncertainty')
+
+        plt.tight_layout()
+        plt.show()
+
+        print(f"\nEnsemble Summary:")
+        print(f"Total objects: {len(ensemble_df)}")
+        print(f"High-confidence SN candidates: {len(high_conf)}")
+        print(f"High-conf + Low uncertainty: {high_conf_low_unc}")
+        print(f"Mean uncertainty: {ensemble_df['prob_class1_std'].mean():.3f}")
+        print(f"Objects with high uncertainty (>0.1): {(ensemble_df['prob_class1_std'] > 0.1).sum()}")
+
+        return ensemble_df
+    
+    def get_high_conf_sn_sources(self, prob_threshold=0.7, std_threshold=0.05, snn_dataset_name="snn_inference"):
+        """
+        Retrieve DiaSourceIds for all sources that compose high-confidence SN candidates.
+        Returns a set of DiaSourceIds (as integers).
+        """
+        columns = ["diaObjectId", "pred_class", "prob_class1_mean", "prob_class1_std"]
+        df = self.load_snn_inference(columns=columns, snn_dataset_name=snn_dataset_name)
+        if df is None:
+            print("No SNN inference data found in HDF5 files.")
+            return set()
+
+        # Ensure correct dtypes
+        df = df.copy()
+        df["diaObjectId"] = df["diaObjectId"].astype(np.int64)
+        df["pred_class"] = df["pred_class"].astype(int)
+        df["prob_class1_mean"] = df["prob_class1_mean"].astype(float)
+        df["prob_class1_std"] = df["prob_class1_std"].astype(float)
+
+        # Select high-confidence SN candidates
+        mask = (
+            (df["pred_class"] == 1) &
+            (df["prob_class1_mean"] > prob_threshold) &
+            (df["prob_class1_std"] < std_threshold)
+        )
+        high_conf_df = df.loc[mask]
+        high_conf_objids = set(high_conf_df["diaObjectId"].tolist())
+
+        print(f"Found {len(high_conf_objids)} high-confidence diaObjectId candidates.")
+
+        if not high_conf_objids:
+            print("No high-confidence SN candidates found after filtering.")
+            return set()
+
+        # Use diasource_index to map diaObjectId to diaSourceIds
+        if self.diasource_index is None or self.diasource_index.empty:
+            print("No diasource_index available.")
+            return set()
+
+        diasource_ids = set()
+        # diasource_index: index=diaSourceId, columns include 'diaObjectId'
+        # For each diaObjectId, get all diaSourceIds with that diaObjectId
+        for objid in high_conf_objids:
+            matches = self.diasource_index[self.diasource_index['diaObjectId'] == objid]
+            if not matches.empty:
+                diasource_ids.update(matches.index.astype(np.int64).tolist())
+            else:
+                print(f"Warning: diaObjectId {objid} not found in diasource_index.")
+
+        print(f"Total high-confidence diaSourceIds found: {len(diasource_ids)}")
+        return diasource_ids
