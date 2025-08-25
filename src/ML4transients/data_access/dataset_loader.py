@@ -103,6 +103,11 @@ class DatasetLoader:
         if visit and visit in self._cutout_loaders:
             return self._cutout_loaders[visit].get_by_id(dia_source_id)
         return None
+    def get_cutout(self, visit: int, dia_source_id: int):
+        """Get specific cutout by visit and diaSourceId."""
+        if visit in self._cutout_loaders:
+            return self._cutout_loaders[visit].get_by_id(dia_source_id)
+        return None
     
     def get_features_by_id(self, dia_source_id: int):
         """Get features by diaSourceId (searches all visits).
@@ -934,4 +939,3 @@ class DatasetLoader:
 
     def __str__(self):
         return self.__repr__()
-

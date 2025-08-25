@@ -84,19 +84,19 @@ class CutoutLoader:
         """
         if not dia_source_ids:
             return {}
-        
+
         start_time = time.time()
         results = {}
         try:
             file_start = time.time()
             with h5py.File(self.file_path, 'r') as f:
                 file_open_time = time.time() - file_start
-                
+
                 # Get all IDs once
                 ids_start = time.time()
                 all_ids = f['diaSourceId'][:]
                 ids_time = time.time() - ids_start
-                
+
                 # Find indices for all requested IDs
                 index_start = time.time()
                 indices = []
@@ -106,27 +106,39 @@ class CutoutLoader:
                     if len(idx) > 0:
                         indices.append(idx[0])
                         id_to_idx[target_id] = len(indices) - 1
+                # If indices are not sorted, sort them and remap id_to_idx accordingly
+                if indices:
+                    sorted_indices = np.argsort(indices)
+                    indices_sorted = [indices[i] for i in sorted_indices]
+                    # Remap id_to_idx to match sorted indices
+                    id_to_idx_sorted = {}
+                    for orig_pos, sorted_pos in enumerate(sorted_indices):
+                        target_id = list(id_to_idx.keys())[orig_pos]
+                        id_to_idx_sorted[target_id] = sorted_pos
+                    indices = indices_sorted
+                    id_to_idx = id_to_idx_sorted
+                # ------------------------------------------------
                 index_time = time.time() - index_start
-                
+
                 if indices:
                     # Read only the specific rows we need
                     read_start = time.time()
                     cutouts = f['cutouts'][indices]
                     read_time = time.time() - read_start
-                    
+
                     # Map back to original IDs
                     map_start = time.time()
                     for target_id in dia_source_ids:
                         if target_id in id_to_idx:
                             results[target_id] = cutouts[id_to_idx[target_id]]
                     map_time = time.time() - map_start
-                    
+
                     total_time = time.time() - start_time
                     if total_time > 0.1:  # Only log if operation takes significant time
                         print(f"      Cutout batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s "
                               f"(open: {file_open_time:.3f}s, ids: {ids_time:.3f}s, index: {index_time:.3f}s, "
                               f"read: {read_time:.3f}s, map: {map_time:.3f}s)")
-        
+
         except Exception as e:
             print(f"Error in batch cutout loading: {e}, falling back to individual loads")
             # Fallback to individual queries
@@ -134,7 +146,7 @@ class CutoutLoader:
                 cutout = self.get_by_id(dia_source_id)
                 if cutout is not None:
                     results[dia_source_id] = cutout
-        
+
         return results
 
 class FeatureLoader:
@@ -1184,3 +1196,114 @@ class LightCurveLoader:
 
         print(f"Total high-confidence diaSourceIds found: {len(high_conf_sources)}")
         return set(high_conf_sources)
+
+    def save_high_conf_subset_dataset(
+        self,
+        out_dir: Path,
+        prob_threshold: float = 0.7,
+        std_threshold: float = 0.05,
+        snn_dataset_name: str = "snn_inference"
+    ):
+        """
+        Save a full mini-dataset (lightcurves, cutouts, features) for high-confidence SN sources,
+        preserving the structure expected by DatasetLoader.
+        Skips visits (cutout/feature files) that are already saved in the output directory.
+        """
+        import shutil
+
+        out_dir = Path(out_dir)
+        out_lc_dir = out_dir / "lightcurves"
+        out_cutout_dir = out_dir / "cutouts"
+        out_feat_dir = out_dir / "features"
+        out_lc_dir.mkdir(parents=True, exist_ok=True)
+        out_cutout_dir.mkdir(parents=True, exist_ok=True)
+        out_feat_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Get high-confidence diaSourceIds
+        high_conf_ids = self.get_high_conf_sn_sources(
+            prob_threshold=prob_threshold,
+            std_threshold=std_threshold,
+            snn_dataset_name=snn_dataset_name
+        )
+        high_conf_ids = set(high_conf_ids)
+        print(f"Saving {len(high_conf_ids)} high-confidence SN sources to mini-dataset.")
+
+        # 2. Save lightcurve index and diasource index for subset
+        for index_file in ["lightcurve_index.h5", "diasource_patch_index.h5"]:
+            src = self.lightcurve_path / index_file
+            out_index = out_lc_dir / index_file
+            if src.exists():
+                if out_index.exists():
+                    print(f"Skipping {index_file} (already exists in output)")
+                    continue
+                df = pd.read_hdf(src)
+                if "diasource" in index_file:
+                    df = df[df.index.isin(high_conf_ids)]
+                else:
+                    keep_objids = df[df['patch_key'].notnull()].index.intersection(
+                        self.diasource_index.loc[self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'].unique()
+                    )
+                    df = df.loc[keep_objids]
+                df.to_hdf(out_index, key=df.columns.name or "index")
+
+        # 3. Save patch files with only high-conf sources
+        patch_files = list((self.lightcurve_path).glob("patch_*.h5"))
+        for patch_file in patch_files:
+            out_patch = out_lc_dir / patch_file.name
+            if out_patch.exists():
+                print(f"Skipping patch file {patch_file.name} (already exists in output)")
+                continue
+            df = pd.read_hdf(patch_file, key="lightcurves")
+            if 'diaSourceId' in df.columns:
+                df = df[df["diaSourceId"].isin(high_conf_ids)]
+            elif df.index.name == "diaSourceId":
+                df = df[df.index.isin(high_conf_ids)]
+            elif df.index.name is None and df.index.dtype == np.int64:
+                df = df[df.index.isin(high_conf_ids)]
+            else:
+                print(f"Warning: Could not find 'diaSourceId' as a column or index in patch file: {patch_file}")
+                print(f"  Columns: {list(df.columns)}")
+                print(f"  Index name: {df.index.name}")
+                print(f"  Index dtype: {df.index.dtype}")
+                print(f"  DataFrame shape: {df.shape}")
+                continue  # Skip this patch file
+            if len(df) > 0:
+                df.to_hdf(out_patch, key="lightcurves")
+
+        # 4. Save cutouts for high-conf sources
+        cutout_dir = self.lightcurve_path.parent / "cutouts"
+        if cutout_dir.exists():
+            for cutout_file in cutout_dir.glob("visit_*.h5"):
+                out_cutout_file = out_cutout_dir / cutout_file.name
+                if out_cutout_file.exists():
+                    print(f"Skipping cutout file {cutout_file.name} (already exists in output)")
+                    continue
+                cloader = CutoutLoader(cutout_file)
+                ids_in_file = set(cloader.ids) & high_conf_ids
+                if ids_in_file:
+                    cutouts = cloader.get_multiple_by_ids(list(ids_in_file))
+                    if cutouts:
+                        import h5py
+                        with h5py.File(out_cutout_file, "w") as f:
+                            f.create_dataset("diaSourceId", data=np.array(list(cutouts.keys()), dtype=np.int64))
+                            f.create_dataset("cutouts", data=np.stack(list(cutouts.values())))
+                        print(f"Saved {len(cutouts)} cutouts to {out_cutout_file}")
+
+        # 5. Save features for high-conf sources
+        feature_dir = self.lightcurve_path.parent / "features"
+        if feature_dir.exists():
+            for feature_file in feature_dir.glob("visit_*_features.h5"):
+                out_feat_file = out_feat_dir / feature_file.name
+                if out_feat_file.exists():
+                    print(f"Skipping feature file {feature_file.name} (already exists in output)")
+                    continue
+                floader = FeatureLoader(feature_file)
+                ids_in_file = set(floader.ids) & high_conf_ids
+                if ids_in_file:
+                    feats = floader.get_multiple_by_ids(list(ids_in_file))
+                    if feats:
+                        all_feat = pd.concat(feats.values())
+                        all_feat.to_hdf(out_feat_file, key="features", format="table")
+                        print(f"Saved {len(all_feat)} features to {out_feat_file}")
+
+        print(f"Mini-dataset for high-confidence SN saved to {out_dir}")

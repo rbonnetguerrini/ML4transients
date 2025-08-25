@@ -12,6 +12,7 @@ from PIL import Image
 import hdbscan
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import joblib
 
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
@@ -833,3 +834,23 @@ class UMAPInterpreter:
             current_idx += batch_size
         
         return images
+
+    def save_umap(self, path: str):
+        """Save the fitted UMAP reducer to disk."""
+        if self.umap_reducer is None:
+            raise ValueError("UMAP reducer not fitted yet.")
+        joblib.dump(self.umap_reducer, path)
+        print(f"UMAP reducer saved to {path}")
+
+    def load_umap(self, path: str):
+        """Load a fitted UMAP reducer from disk."""
+        self.umap_reducer = joblib.load(path)
+        print(f"UMAP reducer loaded from {path}")
+
+    def transform_with_umap(self, features: np.ndarray) -> np.ndarray:
+        """Transform features using the loaded/fitted UMAP reducer."""
+        if self.umap_reducer is None:
+            raise ValueError("UMAP reducer not loaded/fitted.")
+        embedding = self.umap_reducer.transform(features)
+        print(f"Transformed {features.shape[0]} samples with loaded UMAP.")
+        return embedding
