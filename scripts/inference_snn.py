@@ -5,9 +5,14 @@ import numpy as np
 from supernnova.validation.validate_onthefly import classify_lcs, get_settings
 
 def reformat_to_df(pred_probs, ids=None):
-    """
-    Convert SuperNNova prediction output to a DataFrame.
-    Handles pred_probs with shape (N, 1, 2) or (N, 2).
+    """Convert SuperNNova prediction output to a DataFrame.
+
+    Args:
+        pred_probs (np.ndarray): Array of predicted probabilities, shape (N, 1, 2) or (N, 2).
+        ids (array-like, optional): IDs to assign to each row.
+
+    Returns:
+        pd.DataFrame: DataFrame with columns ['prob_class0', 'prob_class1', 'SNID'].
     """
     arr = np.asarray(pred_probs)
     # If shape is (N, 1, 2), squeeze to (N, 2)
@@ -23,6 +28,15 @@ def reformat_to_df(pred_probs, ids=None):
     return df_preds
 
 def run_inference(csv_dir, output_dir):
+    """Run SuperNNova inference on all CSV files in a directory.
+
+    Args:
+        csv_dir (str): Directory containing input CSV files.
+        output_dir (str): Directory to save inference results.
+
+    Returns:
+        None
+    """
     os.makedirs(output_dir, exist_ok=True)
     csv_files = sorted(glob.glob(os.path.join(csv_dir, "*.csv")))
     if not csv_files:

@@ -87,6 +87,35 @@ print(dataset)
 `DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
 when creating this set, it creates a dictionary that assigned each diaSourceId their visit number
 
+## Lightcurve Extraction
+
+The lightcurve extraction module efficiently organizes and indexes time-series data for all detected objects. It groups detections by sky patch, saving each patch as an HDF5 file, and builds cross-reference indices for both `diaObjectId` and `diaSourceId`. This enables fast lookup and retrieval of full lightcurves or all sources belonging to a transient candidate. To extract and index lightcurves, use:
+
+```sh
+python scripts/run_lightcurves.py configs/configs_cutout.yaml
+```
+
+The resulting files in `lightcurves/` include patch-based HDF5 tables and index files for rapid access.
+
+
+## Lightcurve Inference with SuperNNova
+
+The pipeline for running lightcurve-based inference using SuperNNova (SNN) consists of three main steps, they need specific python env to be ran:
+
+1. **Convert HDF5 lightcurve patches to CSV:**  
+   Use `scripts/convert_lc_for_snn.py` to convert each HDF5 patch file into a CSV format compatible with SuperNNova. (lsst_distrib)
+
+2. **Run SNN inference:**  
+   Use `scripts/inference_snn.py` to run SuperNNova on the CSV files. This produces ensemble and individual prediction CSVs for each patch.(SuperNNova env)
+
+3. **Save SNN results back to HDF5:**  
+   Use `scripts/save_inference_to_h5.py` to write the SNN ensemble predictions back into the original HDF5 patch files under the `snn_inference` dataset.(lsst_distrib)
+
+A bash script (`scripts/snn_inference.sh`) is provided to automate this workflow, including environment setup for each step.  
+This process avoids code redundancy and ensures efficient batch processing of large datasets. 
+
+
+
 ## Hyperparameter Optimization:
 
 Run Bayesian optimization to find optimal hyperparameters:
@@ -130,3 +159,4 @@ python scripts/run_evaluation.py     --config configs/evaluation_config.yaml    
 ```
 
 More details in `notebooks/evaluation_example.ipynb`
+
