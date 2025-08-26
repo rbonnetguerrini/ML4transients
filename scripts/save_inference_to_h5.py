@@ -4,6 +4,15 @@ import pandas as pd
 import glob
 
 def save_predictions_to_h5(pred_dir, h5_dir):
+    """Save SNN predictions from CSVs into HDF5 patch files.
+
+    Args:
+        pred_dir (str): Directory containing per-patch *_ensemble_predictions.csv files.
+        h5_dir (str): Directory containing HDF5 patch files.
+
+    Returns:
+        None
+    """
     h5_files = sorted(glob.glob(os.path.join(h5_dir, "*.h5")))
     if not h5_files:
         print(f"No HDF5 files found in {h5_dir}")

@@ -5,7 +5,15 @@ import argparse
 import numpy as np
 
 def convert_single(input_path, output_path):
-    """Convert a single HDF5 lightcurve file to a cleaned CSV."""
+    """Convert a single HDF5 lightcurve file to a cleaned CSV.
+
+    Args:
+        input_path (str): Path to the input HDF5 file.
+        output_path (str): Path to save the output CSV file.
+
+    Returns:
+        None
+    """
     print(f"Processing: {input_path}")
     
     # Try reading the HDF5 file
@@ -95,7 +103,15 @@ def convert_single(input_path, output_path):
     print(f"  Saved to: {output_path}\n")
 
 def convert_all_patches(input_dir, output_dir):
-    """Loop over all .h5 files in input_dir and convert them to CSVs in output_dir."""
+    """Convert all .h5 files in a directory to CSVs.
+
+    Args:
+        input_dir (str): Directory containing input .h5 files.
+        output_dir (str): Directory to save output CSV files.
+
+    Returns:
+        None
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     h5_files = sorted(glob.glob(os.path.join(input_dir, "*.h5")))
