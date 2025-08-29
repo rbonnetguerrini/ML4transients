@@ -581,17 +581,24 @@ class LightCurveLoader:
     @property
     def index(self) -> pd.DataFrame:
         """Lazy load the lightcurve index.
-        
+
         Returns:
             pd.DataFrame: Index mapping diaObjectId to patch information
-            
+
         Raises:
             FileNotFoundError: If lightcurve index file is not found
         """
         if self._index is None:
             index_file = self.lightcurve_path / "lightcurve_index.h5"
             if index_file.exists():
-                self._index = pd.read_hdf(index_file, key="index")
+                df = pd.read_hdf(index_file, key="index")
+                if (df.index.name is None and 'diaObjectId' in df.columns and
+                        (df.index.equals(df['diaObjectId']))):
+                    df = df.set_index('diaObjectId')
+                # handle if diaObjectId is a column and not the index
+                elif 'diaObjectId' in df.columns and (df.index.name != 'diaObjectId'):
+                    df = df.set_index('diaObjectId')
+                self._index = df
                 print(f"Loaded lightcurve index with {len(self._index)} objects")
             else:
                 raise FileNotFoundError(f"Lightcurve index not found at {index_file}")
@@ -916,6 +923,205 @@ class LightCurveLoader:
         
         return stats
     
+    def summarize_lightcurve_stats(self, stats_dict: Dict[int, Dict], plot: bool = True):
+        """
+        Summarize statistics for a set of lightcurves.
+
+        Args:
+            stats_dict: Output from get_multiple_lightcurve_stats (dict of diaObjectId -> stats)
+            plot: If True, show summary plots
+
+        Returns:
+            summary: dict with summary statistics (mean, median, std, etc.)
+        """
+        if not stats_dict:
+            print("No stats to summarize.")
+            return {}
+
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        num_points = [v['num_points'] for v in stats_dict.values()]
+        time_spans = [v['time_span_days'] for v in stats_dict.values() if v['time_span_days'] is not None]
+        bands = [b for v in stats_dict.values() for b in v['bands']]
+
+        summary = {
+            'num_lightcurves': len(stats_dict),
+            'num_points': {
+                'mean': float(np.mean(num_points)),
+                'median': float(np.median(num_points)),
+                'std': float(np.std(num_points)),
+                'min': int(np.min(num_points)),
+                'max': int(np.max(num_points)),
+            },
+            'time_span_days': {
+                'mean': float(np.mean(time_spans)) if time_spans else None,
+                'median': float(np.median(time_spans)) if time_spans else None,
+                'std': float(np.std(time_spans)) if time_spans else None,
+                'min': float(np.min(time_spans)) if time_spans else None,
+                'max': float(np.max(time_spans)) if time_spans else None,
+            },
+            'bands': {
+                'unique': list(set(bands)),
+                'counts': dict(pd.Series(bands).value_counts())
+            }
+        }
+
+        if plot:
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            axes[0].hist(num_points, bins=50, color='skyblue')
+            axes[0].set_title('Number of Points per Lightcurve')
+            axes[0].set_xlabel('Num Points')
+            axes[0].set_ylabel('Count')
+
+            if time_spans:
+                axes[1].hist(time_spans, bins=50, color='orange')
+                axes[1].set_title('Time Span (days) per Lightcurve')
+                axes[1].set_xlabel('Time Span (days)')
+                axes[1].set_ylabel('Count')
+            else:
+                axes[1].set_visible(False)
+
+            if bands:
+                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[2], color='green')
+                axes[2].set_title('Band Occurrences')
+                axes[2].set_xlabel('Band')
+                axes[2].set_ylabel('Count')
+            else:
+                axes[2].set_visible(False)
+
+            plt.tight_layout()
+            plt.show()
+
+        return summary
+
+    def summarize_multiple_lightcurves(
+        self,
+        dia_object_ids: List[int] = None,
+        plot: bool = True
+    ) -> Dict:
+        """
+        Efficiently compute and summarize statistics for multiple lightcurves.
+        If dia_object_ids is None, computes stats for all objects in the dataset.
+        Groups requests by patch to minimize I/O operations.
+
+        Args:
+            dia_object_ids: List of diaObjectIds to get statistics for (or None for all)
+            plot: If True, show summary plots
+
+        Returns:
+            summary: dict with summary statistics (mean, median, std, etc.)
+        """
+        # --- Gather stats for all requested lightcurves ---
+        if dia_object_ids is None:
+            dia_object_ids = list(self.index.index)
+
+        index_dtype = self.index.index.dtype
+        try:
+            dia_object_ids_cast = [index_dtype.type(obj_id) for obj_id in dia_object_ids]
+        except Exception:
+            dia_object_ids_cast = dia_object_ids
+
+        # Filter out any dia_object_ids not present in the index
+        index_objids = set(self.index.index)
+        dia_object_ids_cast = [obj_id for obj_id in dia_object_ids_cast if obj_id in index_objids]
+        if not dia_object_ids_cast:
+            print("No matching diaObjectIds found in the index.")
+            return {}
+
+        patch_mapping = self.find_patches_for_objects(dia_object_ids_cast)
+        patch_groups = {}
+        for obj_id in dia_object_ids_cast:
+            patch_key = patch_mapping.get(obj_id)
+            if patch_key:
+                patch_groups.setdefault(patch_key, []).append(obj_id)
+
+        num_points = []
+        time_spans = []
+        bands = []
+
+        for patch_key, obj_ids in patch_groups.items():
+            patch_file = self.lightcurve_path / f"patch_{patch_key}.h5"
+            if not patch_file.exists():
+                continue
+            if patch_key in self._patch_cache:
+                patch_data = self._patch_cache[patch_key]
+                self._cache_hits += 1
+            else:
+                patch_data = self._load_patch_data(patch_key)
+                if patch_data is None:
+                    continue
+                self._manage_cache(patch_key, patch_data)
+                self._cache_misses += 1
+
+            if patch_data.index.name == 'diaObjectId' and 'diaObjectId' not in patch_data.columns:
+                patch_data = patch_data.reset_index()
+
+            for obj_id in obj_ids:
+                lc = patch_data[patch_data['diaObjectId'] == obj_id]
+                if len(lc) == 0:
+                    continue
+                num_points.append(len(lc))
+                if 'midpointMjdTai' in lc.columns:
+                    ts = lc['midpointMjdTai'].max() - lc['midpointMjdTai'].min()
+                    time_spans.append(ts)
+                if 'band' in lc.columns:
+                    bands.extend(lc['band'].unique().tolist())
+
+        # --- Summarize ---
+        summary = {
+            'num_lightcurves': len(dia_object_ids_cast),
+            'num_points': {
+                'mean': float(np.mean(num_points)) if num_points else None,
+                'median': float(np.median(num_points)) if num_points else None,
+                'std': float(np.std(num_points)) if num_points else None,
+                'min': int(np.min(num_points)) if num_points else None,
+                'max': int(np.max(num_points)) if num_points else None,
+            },
+            'time_span_days': {
+                'mean': float(np.mean(time_spans)) if time_spans else None,
+                'median': float(np.median(time_spans)) if time_spans else None,
+                'std': float(np.std(time_spans)) if time_spans else None,
+                'min': float(np.min(time_spans)) if time_spans else None,
+                'max': float(np.max(time_spans)) if time_spans else None,
+            },
+            'bands': {
+                'unique': list(set(bands)),
+                'counts': dict(pd.Series(bands).value_counts()) if bands else {}
+            }
+        }
+
+        if plot:
+            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            if num_points:
+                axes[0].hist(num_points, bins=50, color='skyblue')
+                axes[0].set_title('Number of Points per Lightcurve')
+                axes[0].set_xlabel('Num Points')
+                axes[0].set_ylabel('Count')
+            else:
+                axes[0].set_visible(False)
+
+            if time_spans:
+                axes[1].hist(time_spans, bins=50, color='orange')
+                axes[1].set_title('Time Span (days) per Lightcurve')
+                axes[1].set_xlabel('Time Span (days)')
+                axes[1].set_ylabel('Count')
+            else:
+                axes[1].set_visible(False)
+
+            if bands:
+                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[2], color='green')
+                axes[2].set_title('Band Occurrences')
+                axes[2].set_xlabel('Band')
+                axes[2].set_ylabel('Count')
+            else:
+                axes[2].set_visible(False)
+
+            plt.tight_layout()
+            plt.show()
+
+        return summary
+
     def list_available_patches(self) -> List[str]:
         """List all available patch files.
         

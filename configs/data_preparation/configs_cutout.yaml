@@ -1,0 +1,17 @@
+repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+collection: run/ssp_ud_cosmos/step5_new
+injection: false
+cutout:
+  size: 30
+  coadd_science: false
+  save: true
+  save_features_only: false
+  return_data: false
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm
+lightcurves:
+  patches: []
+  cache_size: 5
+run_info:
+  status: completed
+  started: '2025-07-24T14:01:00'
+  finished: '2025-08-23T13:27:02.224663'

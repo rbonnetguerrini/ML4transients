@@ -1,0 +1,77 @@
+collection: run/ssp_ud_cosmos/step5_new
+cutout:
+  coadd_science: false
+  return_data: false
+  save: true
+  save_features_only: false
+  size: 30
+injection: false
+path: data_path ='/sps/lsst/groups/transients/HSC/fouchez/raphael/UDEEP_COSMOS
+repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+run_info:
+  finished: '2025-07-24T17:24:38.601575'
+  started: '2025-07-24T14:01:00'
+  status: completed
+visits:
+- 110412
+- 111346
+- 111348
+- 111350
+- 111352
+- 111354
+- 111356
+- 111358
+- 111360
+- 111416
+- 111418
+- 111420
+- 111422
+- 111424
+- 111426
+- 111428
+- 111430
+- 111432
+- 111434
+- 111436
+- 111438
+- 111440
+- 113138
+- 113140
+- 113142
+- 113144
+- 113146
+- 113148
+- 113150
+- 113152
+- 113156
+- 113158
+- 113160
+- 113162
+- 113164
+- 113166
+- 113168
+- 113170
+- 113174
+- 113176
+- 113178
+- 113180
+- 113476
+- 113478
+- 113480
+- 113482
+- 113484
+- 113486
+- 114500
+- 114502
+- 114504
+- 114506
+- 114508
+- 114510
+- 114512
+- 114514
+- 114516
+- 114518
+- 114520
+- 116408
+- 116410
+- 116412
