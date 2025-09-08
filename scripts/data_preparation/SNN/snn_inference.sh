@@ -6,11 +6,17 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP/lightcurves"
 CSV_DIR="${INPUT_DIR}/csv"
 
+# Clean up any old debug files to prevent conflicts
+echo "=== Cleaning old debug files ==="
+rm -f "${CSV_DIR}"/*debug_counts*.csv
+rm -f "${CSV_DIR}"/*filtered_ids*.txt
+rm -f "${CSV_DIR}"/*inference_counts*.csv
+
 echo "=== Running CSV conversion ==="
-#python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/convert_lc_for_snn.py "$INPUT_DIR" "$CSV_DIR"
+python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/convert_lc_for_snn.py "$INPUT_DIR" "$CSV_DIR"
 if [ $? -ne 0 ]; then
     echo "CSV conversion failed."
     exit 1
@@ -28,12 +34,12 @@ if [ $? -ne 0 ]; then
 fi
 conda deactivate
 
-# --- Step 3: Save inference results to HDF5 (LSST env) ---
-echo "=== Saving inference results to HDF5 ==="
+# --- Step 3: Save inference results to HDF5 with validation (LSST env) ---
+echo "=== Saving inference results to HDF5 with validation ==="
 source /cvmfs/sw.lsst.eu/linux-x86_64/lsst_distrib/w_2024_30/loadLSST.bash
 setup lsst_distrib
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/save_inference_snn.py "$INFER_OUT" "$INPUT_DIR"
+python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/save_inference_snn.py "$INFER_OUT" "$INPUT_DIR" --csv_dir "$CSV_DIR"
 
 echo "=== Pipeline complete ==="

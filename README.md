@@ -75,7 +75,7 @@ python scripts/injection/gen_injection_catalogue.py --config configs/injection/i
 
 - Using `scripts/run_cutout.py` you can produce cutout given a specific yaml, template can be found in `ML4transients/configs/configs_cutout.yaml` . From there you can specify visits inside of the collection and if you only want the features, cutouts, or both.
 
-- Since the main problem of producing those cutouts is that you have to split visit in different job for a given collection,  I made an automatic job submitter, that generates configs with a given amount of visit, and launched them all. You can do that using `/scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml 100` , again selecting your own original config, and specifying how much you want it to be split by (here 100 visit per job max)
+- Since the main problem of producing those cutouts is that you have to split visit in different job for a given collection,  I made an automatic job submitter, that generates configs with a given amount of visit, and launched them all. You can do that using `scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml 100` , again selecting your own original config, and specifying how much you want it to be split by (here 100 visit per job max)
 
 - Once the cutouts and features are made, if you created them using the automatic job submitter, you should run `python scripts/data_preparation/create_global_index_post_batch.py configs/data_preparation/configs_cutout.yaml` so that you create an index that list in which visit is each diaSourceId.
 

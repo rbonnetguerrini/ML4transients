@@ -7,11 +7,11 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP
 lightcurves:
   patches: []
   cache_size: 5
 run_info:
   status: completed
   started: '2025-07-24T14:01:00'
-  finished: '2025-08-23T13:27:02.224663'
+  finished: '2025-09-08T09:56:39.271398'

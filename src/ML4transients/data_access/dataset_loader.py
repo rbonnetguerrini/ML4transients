@@ -34,9 +34,28 @@ class DatasetLoader:
         self._global_id_index = None 
         self._cached_trainers = {}  # Cache trainers by weights_path
         self._inference_registry = {}  # Registry of available inference files
+        self._discovery_done = False  # Track if discovery has been performed
 
-        self._discover_data()
-        self._load_inference_registries()
+        # Only load critical components immediately
+        self._load_config_summary()
+        # Defer expensive operations until needed
+
+    def _load_config_summary(self):
+        """Load config summary only if available."""
+        for data_path in self.data_paths:
+            config_file = data_path / "config_summary.yaml"
+            if config_file.exists() and self._config_summary is None:
+                with open(config_file) as f:
+                    self._config_summary = yaml.safe_load(f)
+                break
+
+    def _ensure_discovery(self):
+        """Ensure data discovery has been performed."""
+        if not self._discovery_done:
+            print("Discovering data files...")
+            self._discover_data()
+            self._load_inference_registries()
+            self._discovery_done = True
 
     def _load_global_index(self):
         """Load the persistent global index from disk.
@@ -302,6 +321,8 @@ class DatasetLoader:
 
     def _discover_data(self):
         """Discover available data files in the directories."""
+        start_time = time.time()
+        
         for data_path in self.data_paths:
             if not data_path.exists():
                 continue
@@ -326,12 +347,15 @@ class DatasetLoader:
             lightcurve_dir = data_path / "lightcurves"
             if lightcurve_dir.exists() and (lightcurve_dir / "lightcurve_index.h5").exists():
                 self._lightcurve_loaders[str(data_path)] = LightCurveLoader(lightcurve_dir)
-            
-            # Load config summary if available
-            config_file = data_path / "config_summary.yaml"
-            if config_file.exists() and self._config_summary is None:
-                with open(config_file) as f:
-                    self._config_summary = yaml.safe_load(f)
+        
+        discovery_time = time.time() - start_time
+        num_cutouts = len(self._cutout_loaders)
+        num_features = len(self._feature_loaders)
+        num_lc_paths = len(self._lightcurve_loaders)
+        
+        print(f"Data discovery completed in {discovery_time:.2f}s: "
+              f"{num_cutouts} cutout visits, {num_features} feature visits, "
+              f"{num_lc_paths} lightcurve paths")
         
         # Note: Global index is now loaded on-demand, not built here
     def get_complete_lightcurve_data(
@@ -811,6 +835,7 @@ class DatasetLoader:
     @property
     def visits(self) -> List[int]:
         """Get list of available visits."""
+        self._ensure_discovery()
         if self._visits is None:
             all_visits = set(self._cutout_loaders.keys()) | set(self._feature_loaders.keys())
             self._visits = sorted(all_visits)
@@ -819,16 +844,19 @@ class DatasetLoader:
     @property
     def cutouts(self) -> Dict[int, CutoutLoader]:
         """Access cutout loaders by visit."""
+        self._ensure_discovery()
         return self._cutout_loaders
     
     @property
     def features(self) -> Dict[int, FeatureLoader]:
         """Access feature loaders by visit."""
+        self._ensure_discovery()
         return self._feature_loaders
     
     @property
     def lightcurves(self):
         """Access lightcurve loaders by path."""
+        self._ensure_discovery()
         # If only one path, return the loader directly for convenience
         if len(self._lightcurve_loaders) == 1:
             return list(self._lightcurve_loaders.values())[0]
@@ -907,13 +935,19 @@ class DatasetLoader:
         return None
 
     def __repr__(self):
+        if not self._discovery_done:
+            return (f"DatasetLoader({len(self.data_paths)} paths)\n"
+                   f"  Data discovery: Not yet performed (will be done on first access)\n"
+                   f"  Use .visits, .cutouts, or .features properties to trigger discovery")
+        
         total_cutouts = 0
         total_features = 0
         visits_with_cutouts = 0
         visits_with_features = 0
         total_lightcurve_objects = 0
         
-        for visit in self.visits:
+        # Only compute stats if discovery has been done
+        for visit in self._visits or []:
             if visit in self._cutout_loaders:
                 total_cutouts += len(self._cutout_loaders[visit].ids)
                 visits_with_cutouts += 1
@@ -930,9 +964,10 @@ class DatasetLoader:
             except:
                 pass
         
+        num_visits = len(self._visits) if self._visits else 0
         lc_info = f"  Lightcurves: {total_lightcurve_objects} objects" if total_lightcurve_objects > 0 else "  Lightcurves: Not available"
         
-        return (f"DatasetLoader({len(self.visits)} visits, {len(self.data_paths)} paths)\n"
+        return (f"DatasetLoader({num_visits} visits, {len(self.data_paths)} paths)\n"
                 f"  Cutouts: {total_cutouts} across {visits_with_cutouts} visits\n"
                 f"  Features: {total_features} across {visits_with_features} visits\n"
                 f"{lc_info}")

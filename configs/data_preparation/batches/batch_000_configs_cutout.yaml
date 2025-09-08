@@ -6,12 +6,16 @@ cutout:
   save_features_only: false
   size: 30
 injection: false
-path: data_path ='/sps/lsst/groups/transients/HSC/fouchez/raphael/UDEEP_COSMOS
+lightcurves:
+  cache_size: 5
+  patches: []
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP
 repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
 run_info:
-  finished: '2025-07-24T17:24:38.601575'
+  finished: '2025-09-05T11:05:30.379316'
   started: '2025-07-24T14:01:00'
-  status: completed
+  status: failed
+skip_global_index: true
 visits:
 - 274
 - 276
@@ -63,53 +67,3 @@ visits:
 - 1170
 - 1172
 - 1174
-- 1176
-- 1178
-- 1180
-- 1182
-- 1184
-- 1186
-- 1188
-- 1190
-- 1192
-- 1194
-- 1200
-- 1202
-- 1204
-- 1206
-- 1208
-- 1210
-- 1212
-- 1214
-- 1216
-- 1218
-- 1220
-- 1222
-- 1226
-- 1228
-- 1230
-- 1232
-- 1234
-- 1236
-- 1238
-- 1240
-- 1242
-- 1244
-- 1246
-- 1248
-- 1856
-- 1858
-- 1860
-- 1862
-- 1864
-- 1868
-- 1870
-- 1872
-- 1874
-- 1876
-- 1878
-- 1880
-- 1882
-- 1886
-- 1888
-- 1890

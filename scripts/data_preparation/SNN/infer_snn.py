@@ -2,6 +2,7 @@ import os
 import glob
 import pandas as pd
 import numpy as np
+import pandas as pd
 from supernnova.validation.validate_onthefly import classify_lcs, get_settings
 
 def reformat_to_df(pred_probs, ids=None):
@@ -39,8 +40,18 @@ def run_inference(csv_dir, output_dir):
     """
     os.makedirs(output_dir, exist_ok=True)
     csv_files = sorted(glob.glob(os.path.join(csv_dir, "*.csv")))
+    # Filter out debug files - be more specific about what constitutes a lightcurve CSV
+    csv_files = [f for f in csv_files if not any(pattern in os.path.basename(f) for pattern in 
+                ['debug_counts', 'filtered_ids', 'inference_counts', '_ensemble_predictions', '_individual_predictions'])]
+    
+    print(f"Found {len(csv_files)} lightcurve CSV files to process:")
+    for f in csv_files[:5]:  # Show first 5 files
+        print(f"  {os.path.basename(f)}")
+    if len(csv_files) > 5:
+        print(f"  ... and {len(csv_files) - 5} more")
+    
     if not csv_files:
-        print(f"No CSVs found in {csv_dir}")
+        print(f"No valid lightcurve CSVs found in {csv_dir}")
         return
 
     base_path = "/sps/lsst/users/rbonnetguerrini/ML4_transientV5/DES_Bonnet_Guerrini"
@@ -66,7 +77,15 @@ def run_inference(csv_dir, output_dir):
             continue
 
         print(f"Running inference for patch: {patch_name}")
-        df = pd.read_csv(csv_file)
+        df = pd.read_csv(csv_file, dtype={'SNID': str})
+        
+        # Ensure SNID is kept as string to prevent precision loss
+        df['SNID'] = df['SNID'].astype(str)
+        print(f"  SNID dtype: {df['SNID'].dtype} (strings preserve precision)")
+        
+        # The n_sources_at_filtering column is already in the CSV
+        # We'll use this for our inference tracking
+        print(f"  Loaded {len(df)} observations for {df['SNID'].nunique()} lightcurves")
 
         all_predictions = []
         for i, model_file in enumerate(model_files):
@@ -86,13 +105,24 @@ def run_inference(csv_dir, output_dir):
         ensemble_df['prob_class0_std'] = prob_matrix[:, :, 0].std(axis=0)
         ensemble_df['prob_class1_std'] = prob_matrix[:, :, 1].std(axis=0)
         ensemble_df['pred_class'] = np.argmax(prob_matrix.mean(axis=0), axis=1)
+        
+        # Add source count debug info to ensemble results (from the CSV)
+        source_counts = df.groupby('SNID')['n_sources_at_filtering'].first().reset_index()
+        source_counts.columns = ['SNID', 'n_sources_at_inference']
+        ensemble_df = ensemble_df.merge(source_counts, on='SNID', how='left')
 
-        # Save patch results
-        ensemble_df.to_csv(ensemble_path, index=False)
-        pd.concat(all_predictions).to_csv(individual_path, index=False)
+        # Save patch results with string formatting to prevent precision loss
+        # Use object to preserve string dtypes when saving
+        ensemble_df['SNID'] = ensemble_df['SNID'].astype(str)
+        ensemble_df.to_csv(ensemble_path, index=False, float_format='%.6f')
+        
+        # Ensure SNID is string in individual predictions too
+        individual_df = pd.concat(all_predictions)
+        individual_df['SNID'] = individual_df['SNID'].astype(str)
+        individual_df.to_csv(individual_path, index=False)
 
         all_ensemble.append(ensemble_df)
-        all_individual.append(pd.concat(all_predictions))
+        all_individual.append(individual_df)
 
     # Optionally, concatenate all results for global files
     if all_ensemble:

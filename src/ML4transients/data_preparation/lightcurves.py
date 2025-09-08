@@ -17,6 +17,7 @@ import time
 def extract_and_save_lightcurves(config: dict):
     """
     Extract lightcurves from LSST data and save them efficiently organized by patch.
+    Now saves ALL lightcurves - filtering is done later in the SNN pipeline.
 
     Parameters
     ----------
@@ -68,6 +69,7 @@ def extract_and_save_lightcurves(config: dict):
             except Exception as e:
                 print(f"  Warning: Failed to load data for {ref.dataId}: {e}")
                 continue
+        
         if all_lightcurves:
             combined_lc = pd.concat(all_lightcurves, ignore_index=True)
             output_file = os.path.join(path_lightcurves, f"patch_{patch_key}.h5")

@@ -8,7 +8,7 @@
 *.egg-info/
 **/saved
 **/__pycache__
-**/configs/batches
+**/configs/data_preparation/batches
 *.pth
 cutout_raphael.yaml
 cutout_raphael_injected.yaml

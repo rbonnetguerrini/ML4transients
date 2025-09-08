@@ -134,10 +134,9 @@ class CutoutLoader:
                     map_time = time.time() - map_start
 
                     total_time = time.time() - start_time
-                    if total_time > 0.1:  # Only log if operation takes significant time
-                        print(f"      Cutout batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s "
-                              f"(open: {file_open_time:.3f}s, ids: {ids_time:.3f}s, index: {index_time:.3f}s, "
-                              f"read: {read_time:.3f}s, map: {map_time:.3f}s)")
+                    # Optional: log only for very slow operations
+                    # if total_time > 1.0:
+                    #     print(f"      Cutout batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s")
 
         except Exception as e:
             print(f"Error in batch cutout loading: {e}, falling back to individual loads")
@@ -278,10 +277,9 @@ class FeatureLoader:
                 split_time = time.time() - split_start
                 
                 total_time = time.time() - start_time
-                if total_time > 0.1:  # Only log if operation takes significant time
-                    print(f"      Features batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s "
-                          f"(query_prep: {query_prep_time:.3f}s, open: {file_open_time:.3f}s, "
-                          f"read: {read_time:.3f}s, split: {split_time:.3f}s)")
+                # Optional: log only for very slow operations
+                # if total_time > 1.0:
+                #     print(f"      Features batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s")
                 
             except Exception as e:
                 print(f"Error in batch feature loading: {e}, falling back to individual loads")
@@ -305,9 +303,9 @@ class FeatureLoader:
             filter_time = time.time() - filter_start
             
             total_time = time.time() - start_time
-            if total_time > 0.1:  # Only log if operation takes significant time
-                print(f"      Features batch load fixed format ({len(dia_source_ids)} IDs): {total_time:.3f}s "
-                      f"(load: {load_time:.3f}s, filter: {filter_time:.3f}s)")
+            # Optional: log only for very slow operations
+            # if total_time > 1.0:
+            #     print(f"      Features batch load fixed format ({len(dia_source_ids)} IDs): {total_time:.3f}s")
         
         return results
     
@@ -692,9 +690,9 @@ class LightCurveLoader:
             
             total_time = time.time() - start_time
             lc_points = len(lc_data) if lc_data is not None else 0
-            if total_time > 0.05:  # Only log if operation takes significant time
-                print(f"    Lightcurve by source ID: {total_time:.3f}s (lookup: {lookup_time:.3f}s, "
-                      f"cache {cache_type}: {cache_time:.3f}s, filter: {filter_time:.3f}s, points: {lc_points})")
+            # Optional: log only for very slow operations
+            # if total_time > 1.0:
+            #     print(f"    Lightcurve by source ID: {total_time:.3f}s (points: {lc_points})")
             
             return lc_data if len(lc_data) > 0 else None
             
@@ -830,8 +828,9 @@ class LightCurveLoader:
             search_time = time.time() - search_start
             
             total_time = time.time() - start_time
-            if total_time > 0.05:  # Only log if operation takes significant time
-                print(f"    Source ID lookup: {total_time:.3f}s (lookup: {lookup_time:.3f}s, search: {search_time:.3f}s, found: {len(result)} sources)")
+            # Optional: log only for very slow operations
+            # if total_time > 1.0:
+            #     print(f"    Source ID lookup: {total_time:.3f}s (found: {len(result)} sources)")
             
             return result
             
@@ -911,7 +910,8 @@ class LightCurveLoader:
             'num_points': len(lc),
             'time_span_days': None,
             'bands': [],
-            'patch_key': self.find_patch(dia_object_id)
+            'patch_key': self.find_patch(dia_object_id),
+            'mean_flux': None
         }
         
         if 'midpointMjdTai' in lc.columns:
@@ -920,6 +920,9 @@ class LightCurveLoader:
         
         if 'band' in lc.columns:
             stats['bands'] = lc['band'].unique().tolist()
+        
+        if 'psfFlux' in lc.columns:
+            stats['mean_flux'] = lc['psfFlux'].mean()
         
         return stats
     
@@ -944,6 +947,7 @@ class LightCurveLoader:
         num_points = [v['num_points'] for v in stats_dict.values()]
         time_spans = [v['time_span_days'] for v in stats_dict.values() if v['time_span_days'] is not None]
         bands = [b for v in stats_dict.values() for b in v['bands']]
+        mean_fluxes = [v['mean_flux'] for v in stats_dict.values() if v.get('mean_flux') is not None]
 
         summary = {
             'num_lightcurves': len(stats_dict),
@@ -961,6 +965,13 @@ class LightCurveLoader:
                 'min': float(np.min(time_spans)) if time_spans else None,
                 'max': float(np.max(time_spans)) if time_spans else None,
             },
+            'mean_psf_flux': {
+                'mean': float(np.mean(mean_fluxes)) if mean_fluxes else None,
+                'median': float(np.median(mean_fluxes)) if mean_fluxes else None,
+                'std': float(np.std(mean_fluxes)) if mean_fluxes else None,
+                'min': float(np.min(mean_fluxes)) if mean_fluxes else None,
+                'max': float(np.max(mean_fluxes)) if mean_fluxes else None,
+            },
             'bands': {
                 'unique': list(set(bands)),
                 'counts': dict(pd.Series(bands).value_counts())
@@ -968,7 +979,9 @@ class LightCurveLoader:
         }
 
         if plot:
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+            axes = axes.flatten()
+            
             axes[0].hist(num_points, bins=50, color='skyblue')
             axes[0].set_title('Number of Points per Lightcurve')
             axes[0].set_xlabel('Num Points')
@@ -982,13 +995,21 @@ class LightCurveLoader:
             else:
                 axes[1].set_visible(False)
 
-            if bands:
-                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[2], color='green')
-                axes[2].set_title('Band Occurrences')
-                axes[2].set_xlabel('Band')
+            if mean_fluxes:
+                axes[2].hist(mean_fluxes, bins=50, color='purple')
+                axes[2].set_title('Mean psfFlux per Lightcurve')
+                axes[2].set_xlabel('Mean psfFlux')
                 axes[2].set_ylabel('Count')
             else:
                 axes[2].set_visible(False)
+
+            if bands:
+                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[3], color='green')
+                axes[3].set_title('Band Occurrences')
+                axes[3].set_xlabel('Band')
+                axes[3].set_ylabel('Count')
+            else:
+                axes[3].set_visible(False)
 
             plt.tight_layout()
             plt.show()
@@ -1039,6 +1060,7 @@ class LightCurveLoader:
         num_points = []
         time_spans = []
         bands = []
+        mean_fluxes = []
 
         for patch_key, obj_ids in patch_groups.items():
             patch_file = self.lightcurve_path / f"patch_{patch_key}.h5"
@@ -1067,6 +1089,8 @@ class LightCurveLoader:
                     time_spans.append(ts)
                 if 'band' in lc.columns:
                     bands.extend(lc['band'].unique().tolist())
+                if 'psfFlux' in lc.columns:
+                    mean_fluxes.append(lc['psfFlux'].mean())
 
         # --- Summarize ---
         summary = {
@@ -1085,6 +1109,13 @@ class LightCurveLoader:
                 'min': float(np.min(time_spans)) if time_spans else None,
                 'max': float(np.max(time_spans)) if time_spans else None,
             },
+            'mean_psf_flux': {
+                'mean': float(np.mean(mean_fluxes)) if mean_fluxes else None,
+                'median': float(np.median(mean_fluxes)) if mean_fluxes else None,
+                'std': float(np.std(mean_fluxes)) if mean_fluxes else None,
+                'min': float(np.min(mean_fluxes)) if mean_fluxes else None,
+                'max': float(np.max(mean_fluxes)) if mean_fluxes else None,
+            },
             'bands': {
                 'unique': list(set(bands)),
                 'counts': dict(pd.Series(bands).value_counts()) if bands else {}
@@ -1092,7 +1123,9 @@ class LightCurveLoader:
         }
 
         if plot:
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+            axes = axes.flatten()
+            
             if num_points:
                 axes[0].hist(num_points, bins=50, color='skyblue')
                 axes[0].set_title('Number of Points per Lightcurve')
@@ -1109,18 +1142,139 @@ class LightCurveLoader:
             else:
                 axes[1].set_visible(False)
 
-            if bands:
-                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[2], color='green')
-                axes[2].set_title('Band Occurrences')
-                axes[2].set_xlabel('Band')
+            if mean_fluxes:
+                axes[2].hist(mean_fluxes, bins=50, color='purple')
+                axes[2].set_title('Mean psfFlux per Lightcurve')
+                axes[2].set_xlabel('Mean psfFlux')
                 axes[2].set_ylabel('Count')
             else:
                 axes[2].set_visible(False)
+
+            if bands:
+                pd.Series(bands).value_counts().plot(kind='bar', ax=axes[3], color='green')
+                axes[3].set_title('Band Occurrences')
+                axes[3].set_xlabel('Band')
+                axes[3].set_ylabel('Count')
+            else:
+                axes[3].set_visible(False)
 
             plt.tight_layout()
             plt.show()
 
         return summary
+
+    def plot_lightcurve(
+        self,
+        dia_object_id: int,
+        plot_cutouts: bool = False,
+        cutout_loader=None,
+        show: bool = True,
+        figsize=(12, 5)
+    ):
+        """
+        Visualize the light curve for a given diaObjectId.
+
+        Parameters
+        ----------
+        dia_object_id : int
+            The diaObjectId to plot.
+        plot_cutouts : bool
+            If True, plot cutouts for each epoch (requires cutout_loader).
+        cutout_loader : CutoutLoader or None
+            Loader to fetch cutouts (optional, required if plot_cutouts is True).
+        show : bool
+            Whether to show the plot immediately.
+        figsize : tuple
+            Figure size for the plots.
+        """
+        flux_col = "psfFlux"
+        time_col = "midpointMjdTai"
+        band_col = "band"
+
+        lc = self.get_lightcurve(dia_object_id)
+        if lc is None or len(lc) == 0:
+            print(f"No lightcurve found for diaObjectId {dia_object_id}")
+            return
+        print(f"{len(lc)} sources in the light curves ")
+        # Sort by time
+        lc = lc.sort_values(time_col).reset_index(drop=True)
+
+        # Plot 1: Full flux evolution
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        ax1, ax2 = axes
+
+        # Plot by band if available
+        bands = lc[band_col].unique() if band_col in lc.columns else [None]
+        colors = plt.cm.tab10.colors
+
+        for i, band in enumerate(bands):
+            mask = (lc[band_col] == band) if band is not None else np.ones(len(lc), dtype=bool)
+            label = f"Band {band}" if band is not None else "All"
+            ax1.scatter(lc.loc[mask, time_col], lc.loc[mask, flux_col], label=label, color=colors[i % len(colors)], s=20)
+        ax1.set_xlabel(time_col)
+        ax1.set_ylabel(flux_col)
+        ax1.set_title(f"Flux evolution for diaObjectId {dia_object_id}")
+        if len(bands) > 1:
+            ax1.legend()
+
+        # Plot 2: Flux evolution relative to max brightness
+        # Find max flux epoch (per band or overall)
+        if len(bands) > 1:
+            max_flux_idx = lc.groupby(band_col)[flux_col].idxmax()
+            max_times = lc.loc[max_flux_idx, time_col].values
+            # Use the earliest max as reference
+            t_max = np.min(max_times)
+        else:
+            t_max = lc.loc[lc[flux_col].idxmax(), time_col]
+        lc["t_from_max"] = lc[time_col] - t_max
+
+        mask_window = (lc["t_from_max"] >= -30) & (lc["t_from_max"] <= 100)
+        for i, band in enumerate(bands):
+            mask = ((lc[band_col] == band) if band is not None else np.ones(len(lc), dtype=bool)) & mask_window
+            label = f"Band {band}" if band is not None else "All"
+            ax2.scatter(lc.loc[mask, "t_from_max"], lc.loc[mask, flux_col], label=label, color=colors[i % len(colors)], s=20)
+        ax2.set_xlabel("Days from max brightness")
+        ax2.set_ylabel(flux_col)
+        ax2.set_title(f"Flux [-30,+100]d of max for diaObjectId {dia_object_id}")
+        if len(bands) > 1:
+            ax2.legend()
+
+        plt.tight_layout()
+        if show:
+            plt.show()
+
+        # Plot 3: Cutouts (optional)
+        if plot_cutouts and cutout_loader is not None:
+            # Get all diaSourceIds for this object
+            if "diaSourceId" in lc.columns:
+                dia_source_ids = lc["diaSourceId"].values
+            elif lc.index.name == "diaSourceId":
+                dia_source_ids = lc.index.values
+            else:
+                print("Cannot find diaSourceId column for cutout plotting.")
+                return
+
+            n = len(dia_source_ids)
+            ncols = min(8, n)
+            nrows = int(np.ceil(n / ncols))
+            fig, axes = plt.subplots(nrows, ncols, figsize=(2*ncols, 2*nrows))
+            axes = np.array(axes).reshape(-1)
+            for i, dsid in enumerate(dia_source_ids):
+                cutout = cutout_loader.get_by_id(dsid)
+                if cutout is not None:
+                    ax = axes[i]
+                    im = ax.imshow(cutout, cmap="gray", origin="lower")
+                    ax.set_title(f"ID {dsid}")
+                    ax.axis("off")
+                else:
+                    axes[i].set_visible(False)
+            for j in range(i+1, len(axes)):
+                axes[j].set_visible(False)
+            plt.suptitle(f"Cutouts for diaObjectId {dia_object_id}")
+            plt.tight_layout()
+            if show:
+                plt.show()
 
     def list_available_patches(self) -> List[str]:
         """List all available patch files.
@@ -1223,7 +1377,8 @@ class LightCurveLoader:
                 # KeyError if snn_inference not present, ValueError if not table format
                 continue
             except Exception as e:
-                print(f"  Failed to read {f}: {e}")
+                # Log error but continue processing other files
+                continue
         if not dfs:
             print("No valid SNN inference tables loaded from HDF5.")
             return None
@@ -1234,30 +1389,135 @@ class LightCurveLoader:
         """
         Load and analyze SNN ensemble inference results for all patches from HDF5.
         Returns the concatenated DataFrame and shows summary/plots.
+        Includes all lightcurves - those not processed by SNN have NaN values.
         """
+        # Clear cache to ensure we get fresh data
+        self.clear_cache()
+        
         # Only load necessary columns for analysis
         columns = [
             "diaObjectId", "prob_class0_mean", "prob_class1_mean", "prob_class0_std",
-            "prob_class1_std", "pred_class"
+            "prob_class1_std", "pred_class", "n_sources_at_inference"
         ]
         ensemble_df = self.load_snn_inference(columns=columns)
         if ensemble_df is None:
             print("No SNN inference data found in HDF5 files.")
             return None
 
-        preds_df = ensemble_df.rename(columns={'prob_class0_mean': 'prob_class0', 'prob_class1_mean': 'prob_class1'})
+        print(f"Loaded SNN inference data: {len(ensemble_df)} total lightcurves")
+        
+        # Separate processed vs unprocessed
+        processed_mask = (ensemble_df['pred_class'] >= 0) & (~ensemble_df['prob_class1_mean'].isna())
+        snn_processed = ensemble_df[processed_mask]
+        not_processed = ensemble_df[~processed_mask]
+        
+        print(f"  SNN processed: {len(snn_processed)} lightcurves")
+        print(f"  Not processed (failed filtering): {len(not_processed)} lightcurves")
+        print(f"  Processing rate: {len(snn_processed)/len(ensemble_df)*100:.1f}%")
+
+        if len(snn_processed) == 0:
+            print("No lightcurves were successfully processed by SNN!")
+            return ensemble_df
+
+        # Show statistics about source counts used in SNN inference
+        if 'n_sources_at_inference' in snn_processed.columns and not snn_processed['n_sources_at_inference'].isna().all():
+            inference_counts = snn_processed['n_sources_at_inference'].dropna()
+            print(f"\nSNN Inference Source Count Statistics:")
+            print(f"  Mean sources per lightcurve: {inference_counts.mean():.1f}")
+            print(f"  Min sources: {int(inference_counts.min())}")
+            print(f"  Max sources: {int(inference_counts.max())}")
+            
+            # Check how many actually had < 10 sources during inference
+            low_count = (inference_counts < 10).sum()
+            if low_count > 0:
+                print(f"  WARNING: {low_count} lightcurves had < 10 sources during SNN inference!")
+
+        # VALIDATION: Check if SNN-processed lightcurves actually meet the filtering criteria
+        print(f"\n{'='*60}")
+        print(f"VALIDATING SNN FILTERING CONSISTENCY")
+        print(f"{'='*60}")
+        
+        validation_issues = []
+        sample_size = min(100, len(snn_processed))  # Check a sample to avoid overwhelming output
+        print(f"Checking {sample_size} SNN-processed lightcurves against filtering criteria...")
+        
+        sample_objects = snn_processed.head(sample_size)['diaObjectId'].values
+        for i, obj_id in enumerate(sample_objects):
+            try:
+                lc = self.get_lightcurve(int(obj_id))
+                if lc is not None and len(lc) > 0:
+                    # Check filtering criteria: 10+ points in [-30, +100] day window
+                    flux_col = "psfFlux"
+                    time_col = "midpointMjdTai"
+                    
+                    # Find max flux time
+                    if len(lc) > 1:
+                        max_flux_idx = lc[flux_col].idxmax()
+                        t_max = lc.loc[max_flux_idx, time_col]
+                    else:
+                        t_max = lc[time_col].iloc[0]
+                    
+                    lc_copy = lc.copy()
+                    lc_copy["t_from_max"] = lc_copy[time_col] - t_max
+                    window_mask = (lc_copy["t_from_max"] >= -30) & (lc_copy["t_from_max"] <= 100)
+                    n_in_window = window_mask.sum()
+                    
+                    if n_in_window < 10:
+                        validation_issues.append({
+                            'diaObjectId': obj_id,
+                            'total_points': len(lc),
+                            'points_in_window': n_in_window
+                        })
+                        
+                else:
+                    validation_issues.append({
+                        'diaObjectId': obj_id,
+                        'total_points': 0,
+                        'points_in_window': 0,
+                        'issue': 'No lightcurve data found'
+                    })
+                    
+            except Exception as e:
+                validation_issues.append({
+                    'diaObjectId': obj_id,
+                    'issue': f'Error loading lightcurve: {e}'
+                })
+        
+        if len(validation_issues) > 0:
+            print(f"WARNING: VALIDATION ISSUES FOUND: {len(validation_issues)}/{sample_size} objects")
+            print(f"These objects have SNN results but don't meet filtering criteria:")
+            for issue in validation_issues[:10]:  # Show first 10
+                if 'issue' in issue:
+                    print(f"  • {issue['diaObjectId']}: {issue['issue']}")
+                else:
+                    # Get SNN source count for comparison
+                    snn_count = snn_processed[snn_processed['diaObjectId'] == issue['diaObjectId']]['n_sources_at_inference'].iloc[0]
+                    if not pd.isna(snn_count):
+                        print(f"  • {issue['diaObjectId']}: {issue['points_in_window']}/{issue['total_points']} pts in window, SNN used {int(snn_count)} pts")
+                    else:
+                        print(f"  • {issue['diaObjectId']}: {issue['points_in_window']}/{issue['total_points']} pts in window, SNN count unknown")
+            if len(validation_issues) > 10:
+                print(f"  ... and {len(validation_issues) - 10} more")
+            print(f"\nRECOMMENDATION: Re-run the SNN pipeline to ensure consistent filtering!")
+        else:
+            print(f"Validation passed: All sampled objects meet filtering criteria")
+        
+        print(f"{'='*60}\n")
+
+        # Continue analysis only with processed lightcurves
+        preds_df = snn_processed.rename(columns={'prob_class0_mean': 'prob_class0', 'prob_class1_mean': 'prob_class1'})
 
         # Print summary
-        print(f"Total: {len(ensemble_df)} objects")
-        for class_id, count in ensemble_df['pred_class'].value_counts().sort_index().items():
+        print(f"\nSNN-processed objects: {len(snn_processed)}")
+        for class_id, count in snn_processed['pred_class'].value_counts().sort_index().items():
             name = "Non-SN" if class_id == 0 else "Supernova"
-            print(f"{name}: {count} ({count/len(ensemble_df)*100:.1f}%)")
+            print(f"{name}: {count} ({count/len(snn_processed)*100:.1f}%)")
 
         print(f"\nUncertainty Statistics:")
-        print(f"Mean SN probability uncertainty: {ensemble_df['prob_class1_std'].mean():.3f}")
-        print(f"High uncertainty objects (std > 0.1): {(ensemble_df['prob_class1_std'] > 0.1).sum()}")
+        print(f"Mean SN probability uncertainty: {snn_processed['prob_class1_std'].mean():.3f}")
+        print(f"High uncertainty objects (std > 0.1): {(snn_processed['prob_class1_std'] > 0.1).sum()}")
 
-        sn_candidates = ensemble_df[ensemble_df['pred_class'] == 1]
+        sn_candidates = snn_processed[snn_processed['pred_class'] == 1]
         high_conf = sn_candidates[sn_candidates['prob_class1_mean'] > 0.7]
         low_uncertainty = high_conf[high_conf['prob_class1_std'] < 0.05]
 
@@ -1266,9 +1526,41 @@ class LightCurveLoader:
 
         if len(high_conf) > 0:
             print("\nTop 5 candidates (by mean probability):")
-            top_candidates = high_conf.nlargest(5, 'prob_class1_mean')
+            print("NOTE: Lightcurve statistics shown below are from the current HDF5 files,")
+            print("      which may differ from the filtered data used for SNN inference.")
+            top_candidates = high_conf.nlargest(500, 'prob_class1_mean')
             for i, (_, row) in enumerate(top_candidates.iterrows(), 1):
-                print(f"  {i}. diaObjectId {row['diaObjectId']}: {row['prob_class1_mean']:.3f} ± {row['prob_class1_std']:.3f}")
+                # Get SNN inference count
+                snn_count = row.get('n_sources_at_inference', np.nan)
+                snn_info = f"SNN used {int(snn_count)} pts" if not pd.isna(snn_count) else "SNN count unknown"
+                
+                # Try to get current lightcurve info if possible
+                try:
+                    lc = self.get_lightcurve(int(row['diaObjectId']))
+                    if lc is not None and len(lc) > 0:
+                        total_points = len(lc)
+                        # Compute window statistics
+                        flux_col = "psfFlux"
+                        time_col = "midpointMjdTai"
+                        band_col = "band"
+                        lc = lc.sort_values(time_col).reset_index(drop=True)
+                        bands = lc[band_col].unique() if band_col in lc.columns else [None]
+                        if len(bands) > 1:
+                            max_flux_idx = lc.groupby(band_col)[flux_col].idxmax()
+                            max_times = lc.loc[max_flux_idx, time_col].values
+                            t_max = np.min(max_times)
+                        else:
+                            t_max = lc.loc[lc[flux_col].idxmax(), time_col]
+                        lc["t_from_max"] = lc[time_col] - t_max
+                        n_window = ((lc["t_from_max"] >= -30) & (lc["t_from_max"] <= 100)).sum()
+                        lc_info = f"(current lc: {total_points} pts, in window: {n_window}, {snn_info})"
+                    else:
+                        lc_info = f"(no lc data, {snn_info})"
+                except Exception:
+                    lc_info = f"(lc data error, {snn_info})"
+                print(f"  {i}. diaObjectId {str(int(row['diaObjectId']))}: {row['prob_class1_mean']:.3f} ± {row['prob_class1_std']:.3f} {lc_info}")
+                if i >= 13:  # Limit output
+                    break
 
         # Plotting
         fig, axes = plt.subplots(2, 3, figsize=(18, 10))
@@ -1347,13 +1639,15 @@ class LightCurveLoader:
         plt.show()
 
         print(f"\nEnsemble Summary:")
-        print(f"Total objects: {len(ensemble_df)}")
+        print(f"SNN-processed objects: {len(ensemble_df)}")
+        print(f"Total objects in dataset: {len(self.index)}")
         print(f"High-confidence SN candidates: {len(high_conf)}")
         print(f"High-conf + Low uncertainty: {high_conf_low_unc}")
-        print(f"Mean uncertainty: {ensemble_df['prob_class1_std'].mean():.3f}")
-        print(f"Objects with high uncertainty (>0.1): {(ensemble_df['prob_class1_std'] > 0.1).sum()}")
+        print(f"Mean uncertainty: {snn_processed['prob_class1_std'].mean():.3f}")
+        print(f"Objects with high uncertainty (>0.1): {(snn_processed['prob_class1_std'] > 0.1).sum()}")
 
         return ensemble_df
+   
     
     def get_high_conf_sn_sources(self, prob_threshold=0.7, std_threshold=0.05, snn_dataset_name="snn_inference"):
         """
@@ -1366,9 +1660,14 @@ class LightCurveLoader:
             print("No SNN inference data found in HDF5 files.")
             return set()
 
-        # Ensure correct dtypes
+        # Ensure correct dtypes - handle string diaObjectId properly
         df = df.copy()
-        df["diaObjectId"] = df["diaObjectId"].astype(np.int64)
+        # Convert diaObjectId to int64 only if it's not already numeric
+        if df["diaObjectId"].dtype == 'object':
+            # Handle potential string representations
+            df["diaObjectId"] = pd.to_numeric(df["diaObjectId"], errors='coerce').astype(np.int64)
+        else:
+            df["diaObjectId"] = df["diaObjectId"].astype(np.int64)
         df["pred_class"] = df["pred_class"].astype(int)
         df["prob_class1_mean"] = df["prob_class1_mean"].astype(float)
         df["prob_class1_std"] = df["prob_class1_std"].astype(float)
@@ -1396,7 +1695,10 @@ class LightCurveLoader:
         diasource_index = self.diasource_index
         # If not already, ensure diaObjectId is int64 for join
         diasource_index = diasource_index.copy()
-        diasource_index['diaObjectId'] = diasource_index['diaObjectId'].astype(np.int64)
+        if diasource_index['diaObjectId'].dtype == 'object':
+            diasource_index['diaObjectId'] = pd.to_numeric(diasource_index['diaObjectId'], errors='coerce').astype(np.int64)
+        else:
+            diasource_index['diaObjectId'] = diasource_index['diaObjectId'].astype(np.int64)
         mask = diasource_index['diaObjectId'].isin(high_conf_objids)
         high_conf_sources = diasource_index[mask].index.astype(np.int64)
 
@@ -1413,6 +1715,7 @@ class LightCurveLoader:
         """
         Save a full mini-dataset (lightcurves, cutouts, features) for high-confidence SN sources,
         preserving the structure expected by DatasetLoader.
+        Only saves data for lightcurves that have SNN inference results and meet confidence criteria.
         Skips visits (cutout/feature files) that are already saved in the output directory.
         """
         import shutil
@@ -1444,13 +1747,19 @@ class LightCurveLoader:
                     continue
                 df = pd.read_hdf(src)
                 if "diasource" in index_file:
+                    # Filter to only high-confidence sources
                     df = df[df.index.isin(high_conf_ids)]
                 else:
-                    keep_objids = df[df['patch_key'].notnull()].index.intersection(
-                        self.diasource_index.loc[self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'].unique()
-                    )
-                    df = df.loc[keep_objids]
+                    # Filter to only objects that have high-confidence sources
+                    if not self.diasource_index.empty:
+                        keep_objids = self.diasource_index.loc[
+                            self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'
+                        ].unique()
+                        df = df[df.index.isin(keep_objids)]
+                    else:
+                        print(f"Warning: No diasource_index available, keeping all objects in {index_file}")
                 df.to_hdf(out_index, key=df.columns.name or "index")
+                print(f"Saved filtered {index_file}: {len(df)} entries")
 
         # 3. Save patch files with only high-conf sources
         patch_files = list((self.lightcurve_path).glob("patch_*.h5"))
@@ -1459,22 +1768,44 @@ class LightCurveLoader:
             if out_patch.exists():
                 print(f"Skipping patch file {patch_file.name} (already exists in output)")
                 continue
+            
+            # Load original lightcurves
             df = pd.read_hdf(patch_file, key="lightcurves")
+            
+            # Filter to only high-confidence sources
             if 'diaSourceId' in df.columns:
-                df = df[df["diaSourceId"].isin(high_conf_ids)]
+                df_filtered = df[df["diaSourceId"].isin(high_conf_ids)]
             elif df.index.name == "diaSourceId":
-                df = df[df.index.isin(high_conf_ids)]
+                df_filtered = df[df.index.isin(high_conf_ids)]
             elif df.index.name is None and df.index.dtype == np.int64:
-                df = df[df.index.isin(high_conf_ids)]
+                df_filtered = df[df.index.isin(high_conf_ids)]
             else:
-                print(f"Warning: Could not find 'diaSourceId' as a column or index in patch file: {patch_file}")
-                print(f"  Columns: {list(df.columns)}")
-                print(f"  Index name: {df.index.name}")
-                print(f"  Index dtype: {df.index.dtype}")
-                print(f"  DataFrame shape: {df.shape}")
-                continue  # Skip this patch file
-            if len(df) > 0:
-                df.to_hdf(out_patch, key="lightcurves")
+                print(f"Warning: Could not find 'diaSourceId' in patch file: {patch_file}")
+                continue
+            
+            if len(df_filtered) > 0:
+                # Save filtered lightcurves
+                df_filtered.to_hdf(out_patch, key="lightcurves")
+                
+                # Also copy SNN inference data if it exists
+                try:
+                    snn_df = pd.read_hdf(patch_file, key="snn_inference")
+                    # Filter SNN data to only high-confidence objects
+                    high_conf_objids = self.diasource_index.loc[
+                        self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'
+                    ].unique()
+                    snn_filtered = snn_df[snn_df['diaObjectId'].isin(high_conf_objids)]
+                    if len(snn_filtered) > 0:
+                        arr = snn_filtered.to_records(index=False)
+                        with h5py.File(out_patch, "a") as h5f:
+                            h5f.create_dataset("snn_inference", data=arr)
+                        print(f"Saved {len(df_filtered)} lightcurve sources + {len(snn_filtered)} SNN results to {patch_file.name}")
+                    else:
+                        print(f"Saved {len(df_filtered)} lightcurve sources to {patch_file.name}")
+                except (KeyError, ValueError):
+                    print(f"Saved {len(df_filtered)} lightcurve sources to {patch_file.name} (no SNN data)")
+            else:
+                print(f"No high-confidence sources found in {patch_file.name}")
 
         # 4. Save cutouts for high-conf sources
         cutout_dir = self.lightcurve_path.parent / "cutouts"
@@ -1513,3 +1844,4 @@ class LightCurveLoader:
                         print(f"Saved {len(all_feat)} features to {out_feat_file}")
 
         print(f"Mini-dataset for high-confidence SN saved to {out_dir}")
+        print(f"Dataset contains only sources from SNN-processed lightcurves that meet confidence criteria.")

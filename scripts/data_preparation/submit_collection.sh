@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Usage: ./scripts/submit_collection.sh configs/configs_cutout.yaml [batch_size]
+# Usage: ./scripts/data_preparation/submit_collection.sh configs/configs_cutout.yaml [batch_size]
 
-CONFIG_FILE=${1:-"configs/configs_cutout.yaml"}
+CONFIG_FILE=${1:-"configs/data_preparation/configs_cutout.yaml"}
 BATCH_SIZE=${2:-50}
 
 echo "Submitting collection processing job..."
@@ -15,7 +15,7 @@ setup lsst_distrib
 
 # Get project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 cd "$PROJECT_ROOT"
 
 export PROJECT_ROOT
