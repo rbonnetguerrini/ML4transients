@@ -42,6 +42,22 @@ def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered
     des_phot = des_phot.dropna(subset=['FLUXCAL', 'FLUXCALERR']).reset_index(drop=True)
     print(f"  Removed {initial_size - len(des_phot)} rows with NaN flux or flux error values")
 
+    # --- Filter out sources with SNR < 5 before time window filtering ---
+    # Calculate SNR (Signal-to-Noise Ratio)
+    des_phot['SNR'] = np.abs(des_phot['FLUXCAL']) / des_phot['FLUXCALERR']
+    
+    # Count objects before SNR filtering
+    before_snr_filter = len(des_phot)
+    objects_before_snr = des_phot['SNID'].nunique()
+    
+    # Filter out sources with SNR < 5
+    des_phot = des_phot[des_phot['SNR'] >= 5.0].reset_index(drop=True)
+    after_snr_filter = len(des_phot)
+    objects_after_snr = des_phot['SNID'].nunique()
+    
+    print(f"  SNR >= 5.0 filter: removed {before_snr_filter - after_snr_filter} sources")
+    print(f"  Objects before/after SNR filter: {objects_before_snr}/{objects_after_snr} (discarded {objects_before_snr - objects_after_snr} objects)")
+
     # --- Apply time-window cut around maximum brightness ---
     # For each SNID, find MJD of maximum FLUXCAL (compatible with older pandas)
     max_mjd = des_phot.loc[des_phot.groupby('SNID')['FLUXCAL'].idxmax(), ['SNID', 'MJD']]
@@ -63,21 +79,40 @@ def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered
     print(f"  Applied window restriction: discarded {len(discarded_snids_window)} lightcurves with sources outside [-30, +100] days")
     print(f"  Kept {len(valid_snids_window)} lightcurves where ALL sources are within window")
     
-    # Drop helper columns
+    # Drop helper columns but keep SNR for further filtering
     des_phot = des_phot.drop(columns=['MJD_max', 'dt_max'])
 
-    # --- Discard lightcurves with fewer than min_obs observations ---
-    snid_counts = des_phot['SNID'].value_counts()
-    valid_snids = snid_counts[snid_counts >= min_obs].index
-    discarded_snids = snid_counts[snid_counts < min_obs].index
+    # --- Discard lightcurves with fewer than min_obs observations with SNR > 3 ---
+    # Create a mask for sources with SNR > 3
+    high_snr_mask = des_phot['SNR'] > 3.0
+    
+    # Count observations with SNR > 3 for each SNID
+    snid_counts_high_snr = des_phot[high_snr_mask]['SNID'].value_counts()
+    
+    # Get SNIDs that have at least min_obs observations with SNR > 3
+    valid_snids = snid_counts_high_snr[snid_counts_high_snr >= min_obs].index
+    discarded_snids = des_phot['SNID'].unique()
+    discarded_snids = discarded_snids[~np.isin(discarded_snids, valid_snids)]
+    
     n_discarded = len(discarded_snids)
     n_kept = len(valid_snids)
-    if stats is not None:
-        stats['discarded'] += n_discarded + len(discarded_snids_window)
-        stats['kept'] += n_kept
-    des_phot = des_phot[des_phot['SNID'].isin(valid_snids)].reset_index(drop=True)
-    print(f"  Discarded {n_discarded} lightcurves with fewer than {min_obs} observations")
+    
+    print(f"  High SNR observation count (SNR > 3): {snid_counts_high_snr.sum()} total observations")
+    print(f"  Discarded {n_discarded} lightcurves with fewer than {min_obs} observations with SNR > 3")
     print(f"  Final kept: {n_kept} lightcurves after all cuts")
+    
+    if stats is not None:
+        # Track each type of filtering separately
+        stats['snr_filtered'] += (objects_before_snr - objects_after_snr)
+        stats['window_filtered'] += len(discarded_snids_window)
+        stats['min_obs_filtered'] += n_discarded
+        stats['kept'] += n_kept
+    
+    # Keep only valid lightcurves (but keep all their sources, even those with SNR <= 3)
+    des_phot = des_phot[des_phot['SNID'].isin(valid_snids)].reset_index(drop=True)
+    
+    # Drop the SNR column as it's no longer needed
+    des_phot = des_phot.drop(columns=['SNR'])
 
     # Sort again for neatness
     des_phot = des_phot.sort_values(by=["SNID", "MJD"]).reset_index(drop=True)
@@ -181,14 +216,25 @@ def convert_all_patches(input_dir, output_dir, min_obs=10):
         print("No valid HDF5 lightcurve files found.")
         return
 
-    stats = {'discarded': 0, 'kept': 0}
+    stats = {
+        'snr_filtered': 0,        # Objects discarded due to SNR < 5
+        'window_filtered': 0,     # Objects discarded due to time window restrictions
+        'min_obs_filtered': 0,    # Objects discarded due to insufficient high SNR observations
+        'kept': 0                 # Objects that passed all filters
+    }
     for h5_file in h5_files:
         base_name = os.path.splitext(os.path.basename(h5_file))[0]
         csv_file = os.path.join(output_dir, f"{base_name}.csv")
         convert_single(h5_file, csv_file, min_obs=min_obs, stats=stats)
     print(f"\nSummary after all cuts:")
-    print(f"  Lightcurves discarded (too few points): {stats['discarded']}")
-    print(f"  Lightcurves kept: {stats['kept']}")
+    total_discarded = stats['snr_filtered'] + stats['window_filtered'] + stats['min_obs_filtered']
+    print(f"  Total lightcurves processed: {total_discarded + stats['kept']}")
+    print(f"  └─ Discarded due to SNR < 5.0: {stats['snr_filtered']}")
+    print(f"  └─ Discarded due to time window restrictions: {stats['window_filtered']}")
+    print(f"  └─ Discarded due to insufficient high SNR obs (< {min_obs} with SNR > 3): {stats['min_obs_filtered']}")
+    print(f"  └─ Total discarded: {total_discarded}")
+    print(f"  └─ Final kept: {stats['kept']}")
+    print(f"  └─ Filtered rate: {stats['kept']/(total_discarded + stats['kept'])*100:.3f}%")
 
 
 if __name__ == "__main__":
