@@ -964,14 +964,6 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     except Exception as e:
         print(f"Warning: Could not create SNR plot: {e}")
     
-    # Uncertainty vs correctness plot (for all model types now) - REMOVED as redundant
-    # This plot was showing the same information as the uncertainty plot above
-    # try:
-    #     uncertainty_correctness_plot = visualizer.plot_uncertainty_vs_correctness(df)
-    #     plots_list.append(uncertainty_correctness_plot)
-    # except Exception as e:
-    #     print(f"Warning: Could not create uncertainty vs correctness plot: {e}")
-    
     # Clustering plot if available
     if 'high_dim_cluster' in df.columns:
         try:
