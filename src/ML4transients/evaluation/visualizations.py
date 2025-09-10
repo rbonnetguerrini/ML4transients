@@ -190,6 +190,84 @@ class BokehEvaluationPlots:
         """
         
         return Div(text=html_content, width=300, height=200)
+    
+    def create_snr_metrics_divs(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Tuple[Div, Div]:
+        """Create separate metric boxes for low and high SNR samples.
+        
+        Parameters
+        ----------
+        metrics : EvaluationMetrics
+            Evaluation metrics object with SNR values
+        snr_threshold : float
+            SNR threshold to separate low and high SNR samples
+            
+        Returns
+        -------
+        Tuple[Div, Div]
+            (low_snr_div, high_snr_div) - Bokeh Div elements
+        """
+        if metrics.snr_values is None:
+            # Return empty divs if SNR not available
+            empty_div = Div(text="<div style='padding: 10px; color: white;'>SNR data not available</div>", 
+                           width=300, height=200)
+            return empty_div, empty_div
+            
+        snr_metrics = metrics.get_snr_based_metrics(snr_threshold)
+        
+        # Low SNR metrics div
+        low_snr = snr_metrics['low_snr']
+        low_html = f"""
+        <div style="padding: 10px; background-color: #3B2F2F; border-radius: 5px; border-left: 4px solid #FF6B6B;">
+            <h3 style="color: white; margin-top: 0;">Low SNR Performance (|SNR| < {snr_threshold})</h3>
+            <table style="color: white; width: 100%;">
+                <tr><td>Samples:</td><td>{int(low_snr['n_samples'])}</td></tr>
+                <tr><td>Accuracy:</td><td>{low_snr['accuracy']:.3f}</td></tr>
+                <tr><td>Precision:</td><td>{low_snr['precision']:.3f}</td></tr>
+                <tr><td>Recall:</td><td>{low_snr['recall']:.3f}</td></tr>
+                <tr><td>F1-Score:</td><td>{low_snr['f1_score']:.3f}</td></tr>
+                <tr><td>Specificity:</td><td>{low_snr['specificity']:.3f}</td></tr>
+        """
+        
+        if 'roc_auc' in low_snr:
+            low_html += f"""
+                <tr><td>ROC AUC:</td><td>{low_snr['roc_auc']:.3f}</td></tr>
+                <tr><td>PR AUC:</td><td>{low_snr['pr_auc']:.3f}</td></tr>
+            """
+        
+        low_html += """
+            </table>
+        </div>
+        """
+        
+        # High SNR metrics div
+        high_snr = snr_metrics['high_snr']
+        high_html = f"""
+        <div style="padding: 10px; background-color: #2F3B2F; border-radius: 5px; border-left: 4px solid #4ECDC4;">
+            <h3 style="color: white; margin-top: 0;">High SNR Performance (|SNR| ≥ {snr_threshold})</h3>
+            <table style="color: white; width: 100%;">
+                <tr><td>Samples:</td><td>{int(high_snr['n_samples'])}</td></tr>
+                <tr><td>Accuracy:</td><td>{high_snr['accuracy']:.3f}</td></tr>
+                <tr><td>Precision:</td><td>{high_snr['precision']:.3f}</td></tr>
+                <tr><td>Recall:</td><td>{high_snr['recall']:.3f}</td></tr>
+                <tr><td>F1-Score:</td><td>{high_snr['f1_score']:.3f}</td></tr>
+                <tr><td>Specificity:</td><td>{high_snr['specificity']:.3f}</td></tr>
+        """
+        
+        if 'roc_auc' in high_snr:
+            high_html += f"""
+                <tr><td>ROC AUC:</td><td>{high_snr['roc_auc']:.3f}</td></tr>
+                <tr><td>PR AUC:</td><td>{high_snr['pr_auc']:.3f}</td></tr>
+            """
+        
+        high_html += """
+            </table>
+        </div>
+        """
+        
+        low_snr_div = Div(text=low_html, width=300, height=250)
+        high_snr_div = Div(text=high_html, width=300, height=250)
+        
+        return low_snr_div, high_snr_div
 
 class UMAPVisualizer:
     """Class for creating UMAP-based visualizations."""
@@ -396,8 +474,7 @@ class UMAPVisualizer:
         
         return p
     
-    def plot_uncertainty_vs_correctness(self, df: pd.DataFrame,
-                                      title: str = "UMAP: Uncertainty vs Correctness") -> figure:
+    def plot_uncertainty_vs_correctness(self, df: pd.DataFrame) -> figure:
         """Plot UMAP with uncertainty and correctness combined with TP/FP/TN/FN symbols.
         
         Works with all model types:
@@ -405,20 +482,33 @@ class UMAPVisualizer:
         - Standard models: Uses distance from decision boundary (|prob - 0.5|) as proxy
         """
         # Determine what uncertainty measure to use
+        # Priority: Use true model uncertainty if available, otherwise use probability-based proxy
         if 'prediction_uncertainty' in df.columns:
             uncertainty_col = 'prediction_uncertainty'
-            uncertainty_title = "Prediction Uncertainty"
+            uncertainty_title = "Ensemble Model Disagreement"
+            title = "UMAP: Uncertainty + Prediction Correctness"
         elif 'prediction_probability' in df.columns:
             # For standard models, use distance from decision boundary as uncertainty proxy
             df = df.copy()
             df['uncertainty_proxy'] = np.abs(df['prediction_probability'] - 0.5)
             uncertainty_col = 'uncertainty_proxy'
-            uncertainty_title = "Uncertainty Proxy (|prob - 0.5|)"
+            uncertainty_title = "Distance from Decision Boundary"
+            title = "UMAP: Confidence + Prediction Correctness "
         else:
             raise ValueError("No uncertainty data or prediction probabilities available.")
         
         p = figure(title=title, width=self.width, height=self.height,
                   tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Debug: Print uncertainty statistics for this plot too
+        print(f"\n=== Uncertainty vs Correctness Statistics ===")
+        print(f"Uncertainty type: {uncertainty_title}")
+        print(f"Column: {uncertainty_col}")
+        print(f"Min: {df[uncertainty_col].min():.4f}")
+        print(f"Max: {df[uncertainty_col].max():.4f}")
+        if uncertainty_col == 'uncertainty_proxy':
+            print(f"Probability range: {df['prediction_probability'].min():.4f} to {df['prediction_probability'].max():.4f}")
+        print("=" * 45)
         
         # Create uncertainty color mapper
         uncertainty_range = (df[uncertainty_col].min(), df[uncertainty_col].max())
@@ -475,8 +565,7 @@ class UMAPVisualizer:
         
         return p
     
-    def plot_uncertainty_coloring(self, df: pd.DataFrame, 
-                                title: str = "UMAP: Prediction Uncertainty") -> figure:
+    def plot_uncertainty_coloring(self, df: pd.DataFrame) -> figure:
         """Plot UMAP colored by prediction uncertainty with TP/FP/TN/FN symbols.
         
         Works with all model types using uncertainty proxy for standard models.
@@ -484,14 +573,15 @@ class UMAPVisualizer:
         # Determine what uncertainty measure to use
         if 'prediction_uncertainty' in df.columns:
             uncertainty_col = 'prediction_uncertainty'
-            uncertainty_title = "Prediction Uncertainty"
+            uncertainty_title = "Ensemble Model Disagreement"
+            title = "UMAP: Ensemble Model Disagreement"
         elif 'prediction_probability' in df.columns:
             # For standard models, use distance from decision boundary as uncertainty proxy
             df = df.copy()
             df['uncertainty_proxy'] = np.abs(df['prediction_probability'] - 0.5)
             uncertainty_col = 'uncertainty_proxy'
-            uncertainty_title = "Uncertainty Proxy (|prob - 0.5|)"
-            title = "UMAP: Uncertainty Proxy (Distance from Decision Boundary)"
+            uncertainty_title = "Distance from Decision Boundary"
+            title = "UMAP: Distance from Decision Boundary (|prob - 0.5|)"
         else:
             raise ValueError("No uncertainty data or prediction probabilities available.")
         
@@ -541,6 +631,76 @@ class UMAPVisualizer:
             """
         
         tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def plot_snr_coloring(self, df: pd.DataFrame, 
+                          title: str = "UMAP: Signal-to-Noise Ratio") -> figure:
+        """Plot UMAP colored by SNR values with TP/FP/TN/FN symbols."""
+        
+        # Check if SNR data is available
+        if 'snr' not in df.columns:
+            # Create a placeholder plot with message
+            p = figure(title=f"{title} (SNR data not available)", 
+                      width=self.width, height=self.height,
+                      tools=['pan', 'wheel_zoom', 'reset', 'save'])
+            p.text([self.width/2], [self.height/2], text=["SNR data not available"],
+                   text_align="center", text_baseline="middle", text_font_size="16pt")
+            return p
+        
+        # Handle missing values and log-scale SNR for better visualization
+        df_clean = df.dropna(subset=['snr'])
+        
+        # Cap the SNR values for color mapping at 15 to better distinguish low SNR values
+        df_clean['snr_capped'] = np.minimum(df_clean['snr'], 15.0)
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create color mapper for capped SNR (normal scale, not log)
+        color_mapper = LinearColorMapper(
+            palette=Viridis256,
+            low=df_clean['snr_capped'].min(),
+            high=15.0  # Cap at 15
+        )
+        
+        # Use helper method with SNR coloring (using capped values for color mapping)
+        self._add_classification_scatter(
+            p, df_clean,
+            color_field='snr_capped',
+            color_mapper=color_mapper
+        )
+        
+        # Add simple color bar with actual SNR values
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title="SNR (capped at 15)")
+        p.add_layout(color_bar, 'right')
+        
+        # Create hover tooltip with SNR information
+        tooltip_html = f"""
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>SNR:</span>
+                <span style='font-size: 14px'>@snr{{0.00}}</span><br>
+                <span style='font-size: 14px; color: #224499'>SNR (capped):</span>
+                <span style='font-size: 14px'>@snr_capped{{0.00}}</span><br>
                 <span style='font-size: 14px; color: #224499'>True label:</span>
                 <span style='font-size: 14px'>@true_label</span><br>
                 <span style='font-size: 14px; color: #224499'>Prediction:</span>
@@ -625,7 +785,8 @@ class UMAPVisualizer:
         return p
 
 def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = None,
-                              title: str = "Model Evaluation Dashboard") -> Tuple[TabPanel, str]:
+                              title: str = "Model Evaluation Dashboard", 
+                              snr_threshold: float = 5.0) -> Tuple[TabPanel, str]:
     """Create comprehensive evaluation dashboard tab with all standard metrics plots.
     
     Parameters
@@ -649,6 +810,9 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     confusion_plot = plots.plot_confusion_matrix(metrics, title="Confusion Matrix")
     metrics_div = plots.create_metrics_summary_div(metrics)
     
+    # Create SNR-based metric divs if SNR data is available
+    low_snr_div, high_snr_div = plots.create_snr_metrics_divs(metrics, snr_threshold)
+    
     # Create distribution plot
     pred_dist_plot = plots.plot_prediction_distribution(
         metrics.predictions, 
@@ -659,6 +823,7 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     
     plots_layout = [
         row(confusion_plot, metrics_div),
+        row(low_snr_div, high_snr_div),
         row(pred_dist_plot)
     ]
     
@@ -792,12 +957,20 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     except Exception as e:
         print(f"Warning: Could not create uncertainty plot: {e}")
     
-    # Uncertainty vs correctness plot (for all model types now)
+    # SNR plot (if SNR data is available)
     try:
-        uncertainty_correctness_plot = visualizer.plot_uncertainty_vs_correctness(df)
-        plots_list.append(uncertainty_correctness_plot)
+        snr_plot = visualizer.plot_snr_coloring(df)
+        plots_list.append(snr_plot)
     except Exception as e:
-        print(f"Warning: Could not create uncertainty vs correctness plot: {e}")
+        print(f"Warning: Could not create SNR plot: {e}")
+    
+    # Uncertainty vs correctness plot (for all model types now) - REMOVED as redundant
+    # This plot was showing the same information as the uncertainty plot above
+    # try:
+    #     uncertainty_correctness_plot = visualizer.plot_uncertainty_vs_correctness(df)
+    #     plots_list.append(uncertainty_correctness_plot)
+    # except Exception as e:
+    #     print(f"Warning: Could not create uncertainty vs correctness plot: {e}")
     
     # Clustering plot if available
     if 'high_dim_cluster' in df.columns:
@@ -807,10 +980,10 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         except Exception as e:
             print(f"Warning: Could not create cluster plot: {e}")
     
-    # Additional feature plots
+    # Additional feature plots (excluding SNR which has its own dedicated plot)
     if additional_features:
         for feature_name in additional_features.keys():
-            if feature_name in df.columns:
+            if feature_name in df.columns and feature_name != 'snr':  # Skip SNR - it has its own plot
                 try:
                     feature_plot = visualizer.plot_feature_coloring(
                         df, feature_name, title=f"UMAP: {feature_name}"
@@ -867,7 +1040,8 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
                             interpreter=None, data_loader=None, predictions=None, labels=None,
                             output_path: Path = None, additional_features: Dict = None, 
                             config: Dict = None, title: str = "Model Evaluation Dashboard",
-                            probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> str:
+                            probabilities: np.ndarray = None, uncertainties: np.ndarray = None,
+                            snr_threshold: float = 5.0) -> str:
     """Create combined dashboard with both evaluation metrics and interpretability in tabs.
     
     Parameters
@@ -894,6 +1068,8 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
         Pre-computed prediction probabilities (avoids recomputation)
     uncertainties : np.ndarray, optional
         Pre-computed prediction uncertainties (avoids recomputation)
+    snr_threshold : float
+        SNR threshold to separate low and high SNR samples (default: 5.0)
         
     Returns
     -------
@@ -904,7 +1080,7 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
     
     # Always create metrics tab
     print("Creating metrics dashboard tab...")
-    metrics_tab, _ = create_evaluation_dashboard(metrics, title="Model Metrics")
+    metrics_tab, _ = create_evaluation_dashboard(metrics, title="Model Metrics", snr_threshold=snr_threshold)
     tabs.append(metrics_tab)
     
     # Create interpretability tab if data is available

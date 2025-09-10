@@ -46,6 +46,8 @@ def parse_args():
                        help="Enable HDBSCAN clustering on high-dimensional features")
     parser.add_argument("--port", type=int, default=5006,
                        help="Port for Bokeh server (default: 5006)")
+    parser.add_argument("--snr-threshold", type=float, default=5.0,
+                       help="SNR threshold to separate low and high SNR samples (default: 5.0)")
     
     return parser.parse_args()
 
@@ -206,6 +208,80 @@ def aggregate_results(inference_results: dict) -> tuple:
     
     return (predictions, labels, source_ids, probabilities, uncertainties)
 
+def extract_snr_values(dataset_loader: DatasetLoader, source_ids: np.ndarray) -> np.ndarray:
+    """Extract SNR values for given source IDs.
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader instance
+    source_ids : np.ndarray
+        Array of diaSourceId values
+        
+    Returns
+    -------
+    np.ndarray
+        SNR values for each source (calculated as abs(flux) / flux_error)
+    """
+    print("Extracting SNR values for evaluation...")
+    start_time = time.time()
+    
+    # Get feature data for all source IDs
+    try:
+        # Group source IDs by visit for efficient loading
+        visit_to_source_ids = {}
+        for source_id in source_ids:
+            visit = dataset_loader.find_visit(int(source_id))
+            if visit:
+                if visit not in visit_to_source_ids:
+                    visit_to_source_ids[visit] = []
+                visit_to_source_ids[visit].append(int(source_id))
+        
+        print(f"Found {len(visit_to_source_ids)} visits for {len(source_ids)} source IDs")
+        
+        snr_values = []
+        snr_dict = {}  # To map source_id to SNR value
+        
+        # Load features by visit
+        for visit, visit_source_ids in visit_to_source_ids.items():
+            if visit in dataset_loader.features:
+                feature_loader = dataset_loader.features[visit]
+                feature_data = feature_loader.get_multiple_by_ids(visit_source_ids)
+                
+                for source_id in visit_source_ids:
+                    if source_id in feature_data:
+                        df = feature_data[source_id]
+                        # Calculate SNR from psfFlux and psfFluxErr
+                        if 'psfFlux' in df.columns and 'psfFluxErr' in df.columns:
+                            flux = df['psfFlux'].iloc[0]  # Take first measurement
+                            flux_err = df['psfFluxErr'].iloc[0]
+                            if flux_err > 0:
+                                snr = abs(flux) / flux_err
+                            else:
+                                snr = 0.0
+                        else:
+                            snr = 0.0
+                    else:
+                        snr = 0.0
+                    snr_dict[source_id] = snr
+            else:
+                # No feature data for this visit
+                for source_id in visit_source_ids:
+                    snr_dict[source_id] = 0.0
+        
+        # Create SNR array in the same order as source_ids
+        snr_values = [snr_dict.get(int(source_id), 0.0) for source_id in source_ids]
+        snr_array = np.array(snr_values)
+        
+        print(f"SNR extraction completed in {time.time() - start_time:.2f}s")
+        print(f"SNR statistics: mean={snr_array.mean():.2f}, std={snr_array.std():.2f}, min={snr_array.min():.2f}, max={snr_array.max():.2f}")
+        return snr_array
+        
+    except Exception as e:
+        print(f"Warning: Could not extract SNR values: {e}")
+        print("SNR-based metrics will not be available")
+        return None
+
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000) -> DataLoader:
     """Return DataLoader tailored for feature extraction / interpretability."""
@@ -320,10 +396,16 @@ def main():
     predictions, labels, source_ids, probabilities, uncertainties = aggregate_results(inference_results)
     print(f"Results aggregation completed in {time.time() - step_start:.2f}s")
     
-    # Create metrics evaluation with probabilities if available
+    # Extract SNR values for SNR-based metrics
+    print("Extracting SNR values...")
+    step_start = time.time()
+    snr_values = extract_snr_values(dataset_loader, source_ids)
+    print(f"SNR extraction completed in {time.time() - step_start:.2f}s")
+    
+    # Create metrics evaluation with probabilities and SNR if available
     print("Computing evaluation metrics...")
     step_start = time.time()
-    metrics = EvaluationMetrics(predictions, labels, probabilities)
+    metrics = EvaluationMetrics(predictions, labels, probabilities, snr_values)
     print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
     # Print enhanced summary
@@ -333,6 +415,36 @@ def main():
     print("="*50)
     for key, value in summary.items():
         print(f"{key}: {value:.4f}")
+    
+    # Print SNR-based summary if available
+    if snr_values is not None:
+        try:
+            snr_summary = metrics.get_snr_based_metrics(args.snr_threshold)
+            print("\n" + "="*50)
+            print("SNR-BASED PERFORMANCE BREAKDOWN")
+            print("="*50)
+            
+            low_snr = snr_summary['low_snr']
+            high_snr = snr_summary['high_snr']
+            
+            print(f"Low SNR (|SNR| < {args.snr_threshold}): {int(low_snr['n_samples'])} samples")
+            if low_snr['n_samples'] > 0:
+                print(f"  Accuracy: {low_snr['accuracy']:.4f}")
+                print(f"  Precision: {low_snr['precision']:.4f}")
+                print(f"  Recall: {low_snr['recall']:.4f}")
+                print(f"  F1-Score: {low_snr['f1_score']:.4f}")
+            
+            print(f"High SNR (|SNR| ≥ {args.snr_threshold}): {int(high_snr['n_samples'])} samples")
+            if high_snr['n_samples'] > 0:
+                print(f"  Accuracy: {high_snr['accuracy']:.4f}")
+                print(f"  Precision: {high_snr['precision']:.4f}")
+                print(f"  Recall: {high_snr['recall']:.4f}")
+                print(f"  F1-Score: {high_snr['f1_score']:.4f}")
+                
+        except Exception as e:
+            print(f"Warning: Could not compute SNR-based metrics: {e}")
+    
+    print("="*50)
     
     # Determine model name for dashboard title
     if args.weights_path:
@@ -404,9 +516,15 @@ def main():
     
     # Get additional features if specified in config
     additional_features = {}
-    if args.interpretability and 'features' in config.get('interpretability', {}):
-        # Add SNR or other features here if available
-        pass
+    if args.interpretability:
+        # Add SNR values if available
+        if snr_values is not None:
+            additional_features['snr'] = snr_values
+        
+        # Add other features if specified in config
+        if 'features' in config.get('interpretability', {}):
+            # Add additional features here if available
+            pass
     
     dashboard_path = create_combined_dashboard(
         metrics=metrics,
@@ -419,7 +537,8 @@ def main():
         config=interp_config if args.interpretability and interpreter else None,
         title=f"Model Evaluation - {model_name}",
         probabilities=probabilities,  # Pass pre-computed probabilities
-        uncertainties=uncertainties   # Pass pre-computed uncertainties
+        uncertainties=uncertainties,   # Pass pre-computed uncertainties
+        snr_threshold=args.snr_threshold  # Pass SNR threshold
     )
     print(f"Combined dashboard created in {time.time() - step_start:.2f}s")
     
