@@ -3,12 +3,12 @@ import pandas as pd
 from bokeh.plotting import figure, save, output_file
 from bokeh.models import (
     HoverTool, ColumnDataSource, ColorBar, LinearColorMapper,
-    Title, Div, CustomJS, Tabs, TabPanel
+    Title, Div, CustomJS, Tabs, TabPanel, CategoricalColorMapper
 )
 from bokeh.layouts import column, row, gridplot
 from bokeh.palettes import Spectral11, Category10, Viridis256
 from bokeh.transform import linear_cmap, factor_cmap
-from bokeh.io import curdoc
+from bokeh.io import curdoc, output_file, save
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 import colorcet as cc
@@ -46,12 +46,12 @@ class BokehEvaluationPlots:
         # Data for visualization
         data = ColumnDataSource(data=dict(
             labels=['True Positive', 'False Negative', 'False Positive', 'True Negative',
-                   'Sensitivity', 'Specificity', 'Precision', 'NPV', 'Accuracy'],
+                    'Specificity', 'Sensitivity','Precision', 'NPV', 'Accuracy'],
             counts=[stats['true_positive'], stats['false_negative'], 
                    stats['false_positive'], stats['true_negative'],
                    None, None, None, None, None],
             percentages=[tp_pct, fn_pct, fp_pct, tn_pct, 
-                        sensitivity_pct, specificity_pct, precision_pct, npv_pct, accuracy_pct],
+                        specificity_pct, sensitivity_pct, precision_pct, npv_pct, accuracy_pct],
             x=[0, 1, 0, 1, 2, 2, 0, 1, 2],
             y=[2, 2, 1, 1, 1, 2, 0, 0, 0],
             colors=['#FFC300', '#b3b6b7', '#FF5733', '#C70039', 
@@ -190,6 +190,84 @@ class BokehEvaluationPlots:
         """
         
         return Div(text=html_content, width=300, height=200)
+    
+    def create_snr_metrics_divs(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Tuple[Div, Div]:
+        """Create separate metric boxes for low and high SNR samples.
+        
+        Parameters
+        ----------
+        metrics : EvaluationMetrics
+            Evaluation metrics object with SNR values
+        snr_threshold : float
+            SNR threshold to separate low and high SNR samples
+            
+        Returns
+        -------
+        Tuple[Div, Div]
+            (low_snr_div, high_snr_div) - Bokeh Div elements
+        """
+        if metrics.snr_values is None:
+            # Return empty divs if SNR not available
+            empty_div = Div(text="<div style='padding: 10px; color: white;'>SNR data not available</div>", 
+                           width=300, height=200)
+            return empty_div, empty_div
+            
+        snr_metrics = metrics.get_snr_based_metrics(snr_threshold)
+        
+        # Low SNR metrics div
+        low_snr = snr_metrics['low_snr']
+        low_html = f"""
+        <div style="padding: 10px; background-color: #3B2F2F; border-radius: 5px; border-left: 4px solid #FF6B6B;">
+            <h3 style="color: white; margin-top: 0;">Low SNR Performance (|SNR| < {snr_threshold})</h3>
+            <table style="color: white; width: 100%;">
+                <tr><td>Samples:</td><td>{int(low_snr['n_samples'])}</td></tr>
+                <tr><td>Accuracy:</td><td>{low_snr['accuracy']:.3f}</td></tr>
+                <tr><td>Precision:</td><td>{low_snr['precision']:.3f}</td></tr>
+                <tr><td>Recall:</td><td>{low_snr['recall']:.3f}</td></tr>
+                <tr><td>F1-Score:</td><td>{low_snr['f1_score']:.3f}</td></tr>
+                <tr><td>Specificity:</td><td>{low_snr['specificity']:.3f}</td></tr>
+        """
+        
+        if 'roc_auc' in low_snr:
+            low_html += f"""
+                <tr><td>ROC AUC:</td><td>{low_snr['roc_auc']:.3f}</td></tr>
+                <tr><td>PR AUC:</td><td>{low_snr['pr_auc']:.3f}</td></tr>
+            """
+        
+        low_html += """
+            </table>
+        </div>
+        """
+        
+        # High SNR metrics div
+        high_snr = snr_metrics['high_snr']
+        high_html = f"""
+        <div style="padding: 10px; background-color: #2F3B2F; border-radius: 5px; border-left: 4px solid #4ECDC4;">
+            <h3 style="color: white; margin-top: 0;">High SNR Performance (|SNR| ≥ {snr_threshold})</h3>
+            <table style="color: white; width: 100%;">
+                <tr><td>Samples:</td><td>{int(high_snr['n_samples'])}</td></tr>
+                <tr><td>Accuracy:</td><td>{high_snr['accuracy']:.3f}</td></tr>
+                <tr><td>Precision:</td><td>{high_snr['precision']:.3f}</td></tr>
+                <tr><td>Recall:</td><td>{high_snr['recall']:.3f}</td></tr>
+                <tr><td>F1-Score:</td><td>{high_snr['f1_score']:.3f}</td></tr>
+                <tr><td>Specificity:</td><td>{high_snr['specificity']:.3f}</td></tr>
+        """
+        
+        if 'roc_auc' in high_snr:
+            high_html += f"""
+                <tr><td>ROC AUC:</td><td>{high_snr['roc_auc']:.3f}</td></tr>
+                <tr><td>PR AUC:</td><td>{high_snr['pr_auc']:.3f}</td></tr>
+            """
+        
+        high_html += """
+            </table>
+        </div>
+        """
+        
+        low_snr_div = Div(text=low_html, width=300, height=250)
+        high_snr_div = Div(text=high_html, width=300, height=250)
+        
+        return low_snr_div, high_snr_div
 
 class UMAPVisualizer:
     """Class for creating UMAP-based visualizations."""
@@ -199,81 +277,96 @@ class UMAPVisualizer:
         curdoc().theme = 'dark_minimal'
         self.width = width
         self.height = height
+        
+        # Define consistent symbols and colors for classification results
+        self.class_symbols = {
+            'True Positive': 'x',
+            'True Negative': 'circle', 
+            'False Positive': 'star',
+            'False Negative': 'square'
+        }
+        
+        self.class_colors = {
+            'True Positive': '#FFC300',    
+            'True Negative': '#C70039',  
+            'False Positive': '#FF5733',   
+            'False Negative': '#b3b6b7'   
+        }
     
-    def plot_classification_results(self, df: pd.DataFrame, 
-                              title: str = "UMAP: Classification Results") -> figure:
-        """Plot UMAP colored by classification results."""
-        # Create data sources for each class
+    def _add_classification_scatter(self, p, df, color_field=None, color_mapper=None, 
+                                   size=8, alpha=0.7, legend_field=None):
+        """Helper method to add scatter points with consistent TP/FP/TN/FN symbols."""
+        # Create data sources for each class type
         tp_data = ColumnDataSource(df[df['class_type'] == 'True Positive'])
         tn_data = ColumnDataSource(df[df['class_type'] == 'True Negative'])
         fp_data = ColumnDataSource(df[df['class_type'] == 'False Positive'])
         fn_data = ColumnDataSource(df[df['class_type'] == 'False Negative'])
         
-        p = figure(title=title, width=self.width, height=self.height,
-                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        # Add scatter points with appropriate symbols and colors
+        renderers = []
         
-        # Add points with different markers for each class using scatter()
-        p.scatter('umap_x', 'umap_y', source=tp_data, color='#FFC300', marker='x',
-                 size=8, alpha=0.7, legend_label="True Positive")
-        p.scatter('umap_x', 'umap_y', source=tn_data, color='#C70039', marker='circle',
-                 size=8, alpha=0.7, legend_label="True Negative")
-        p.scatter('umap_x', 'umap_y', source=fp_data, color='#FF5733', marker='star',
-                 size=8, alpha=0.7, legend_label="False Positive")
-        p.scatter('umap_x', 'umap_y', source=fn_data, color='#b3b6b7', marker='square',
-                 size=8, alpha=0.7, legend_label="False Negative")
-        
-        # Create hover tooltip HTML that exactly matches your working notebook format
-        tooltip_html = """
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>Predicted class:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-        """
-        
-        # Add conditional tooltips based on available columns
-        if 'diaObjectId' in df.columns:
-            tooltip_html += """
-                <span style='font-size: 14px; color: #224499'>Obj id:</span>
-                <span style='font-size: 14px'>@diaObjectId</span><br>
-            """
-        
-        if 'nDiaSources' in df.columns:
-            tooltip_html += """
-                <span style='font-size: 14px; color: #224499'>Nbr src in LC:</span>
-                <span style='font-size: 14px'>@nDiaSources</span><br>
-            """
-        
-        tooltip_html += """
-            </div>
-        </div>
-        """
-        
-        # Add hover tool with the exact HTML format from your working notebook
-        hover = HoverTool(tooltips=tooltip_html)
-        p.add_tools(hover)
-        
-        p.legend.click_policy = "hide"
-        p.legend.location = "top_right"
-        
-        return p
+        if len(tp_data.data['umap_x']) > 0:
+            if color_field and color_mapper:
+                color_spec = {'field': color_field, 'transform': color_mapper}
+            else:
+                color_spec = self.class_colors['True Positive']
+            
+            renderer = p.scatter('umap_x', 'umap_y', source=tp_data, 
+                               marker=self.class_symbols['True Positive'],
+                               color=color_spec,
+                               size=size, alpha=alpha, 
+                               legend_label=legend_field or "True Positive")
+            renderers.append(renderer)
+            
+        if len(tn_data.data['umap_x']) > 0:
+            if color_field and color_mapper:
+                color_spec = {'field': color_field, 'transform': color_mapper}
+            else:
+                color_spec = self.class_colors['True Negative']
+                
+            renderer = p.scatter('umap_x', 'umap_y', source=tn_data,
+                               marker=self.class_symbols['True Negative'], 
+                               color=color_spec,
+                               size=size, alpha=alpha,
+                               legend_label=legend_field or "True Negative")
+            renderers.append(renderer)
+            
+        if len(fp_data.data['umap_x']) > 0:
+            if color_field and color_mapper:
+                color_spec = {'field': color_field, 'transform': color_mapper}
+            else:
+                color_spec = self.class_colors['False Positive']
+                
+            renderer = p.scatter('umap_x', 'umap_y', source=fp_data,
+                               marker=self.class_symbols['False Positive'],
+                               color=color_spec, 
+                               size=size, alpha=alpha,
+                               legend_label=legend_field or "False Positive")
+            renderers.append(renderer)
+            
+        if len(fn_data.data['umap_x']) > 0:
+            if color_field and color_mapper:
+                color_spec = {'field': color_field, 'transform': color_mapper}
+            else:
+                color_spec = self.class_colors['False Negative']
+                
+            renderer = p.scatter('umap_x', 'umap_y', source=fn_data,
+                               marker=self.class_symbols['False Negative'],
+                               color=color_spec,
+                               size=size, alpha=alpha, 
+                               legend_label=legend_field or "False Negative")
+            renderers.append(renderer)
+            
+        return renderers
     
     def plot_feature_coloring(self, df: pd.DataFrame, feature_column: str,
-                        title: str = None, palette: str = "Viridis256") -> figure:
-        """Plot UMAP colored by a continuous feature."""
+                            title: str = None, palette: str = "Viridis256") -> figure:
+        """Plot UMAP colored by a continuous feature with TP/FP/TN/FN symbols."""
         if title is None:
             title = f"UMAP: {feature_column}"
         
         # Handle missing values
         df_clean = df.dropna(subset=[feature_column])
-        source = ColumnDataSource(df_clean)
         
         p = figure(title=title, width=self.width, height=self.height,
                   tools=['pan', 'wheel_zoom', 'reset', 'save'])
@@ -285,14 +378,18 @@ class UMAPVisualizer:
             high=df_clean[feature_column].max()
         )
         
-        p.scatter('umap_x', 'umap_y', source=source, size=8, alpha=0.7,
-                 color={'field': feature_column, 'transform': color_mapper})
+        # Use helper method to add scatter points with classification symbols
+        self._add_classification_scatter(
+            p, df_clean, 
+            color_field=feature_column, 
+            color_mapper=color_mapper
+        )
         
         # Add color bar
         color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0))
         p.add_layout(color_bar, 'right')
         
-        # Create hover tooltip HTML that matches your working format
+        # Create hover tooltip
         tooltip_html = f"""
         <div>
             <div>
@@ -302,6 +399,8 @@ class UMAPVisualizer:
             <div>
                 <span style='font-size: 14px; color: #224499'>{feature_column}:</span>
                 <span style='font-size: 14px'>@{feature_column}</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
                 <span style='font-size: 14px; color: #224499'>True label:</span>
                 <span style='font-size: 14px'>@true_label</span><br>
                 <span style='font-size: 14px; color: #224499'>Prediction:</span>
@@ -313,33 +412,41 @@ class UMAPVisualizer:
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
         
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
         return p
     
     def plot_clusters(self, df: pd.DataFrame, cluster_column: str = 'cluster',
-                 title: str = "UMAP: Clusters") -> figure:
-        """Plot UMAP colored by cluster labels."""
-        source = ColumnDataSource(df)
-        
+                     title: str = "UMAP: Clusters") -> figure:
+        """Plot UMAP colored by cluster labels with TP/FP/TN/FN symbols."""
         p = figure(title=title, width=self.width, height=self.height,
                   tools=['pan', 'wheel_zoom', 'reset', 'save'])
         
-        # Get unique clusters and ensure we have enough colors
+        # Get unique clusters and create color mapping
         clusters = sorted(df[cluster_column].unique())
         n_clusters = len(clusters)
         
-        # Choose appropriate palette based on number of clusters
         if n_clusters <= 10:
-            palette = Category10[max(3, n_clusters)]  # Category10 needs at least 3 colors
+            palette = Category10[max(3, n_clusters)]
         else:
-            # Use a larger palette for more clusters
             from bokeh.palettes import turbo
             palette = turbo(n_clusters)
         
-        p.scatter('umap_x', 'umap_y', source=source, size=8, alpha=0.7,
-                 color=factor_cmap(cluster_column, palette, clusters),
-                 legend_group=cluster_column)
+        # Create color mapper for clusters
+        cluster_color_mapper = CategoricalColorMapper(
+            factors=clusters,
+            palette=palette
+        )
         
-        # Create hover tooltip HTML that matches your working format
+        # Use helper method with cluster coloring
+        self._add_classification_scatter(
+            p, df,
+            color_field=cluster_column,
+            color_mapper=cluster_color_mapper
+        )
+        
+        # Create hover tooltip
         tooltip_html = f"""
         <div>
             <div>
@@ -349,6 +456,318 @@ class UMAPVisualizer:
             <div>
                 <span style='font-size: 14px; color: #224499'>Cluster:</span>
                 <span style='font-size: 14px'>@{cluster_column}</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def plot_uncertainty_vs_correctness(self, df: pd.DataFrame) -> figure:
+        """Plot UMAP with uncertainty and correctness combined with TP/FP/TN/FN symbols.
+        
+        Works with all model types:
+        - Ensemble/CoTeaching: Uses true prediction uncertainty
+        - Standard models: Uses distance from decision boundary (|prob - 0.5|) as proxy
+        """
+        # Determine what uncertainty measure to use
+        # Priority: Use true model uncertainty if available, otherwise use probability-based proxy
+        if 'prediction_uncertainty' in df.columns:
+            uncertainty_col = 'prediction_uncertainty'
+            uncertainty_title = "Ensemble Model Disagreement"
+            title = "UMAP: Uncertainty + Prediction Correctness"
+        elif 'prediction_probability' in df.columns:
+            # For standard models, use distance from decision boundary as uncertainty proxy
+            df = df.copy()
+            df['uncertainty_proxy'] = np.abs(df['prediction_probability'] - 0.5)
+            uncertainty_col = 'uncertainty_proxy'
+            uncertainty_title = "Distance from Decision Boundary"
+            title = "UMAP: Confidence + Prediction Correctness "
+        else:
+            raise ValueError("No uncertainty data or prediction probabilities available.")
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Debug: Print uncertainty statistics for this plot too
+        print(f"\n=== Uncertainty vs Correctness Statistics ===")
+        print(f"Uncertainty type: {uncertainty_title}")
+        print(f"Column: {uncertainty_col}")
+        print(f"Min: {df[uncertainty_col].min():.4f}")
+        print(f"Max: {df[uncertainty_col].max():.4f}")
+        if uncertainty_col == 'uncertainty_proxy':
+            print(f"Probability range: {df['prediction_probability'].min():.4f} to {df['prediction_probability'].max():.4f}")
+        print("=" * 45)
+        
+        # Create uncertainty color mapper
+        uncertainty_range = (df[uncertainty_col].min(), df[uncertainty_col].max())
+        color_mapper = LinearColorMapper(
+            palette=Viridis256,
+            low=uncertainty_range[0],
+            high=uncertainty_range[1]
+        )
+        
+        # Use helper method with uncertainty coloring
+        self._add_classification_scatter(
+            p, df,
+            color_field=uncertainty_col,
+            color_mapper=color_mapper
+        )
+        
+        # Add color bar for uncertainty
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title=uncertainty_title)
+        p.add_layout(color_bar, 'right')
+        
+        # Combined hover tooltip
+        tooltip_html = f"""
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>Correct:</span>
+                <span style='font-size: 14px'>@correct</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+                <span style='font-size: 14px; color: #224499'>{uncertainty_title}:</span>
+                <span style='font-size: 14px'>@{uncertainty_col}{{0.000}}</span><br>
+        """
+        
+        if 'prediction_probability' in df.columns:
+            tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>Probability:</span>
+                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
+            """
+        
+        tooltip_html += """
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def plot_uncertainty_coloring(self, df: pd.DataFrame) -> figure:
+        """Plot UMAP colored by prediction uncertainty with TP/FP/TN/FN symbols.
+        
+        Works with all model types using uncertainty proxy for standard models.
+        """
+        # Determine what uncertainty measure to use
+        if 'prediction_uncertainty' in df.columns:
+            uncertainty_col = 'prediction_uncertainty'
+            uncertainty_title = "Ensemble Model Disagreement"
+            title = "UMAP: Ensemble Model Disagreement"
+        elif 'prediction_probability' in df.columns:
+            # For standard models, use distance from decision boundary as uncertainty proxy
+            df = df.copy()
+            df['uncertainty_proxy'] = np.abs(df['prediction_probability'] - 0.5)
+            uncertainty_col = 'uncertainty_proxy'
+            uncertainty_title = "Distance from Decision Boundary"
+            title = "UMAP: Distance from Decision Boundary (|prob - 0.5|)"
+        else:
+            raise ValueError("No uncertainty data or prediction probabilities available.")
+        
+        # Handle missing values
+        df_clean = df.dropna(subset=[uncertainty_col])
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create color mapper for uncertainty
+        color_mapper = LinearColorMapper(
+            palette=Viridis256,
+            low=df_clean[uncertainty_col].min(),
+            high=df_clean[uncertainty_col].max()
+        )
+        
+        # Use helper method with uncertainty coloring
+        self._add_classification_scatter(
+            p, df_clean,
+            color_field=uncertainty_col,
+            color_mapper=color_mapper
+        )
+        
+        # Add color bar
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title=uncertainty_title)
+        p.add_layout(color_bar, 'right')
+        
+        # Create hover tooltip
+        tooltip_html = f"""
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>{uncertainty_title}:</span>
+                <span style='font-size: 14px'>@{uncertainty_col}{{0.000}}</span><br>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+        """
+        
+        if 'prediction_probability' in df.columns:
+            tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>Probability:</span>
+                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
+            """
+        
+        tooltip_html += """
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def plot_snr_coloring(self, df: pd.DataFrame, 
+                          title: str = "UMAP: Signal-to-Noise Ratio") -> figure:
+        """Plot UMAP colored by SNR values with TP/FP/TN/FN symbols."""
+        
+        # Check if SNR data is available
+        if 'snr' not in df.columns:
+            # Create a placeholder plot with message
+            p = figure(title=f"{title} (SNR data not available)", 
+                      width=self.width, height=self.height,
+                      tools=['pan', 'wheel_zoom', 'reset', 'save'])
+            p.text([self.width/2], [self.height/2], text=["SNR data not available"],
+                   text_align="center", text_baseline="middle", text_font_size="16pt")
+            return p
+        
+        # Handle missing values and log-scale SNR for better visualization
+        df_clean = df.dropna(subset=['snr'])
+        
+        # Cap the SNR values for color mapping at 15 to better distinguish low SNR values
+        df_clean['snr_capped'] = np.minimum(df_clean['snr'], 15.0)
+        
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create color mapper for capped SNR (normal scale, not log)
+        color_mapper = LinearColorMapper(
+            palette=Viridis256,
+            low=df_clean['snr_capped'].min(),
+            high=15.0  # Cap at 15
+        )
+        
+        # Use helper method with SNR coloring (using capped values for color mapping)
+        self._add_classification_scatter(
+            p, df_clean,
+            color_field='snr_capped',
+            color_mapper=color_mapper
+        )
+        
+        # Add simple color bar with actual SNR values
+        color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0),
+                           title="SNR (capped at 15)")
+        p.add_layout(color_bar, 'right')
+        
+        # Create hover tooltip with SNR information
+        tooltip_html = f"""
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>SNR:</span>
+                <span style='font-size: 14px'>@snr{{0.00}}</span><br>
+                <span style='font-size: 14px; color: #224499'>SNR (capped):</span>
+                <span style='font-size: 14px'>@snr_capped{{0.00}}</span><br>
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+            </div>
+        </div>
+        """
+        
+        hover = HoverTool(tooltips=tooltip_html)
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
+    
+    def plot_classification_results(self, df: pd.DataFrame, 
+                                   title: str = "UMAP: Classification Results") -> figure:
+        """Plot UMAP with fixed classification colors and symbols for TP/FP/TN/FN."""
+        p = figure(title=title, width=self.width, height=self.height,
+                  tools=['pan', 'wheel_zoom', 'reset', 'save'])
+        
+        # Create data sources for each class type
+        tp_data = ColumnDataSource(df[df['class_type'] == 'True Positive'])
+        tn_data = ColumnDataSource(df[df['class_type'] == 'True Negative'])
+        fp_data = ColumnDataSource(df[df['class_type'] == 'False Positive'])
+        fn_data = ColumnDataSource(df[df['class_type'] == 'False Negative'])
+        
+        # Add scatter points with fixed colors and symbols
+        if len(tp_data.data['umap_x']) > 0:
+            p.scatter('umap_x', 'umap_y', source=tp_data, 
+                     marker=self.class_symbols['True Positive'],
+                     color=self.class_colors['True Positive'],
+                     size=8, alpha=0.7, 
+                     legend_label="True Positive")
+            
+        if len(tn_data.data['umap_x']) > 0:
+            p.scatter('umap_x', 'umap_y', source=tn_data,
+                     marker=self.class_symbols['True Negative'], 
+                     color=self.class_colors['True Negative'],
+                     size=8, alpha=0.7,
+                     legend_label="True Negative")
+            
+        if len(fp_data.data['umap_x']) > 0:
+            p.scatter('umap_x', 'umap_y', source=fp_data,
+                     marker=self.class_symbols['False Positive'],
+                     color=self.class_colors['False Positive'], 
+                     size=8, alpha=0.7,
+                     legend_label="False Positive")
+            
+        if len(fn_data.data['umap_x']) > 0:
+            p.scatter('umap_x', 'umap_y', source=fn_data,
+                     marker=self.class_symbols['False Negative'],
+                     color=self.class_colors['False Negative'],
+                     size=8, alpha=0.7, 
+                     legend_label="False Negative")
+        
+        # Create hover tooltip
+        tooltip_html = """
+        <div>
+            <div>
+                <img 
+                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
+                    ></img>
+            <div>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
                 <span style='font-size: 14px; color: #224499'>True label:</span>
                 <span style='font-size: 14px'>@true_label</span><br>
                 <span style='font-size: 14px; color: #224499'>Prediction:</span>
@@ -365,187 +784,321 @@ class UMAPVisualizer:
         
         return p
 
-# Dashboard creation functions
-def create_evaluation_dashboard(metrics: EvaluationMetrics,
-                              output_path: Optional[Path] = None,
-                              title: str = "Model Evaluation Dashboard") -> Tabs:
-    """Assemble interactive evaluation dashboard.
-
+def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = None,
+                              title: str = "Model Evaluation Dashboard", 
+                              snr_threshold: float = 5.0) -> Tuple[TabPanel, str]:
+    """Create comprehensive evaluation dashboard tab with all standard metrics plots.
+    
     Parameters
     ----------
     metrics : EvaluationMetrics
-        Metrics object (with or without probability scores).
+        Evaluation metrics object containing predictions, labels, and optionally probabilities
     output_path : Path, optional
-        If provided, writes HTML file.
+        Path to save the HTML dashboard file (only used when called standalone)
     title : str
-        Dashboard title.
-
+        Title for the dashboard
+        
     Returns
     -------
-    Tabs
-        Bokeh Tabs object.
+    tuple
+        (TabPanel for use in combined dashboard, layout for standalone use)
     """
-    plotter = BokehEvaluationPlots()
+    # Initialize plotting class
+    plots = BokehEvaluationPlots()
     
-    # Tab 1: Overview with confusion matrix and summary
-    confusion_plot = plotter.plot_confusion_matrix(metrics)
-    summary_div = plotter.create_metrics_summary_div(metrics)
+    # Create individual plots
+    confusion_plot = plots.plot_confusion_matrix(metrics, title="Confusion Matrix")
+    metrics_div = plots.create_metrics_summary_div(metrics)
     
+    # Create SNR-based metric divs if SNR data is available
+    low_snr_div, high_snr_div = plots.create_snr_metrics_divs(metrics, snr_threshold)
+    
+    # Create distribution plot
+    pred_dist_plot = plots.plot_prediction_distribution(
+        metrics.predictions, 
+        metrics.labels, 
+        metrics.probabilities,
+        title="Prediction Distribution"
+    )
+    
+    plots_layout = [
+        row(confusion_plot, metrics_div),
+        row(low_snr_div, high_snr_div),
+        row(pred_dist_plot)
+    ]
+    
+    # Add ROC and PR curves if probabilities are available
     if metrics.probabilities is not None:
-        dist_plot = plotter.plot_prediction_distribution(
-            metrics.predictions, metrics.labels, metrics.probabilities
-        )
-        overview_layout = column(
-            row(confusion_plot, summary_div),
-            dist_plot
-        )
-    else:
-        overview_layout = row(confusion_plot, summary_div)
+        try:
+            roc_plot = plots.plot_roc_curve(metrics, title="ROC Curve")
+            pr_plot = plots.plot_precision_recall_curve(metrics, title="Precision-Recall Curve")
+            plots_layout.append(row(roc_plot, pr_plot))
+        except Exception as e:
+            print(f"Warning: Could not create ROC/PR curves: {e}")
     
-    overview_tab = TabPanel(child=overview_layout, title="Overview")
+    # Create final layout
+    dashboard_layout = column(*plots_layout)
     
-    tabs = [overview_tab]
+    # Create tab panel for combined dashboard
+    tab_panel = TabPanel(child=dashboard_layout, title="Model Metrics")
     
-    # Tab 2: ROC and PR curves (if probabilities available)
-    if metrics.probabilities is not None:
-        roc_plot = plotter.plot_roc_curve(metrics)
-        pr_plot = plotter.plot_precision_recall_curve(metrics)
-        curves_layout = row(roc_plot, pr_plot)
-        curves_tab = TabPanel(child=curves_layout, title="ROC & PR Curves")
-        tabs.append(curves_tab)
-    
-    dashboard = Tabs(tabs=tabs)
-    
+    # Save to file if output path provided (standalone mode)
     if output_path:
-        output_file(str(output_path))
-        save(dashboard)
-        print(f"Dashboard saved to {output_path}")
-    
-    return dashboard
-
-def create_interpretability_dashboard(interpreter,
-                                    data_loader,
-                                    predictions: np.ndarray,
-                                    labels: np.ndarray,
-                                    output_path: Optional[Path] = None,
-                                    additional_features: Optional[Dict[str, np.ndarray]] = None,
-                                    config: Optional[Dict] = None) -> Tabs:
-    """Create UMAP-based interpretability dashboard.
-
-    Notes
-    -----
-    Separates sample count for:
-      - UMAP computation (max_samples)
-      - Visualization (max_visualization_samples)
-    """
-    # Get configuration parameters
-    if config and 'interpretability' in config:
-        interp_config = config['interpretability']
-        feature_config = interp_config.get('feature_extraction', {})
-        layer_name = feature_config.get('layer_name', 'fc1')
-        max_umap_samples = interp_config.get('max_samples', 30000)  # Main parameter for UMAP computation
-        max_viz_samples = feature_config.get('max_visualization_samples', 100)  # For final visualization
-        umap_config = interp_config.get('umap', {})
-        clustering_config = interp_config.get('clustering', {})
+        output_path = Path(output_path)
+        output_file(str(output_path), title=title)
+        save(dashboard_layout)
+        print(f"Evaluation dashboard saved to: {output_path}")
+        return tab_panel, str(output_path)
     else:
-        layer_name = 'fc1'
-        max_umap_samples = 30000
-        max_viz_samples = 100
-        umap_config = {}
-        clustering_config = {}
+        return tab_panel, dashboard_layout
+
+def create_interpretability_dashboard(interpreter, data_loader, predictions: np.ndarray, 
+                                    labels: np.ndarray, output_path: Path = None,
+                                    additional_features: Dict = None, config: Dict = None,
+                                    probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> Tuple[TabPanel, str]:
+    """Create UMAP-based interpretability dashboard tab.
     
+    Parameters
+    ----------
+    interpreter : UMAPInterpreter
+        Initialized UMAP interpreter
+    data_loader : DataLoader
+        Data loader for feature extraction and image embedding
+    predictions : np.ndarray
+        Model predictions
+    labels : np.ndarray
+        True labels
+    output_path : Path, optional
+        Path to save the HTML dashboard file (only used when called standalone)
+    additional_features : Dict, optional
+        Additional features to include in the analysis
+    config : Dict, optional
+        Configuration dictionary with interpretability settings
+    probabilities : np.ndarray, optional
+        Pre-computed prediction probabilities (avoids recomputation)
+    uncertainties : np.ndarray, optional
+        Pre-computed prediction uncertainties (avoids recomputation)
+        
+    Returns
+    -------
+    tuple
+        (TabPanel for use in combined dashboard, layout for standalone use)
+    """
+    import time
+    
+    # Use default config if none provided
+    if config is None:
+        config = {}
+    
+    interp_config = config.get('interpretability', {})
+    umap_config = interp_config.get('umap', {})
+    clustering_config = interp_config.get('clustering', {})
+    
+    # Extract features
+    print("Step 1: Extracting features...")
+    start_time = time.time()
+    features = interpreter.extract_features(
+        data_loader,
+        layer_name=interp_config.get('layer_name', 'fc1'),
+        max_samples=interp_config.get('max_samples', 3000)
+    )
+    print(f"Feature extraction completed in {time.time() - start_time:.2f}s")
+    
+    # Fit UMAP
+    print("Step 2: Fitting UMAP embedding...")
+    start_time = time.time()
+    embedding = interpreter.fit_umap(
+        n_neighbors=umap_config.get('n_neighbors', 15),
+        min_dist=umap_config.get('min_dist', 0.1),
+        optimize_params=umap_config.get('optimize_params', False)
+    )
+    print(f"UMAP fitting completed in {time.time() - start_time:.2f}s")
+    
+    # Optional clustering
+    if clustering_config.get('enabled', False):
+        print("Step 3: Performing high-dimensional clustering...")
+        start_time = time.time()
+        clusters = interpreter.cluster_high_dimensional_features(
+            min_cluster_size=clustering_config.get('min_cluster_size', 10),
+            min_samples=clustering_config.get('min_samples', 5)
+        )
+        print(f"Clustering completed in {time.time() - start_time:.2f}s")
+    
+    # Create interpretability dataframe
+    print("Step 4: Creating interpretability dataframe...")
+    start_time = time.time()
+    df = interpreter.create_interpretability_dataframe(
+        predictions, labels, data_loader, 
+        additional_features=additional_features,
+        probabilities=probabilities,  # Pass pre-computed values
+        uncertainties=uncertainties   # Pass pre-computed values
+    )
+    print(f"Dataframe creation completed in {time.time() - start_time:.2f}s")
+    
+    # Initialize visualizer
+    visualizer = UMAPVisualizer()
+    
+    # Create plots
+    print("Step 5: Creating UMAP visualizations...")
+    start_time = time.time()
+    
+    plots_list = []
+    
+    basic_plot = visualizer.plot_classification_results(
+        df, 
+        title="UMAP: Classification Results"
+    )
+    plots_list.append(basic_plot)
+    
+    # Uncertainty plot (for all model types now)
     try:
-        # Extract features using max_umap_samples for UMAP computation
-        print("Extracting features...")
-        interpreter.extract_features(data_loader, layer_name=layer_name, 
-                                   max_samples=max_umap_samples)
-        
-        # Fit UMAP with optional parameter optimization
-        print("Fitting UMAP...")
-        optimize_umap = umap_config.get('optimize_params', False)
-        umap_embedding = interpreter.fit_umap(
-            n_neighbors=umap_config.get('n_neighbors', 15),
-            min_dist=umap_config.get('min_dist', 0.1),
-            n_components=umap_config.get('n_components', 2),
-            random_state=umap_config.get('random_state', 42),
-            optimize_params=optimize_umap
-        )
-        
-        # Perform high-dimensional clustering (optional)
-        clustering_enabled = clustering_config.get('enabled', False)
-        if clustering_enabled:
-            print("Performing high-dimensional clustering...")
-            min_cluster_size = clustering_config.get('min_cluster_size', 10)
-            min_samples = clustering_config.get('min_samples', 5)
-            interpreter.cluster_high_dimensional_features(
-                min_cluster_size=min_cluster_size,
-                min_samples=min_samples
-            )
-        else:
-            print("High-dimensional clustering disabled - skipping clustering step")
-        
-        # Create visualization dataframe - potentially subsample further for visualization
-        print(f"Creating visualization dataframe...")
-        df = interpreter.create_interpretability_dataframe(
-            predictions, labels, data_loader, 
-            additional_features=additional_features
-        )
-        
-        # Subsample for visualization if needed (separate from UMAP computation)
-        if len(df) > max_viz_samples:
-            print(f"Subsampling {max_viz_samples} from {len(df)} samples for visualization performance")
-            df = df.sample(n=max_viz_samples, random_state=42).copy()
-        
-        print(f"Created visualization dataframe with {len(df)} samples using {layer_name} features")
-        print(f"UMAP was computed on up to {max_umap_samples} samples")
-        
-        # Create visualizer and plots
-        visualizer = UMAPVisualizer()
-        tabs = []
-        
-        # Tab 1: Classification results
-        title_suffix = f" (Layer: {layer_name})"
-        class_plot = visualizer.plot_classification_results(
-            df, title=f"UMAP: Classification Results{title_suffix}"
-        )
-        tabs.append(TabPanel(child=class_plot, title="Classification Results"))
-        
-        # Tab 2: Feature-based coloring (if additional features provided)
-        if additional_features:
-            feature_plots = []
-            for feature_name in additional_features.keys():
-                if feature_name in df.columns:
-                    plot = visualizer.plot_feature_coloring(
-                        df, feature_name, title=f"UMAP: {feature_name}{title_suffix}"
-                    )
-                    feature_plots.append(plot)
-            
-            if feature_plots:
-                if len(feature_plots) == 1:
-                    feature_layout = feature_plots[0]
-                else:
-                    feature_layout = gridplot([feature_plots[i:i+2] for i in range(0, len(feature_plots), 2)])
-                tabs.append(TabPanel(child=feature_layout, title="Feature Analysis"))
-        
-        # Tab 3: High-dimensional clusters (if available and enabled)
-        if clustering_enabled and 'high_dim_cluster' in df.columns:
-            cluster_plot = visualizer.plot_clusters(
-                df, cluster_column='high_dim_cluster',
-                title=f"UMAP: High-Dimensional Clusters{title_suffix}"
-            )
-            tabs.append(TabPanel(child=cluster_plot, title="High-Dim Clusters"))
-        
-        dashboard = Tabs(tabs=tabs)
-        
-        if output_path:
-            output_file(str(output_path))
-            save(dashboard)
-            print(f"Interpretability dashboard saved to {output_path}")
-        
-        return dashboard
-        
+        uncertainty_plot = visualizer.plot_uncertainty_coloring(df)
+        plots_list.append(uncertainty_plot)
     except Exception as e:
-        print(f"Error creating interpretability dashboard: {e}")
-        import traceback
-        traceback.print_exc()
-        raise
+        print(f"Warning: Could not create uncertainty plot: {e}")
+    
+    # SNR plot (if SNR data is available)
+    try:
+        snr_plot = visualizer.plot_snr_coloring(df)
+        plots_list.append(snr_plot)
+    except Exception as e:
+        print(f"Warning: Could not create SNR plot: {e}")
+    
+    # Clustering plot if available
+    if 'high_dim_cluster' in df.columns:
+        try:
+            cluster_plot = visualizer.plot_clusters(df, 'high_dim_cluster', title="UMAP: High-Dim Clusters")
+            plots_list.append(cluster_plot)
+        except Exception as e:
+            print(f"Warning: Could not create cluster plot: {e}")
+    
+    # Additional feature plots (excluding SNR which has its own dedicated plot)
+    if additional_features:
+        for feature_name in additional_features.keys():
+            if feature_name in df.columns and feature_name != 'snr':  # Skip SNR - it has its own plot
+                try:
+                    feature_plot = visualizer.plot_feature_coloring(
+                        df, feature_name, title=f"UMAP: {feature_name}"
+                    )
+                    plots_list.append(feature_plot)
+                except Exception as e:
+                    print(f"Warning: Could not create plot for {feature_name}: {e}")
+    
+    print(f"Created {len(plots_list)} UMAP visualizations in {time.time() - start_time:.2f}s")
+    
+    # Create dashboard layout
+    if len(plots_list) <= 2:
+        dashboard_layout = column(*plots_list)
+    elif len(plots_list) <= 4:
+        # Arrange in 2x2 grid, but only include existing plots
+        first_row = [plots_list[0]]
+        if len(plots_list) > 1:
+            first_row.append(plots_list[1])
+        
+        second_row = []
+        if len(plots_list) > 2:
+            second_row.append(plots_list[2])
+        if len(plots_list) > 3:
+            second_row.append(plots_list[3])
+        
+        rows = [row(*first_row)]
+        if second_row:
+            rows.append(row(*second_row))
+        dashboard_layout = column(*rows)
+    else:
+        # Arrange in rows of 2
+        rows = []
+        for i in range(0, len(plots_list), 2):
+            row_plots = [plots_list[i]]
+            if i + 1 < len(plots_list):
+                row_plots.append(plots_list[i + 1])
+            rows.append(row(*row_plots))
+        dashboard_layout = column(*rows)
+    
+    # Create tab panel for combined dashboard
+    tab_panel = TabPanel(child=dashboard_layout, title="Model Interpretability")
+    
+    # Save to file if output path provided (standalone mode)
+    if output_path:
+        output_path = Path(output_path)
+        output_file(str(output_path), title="Model Interpretability Dashboard")
+        save(dashboard_layout)
+        print(f"Interpretability dashboard saved to: {output_path}")
+        return tab_panel, str(output_path)
+    else:
+        return tab_panel, dashboard_layout
+
+def create_combined_dashboard(metrics: EvaluationMetrics, 
+                            interpreter=None, data_loader=None, predictions=None, labels=None,
+                            output_path: Path = None, additional_features: Dict = None, 
+                            config: Dict = None, title: str = "Model Evaluation Dashboard",
+                            probabilities: np.ndarray = None, uncertainties: np.ndarray = None,
+                            snr_threshold: float = 5.0) -> str:
+    """Create combined dashboard with both evaluation metrics and interpretability in tabs.
+    
+    Parameters
+    ----------
+    metrics : EvaluationMetrics
+        Evaluation metrics object
+    interpreter : UMAPInterpreter, optional
+        UMAP interpreter for interpretability analysis
+    data_loader : DataLoader, optional
+        Data loader for interpretability analysis
+    predictions : np.ndarray, optional
+        Model predictions for interpretability
+    labels : np.ndarray, optional  
+        True labels for interpretability
+    output_path : Path
+        Path to save the combined HTML dashboard
+    additional_features : Dict, optional
+        Additional features for interpretability
+    config : Dict, optional
+        Configuration for interpretability
+    title : str
+        Title for the dashboard
+    probabilities : np.ndarray, optional
+        Pre-computed prediction probabilities (avoids recomputation)
+    uncertainties : np.ndarray, optional
+        Pre-computed prediction uncertainties (avoids recomputation)
+    snr_threshold : float
+        SNR threshold to separate low and high SNR samples (default: 5.0)
+        
+    Returns
+    -------
+    str
+        Path to the saved HTML file
+    """
+    tabs = []
+    
+    # Always create metrics tab
+    print("Creating metrics dashboard tab...")
+    metrics_tab, _ = create_evaluation_dashboard(metrics, title="Model Metrics", snr_threshold=snr_threshold)
+    tabs.append(metrics_tab)
+    
+    # Create interpretability tab if data is available
+    if interpreter is not None and data_loader is not None and predictions is not None and labels is not None:
+        print("Creating interpretability dashboard tab...")
+        try:
+            interp_tab, _ = create_interpretability_dashboard(
+                interpreter, data_loader, predictions, labels,
+                additional_features=additional_features, config=config,
+                probabilities=probabilities,  # Pass pre-computed values
+                uncertainties=uncertainties   # Pass pre-computed values
+            )
+            tabs.append(interp_tab)
+        except Exception as e:
+            print(f"Warning: Could not create interpretability tab: {e}")
+            print("Proceeding with metrics tab only...")
+    
+    # Create tabbed layout
+    tabbed_layout = Tabs(tabs=tabs)
+    
+    # Save to file
+    if output_path:
+        output_path = Path(output_path)
+        output_file(str(output_path), title=title)
+        save(tabbed_layout)
+        print(f"Combined dashboard saved to: {output_path}")
+        return str(output_path)
+    else:
+        return tabbed_layout

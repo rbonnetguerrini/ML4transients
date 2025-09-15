@@ -1,0 +1,86 @@
+# Evaluation configuration
+
+# Basic evaluation settings
+evaluation:
+  # Metrics to compute
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - specificity
+    - roc_auc
+    - pr_auc
+  
+  # Visualization settings
+  visualization:
+    width: 800
+    height: 550
+    theme: "dark_minimal"
+    
+  # Export settings
+  export:
+    save_plots: true
+    formats: ["html"]
+    
+# Interpretability analysis settings
+interpretability:
+  enabled: true
+  max_samples: 100000  # Maximum samples for UMAP analysis
+  max_visualization_samples: 3000  # Max samples to show in plots (for performance)
+  
+  # Feature extraction settings
+  feature_extraction:
+    layer_name: "fc1"  # Layer to extract features from: "fc1", "conv2", "flatten", "output"
+    # Available layers for CustomCNN:
+    # - "conv1": After first convolution + ReLU + pooling + dropout
+    # - "conv2": After second convolution + ReLU + pooling + dropout  
+    # - "flatten": After flattening convolution features
+    # - "fc1": After first fully connected layer + ReLU + dropout (recommended)
+    random_state: 42  # Add this for reproducible sampling
+  
+  # UMAP parameters
+  umap:
+    n_neighbors: 15
+    min_dist: 0.1
+    n_components: 2
+    random_state: 42
+    optimize_params: false  # Set to true to optimize UMAP parameters
+    
+  # High-dimensional clustering parameters performed before UMAP -- WARNING very long
+  clustering:
+    enabled: false  # Set to true to enable HDBSCAN clustering on high-dimensional features
+    # HDBSCAN parameters for high-dimensional feature clustering
+    min_cluster_size: 10
+    min_samples: 5
+    
+  # UMAP clustering parameters (performed after UMAP embedding)
+  umap_clustering:
+    use_hdbscan: false  # Set to true to use HDBSCAN instead of GMM
+    
+    # HDBSCAN parameters (used if use_hdbscan: true)
+    hdbscan:
+      min_cluster_size: 50
+      min_samples: null  # If null, defaults to min_cluster_size
+      cluster_selection_epsilon: 0.0
+    
+    # GMM parameters (used if use_hdbscan: false)
+    gmm:
+      n_components_range: [5, 15]  # Range for grid search
+      
+  # Features to analyze
+  features:
+    - snr  # If available in your dataset
+    # Add other features as needed
+    
+# Performance settings
+performance:
+  batch_size: 32
+  num_workers: 0
+  pin_memory: false
+  
+# Output settings
+output:
+  save_detailed_results: true
+  save_predictions: true
+  save_embeddings: true

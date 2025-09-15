@@ -10,6 +10,9 @@ import base64
 import io
 from PIL import Image
 import hdbscan
+import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import joblib
 
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
@@ -17,16 +20,20 @@ from ML4transients.utils import load_config
 import warnings
 warnings.filterwarnings("ignore", message="out of range integer may result in loss of precision", category=UserWarning)
 
-def embeddable_image(image_array: np.ndarray) -> str:
-    """Convert numpy array to embeddable base64 image string.
+def embeddable_image(image_array: np.ndarray, cmap: str = 'RdYlGn') -> str:
+    """Convert numpy array to embeddable base64 image string with colormap.
     
     Simple approach for grayscale astronomical images that creates
     base64-encoded PNG images suitable for embedding in HTML.
+    Preserves negative values when using diverging colormaps.
     
     Parameters
     ----------
     image_array : np.ndarray
         Input image array (2D or 3D)
+    cmap : str
+        Matplotlib colormap name (default: 'RdYlGn')
+        For diverging colormaps, negative values are preserved
         
     Returns
     -------
@@ -49,22 +56,34 @@ def embeddable_image(image_array: np.ndarray) -> str:
     if len(img_data.shape) > 2:
         img_data = img_data.squeeze()
     
-    # Simple normalization approach - just like what probably works in your utils
-    # Assume the data is already preprocessed and just needs basic scaling
+    # Get colormap
+    colormap = cm.get_cmap(cmap)
     
-    # Convert to 0-255 range for PIL
     img_min = img_data.min()
     img_max = img_data.max()
     
     if img_max > img_min:
-        # Scale to 0-255
-        img_normalized = ((img_data - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+        if img_min < 0 and img_max > 0:
+            # For data with negative values, center around zero
+            abs_max = max(abs(img_min), abs(img_max))
+            # Normalize to [-1, 1] range, then shift to [0, 1] for colormap
+            img_normalized = img_data / abs_max  # Now in [-1, 1]
+            img_normalized = (img_normalized + 1) / 2  # Now in [0, 1] with 0.5 = zero
+        else:
+            # Standard normalization for all-positive or all-negative data
+            img_normalized = (img_data - img_min) / (img_max - img_min)
     else:
-        # If all values are the same, create a mid-gray image
-        img_normalized = np.full_like(img_data, 128, dtype=np.uint8)
+        # If all values are the same, create a mid-range image
+        img_normalized = np.full_like(img_data, 0.5, dtype=np.float32)
     
-    # Convert to PIL Image - explicitly grayscale mode
-    img = Image.fromarray(img_normalized, mode='L')
+    # Apply colormap to convert to RGB
+    img_rgb = colormap(img_normalized)  # Returns RGBA values in 0-1 range
+    
+    # Convert to 0-255 range and remove alpha channel
+    img_rgb_255 = (img_rgb[:, :, :3] * 255).astype(np.uint8)
+    
+    # Convert to PIL Image - RGB mode
+    img = Image.fromarray(img_rgb_255, mode='RGB')
     
     # Convert to base64
     buffer = io.BytesIO()
@@ -97,22 +116,56 @@ class UMAPInterpreter:
         
         # Load model
         config = load_config(self.model_path / "config.yaml")
-        self.trainer = get_trainer(config["training"]["trainer_type"], config["training"])
-        state_dict = torch.load(self.model_path / "model_best.pth", map_location=self.device)
-        self.trainer.model.load_state_dict(state_dict)
-        self.trainer.model.to(self.device)
-        self.trainer.model.eval()
+        trainer_type = config["training"]["trainer_type"]
+        self.trainer = get_trainer(trainer_type, config["training"])
         
+        # Load models based on trainer type
+        if trainer_type == "ensemble":
+            num_models = config["training"]["num_models"]
+            print(f"Loading ensemble model with {num_models} models...")
+            for i in range(num_models):
+                model_path = self.model_path / f"ensemble_model_{i}_best.pth"
+                state_dict = torch.load(model_path, map_location=self.device)
+                self.trainer.models[i].load_state_dict(state_dict)
+                self.trainer.models[i].to(self.device)
+                self.trainer.models[i].eval()
+        elif trainer_type == "coteaching":
+            print("Loading co-teaching model...")
+            state_dict1 = torch.load(self.model_path / "model1_best.pth", map_location=self.device)
+            state_dict2 = torch.load(self.model_path / "model2_best.pth", map_location=self.device)
+            self.trainer.model1.load_state_dict(state_dict1)
+            self.trainer.model2.load_state_dict(state_dict2)
+            self.trainer.model1.to(self.device)
+            self.trainer.model2.to(self.device)
+            self.trainer.model1.eval()
+            self.trainer.model2.eval()
+        else:
+            print("Loading standard model...")
+            state_dict = torch.load(self.model_path / "model_best.pth", map_location=self.device)
+            self.trainer.model.load_state_dict(state_dict)
+            self.trainer.model.to(self.device)
+            self.trainer.model.eval()
+        
+        self.trainer_type = trainer_type
         self.umap_reducer = None
         self.features = None
         self.umap_embedding = None
         self.high_dim_clusters = None
-        self.sample_indices = None  # Add this line
+        self.sample_indices = None
     
         # For hook-based feature extraction
         self.hook_features = None
         self.hook_handle = None
-    
+
+    def _get_model_for_layer_extraction(self, layer_name: str):
+        """Get the appropriate model for layer extraction based on trainer type."""
+        if hasattr(self.trainer, 'models'):  # Ensemble
+            return self.trainer.models[0]  # Use first model for feature extraction
+        elif hasattr(self.trainer, 'model1'):  # CoTeaching
+            return self.trainer.model1  # Use first model for feature extraction
+        else:  # Standard
+            return self.trainer.model
+
     def _get_layer_by_name(self, layer_name: str):
         """Get a layer by name from the model.
         
@@ -131,28 +184,30 @@ class UMAPInterpreter:
         ValueError
             If layer name is not recognized
         """
+        model = self._get_model_for_layer_extraction(layer_name)
+        
         # Handle CustomCNN's dynamic conv_blocks structure
-        if hasattr(self.trainer.model, 'conv_blocks'):
+        if hasattr(model, 'conv_blocks'):
             # CustomCNN uses ModuleList for conv blocks
             if layer_name == 'conv1':
-                if len(self.trainer.model.conv_blocks) >= 1:
-                    return self.trainer.model.conv_blocks[0]
+                if len(model.conv_blocks) >= 1:
+                    return model.conv_blocks[0]
                 else:
                     raise ValueError("Model doesn't have conv1 layer")
             elif layer_name == 'conv2':
-                if len(self.trainer.model.conv_blocks) >= 2:
-                    return self.trainer.model.conv_blocks[1]
+                if len(model.conv_blocks) >= 2:
+                    return model.conv_blocks[1]
                 else:
                     raise ValueError("Model doesn't have conv2 layer")
             elif layer_name == 'flatten':
                 # For flatten, use the last conv block
-                if len(self.trainer.model.conv_blocks) >= 1:
-                    return self.trainer.model.conv_blocks[-1]
+                if len(model.conv_blocks) >= 1:
+                    return model.conv_blocks[-1]
                 else:
                     raise ValueError("Model doesn't have any conv blocks")
             elif layer_name == 'fc1':
-                if hasattr(self.trainer.model, 'fc1'):
-                    return self.trainer.model.fc1
+                if hasattr(model, 'fc1'):
+                    return model.fc1
                 else:
                     raise ValueError("Model doesn't have fc1 layer")
             elif layer_name == 'output':
@@ -161,30 +216,30 @@ class UMAPInterpreter:
                 available_layers = ['conv1', 'conv2', 'fc1', 'output', 'flatten']
                 # Filter available layers based on actual model structure
                 actual_layers = ['output', 'fc1']  # These are always available
-                if len(self.trainer.model.conv_blocks) >= 1:
+                if len(model.conv_blocks) >= 1:
                     actual_layers.extend(['conv1', 'flatten'])
-                if len(self.trainer.model.conv_blocks) >= 2:
+                if len(model.conv_blocks) >= 2:
                     actual_layers.append('conv2')
                 raise ValueError(f"Layer '{layer_name}' not found. Available layers: {actual_layers}")
         else:
             # Fallback for models with different structure
             layer_mapping = {
-                'conv1': getattr(self.trainer.model, 'conv1', None),
-                'conv2': getattr(self.trainer.model, 'conv2', None),
-                'fc1': getattr(self.trainer.model, 'fc1', None),
+                'conv1': getattr(model, 'conv1', None),
+                'conv2': getattr(model, 'conv2', None),
+                'fc1': getattr(model, 'fc1', None),
                 'output': None  # Special case - use final model output
             }
             
             if layer_name == 'flatten':
                 # Try conv2 first, then conv1
-                return getattr(self.trainer.model, 'conv2', getattr(self.trainer.model, 'conv1', None))
+                return getattr(model, 'conv2', getattr(model, 'conv1', None))
             
             if layer_name in layer_mapping and layer_mapping[layer_name] is not None:
                 return layer_mapping[layer_name]
             else:
                 available_layers = [k for k, v in layer_mapping.items() if v is not None] + ['flatten']
                 raise ValueError(f"Layer '{layer_name}' not found. Available layers: {available_layers}")
-    
+
     def _hook_fn(self, module, input, output):
         """Hook function to capture layer activations.
         
@@ -225,13 +280,16 @@ class UMAPInterpreter:
         For extremely large datasets, a streaming reservoir approach could
         replace this to reduce peak memory usage.
         """
-        print(f"Extracting features from layer: {layer_name}")
+        print(f"Extracting features from layer: {layer_name} using {self.trainer_type} model")
         if max_samples is not None:
             print(f"Will sample up to {max_samples} samples for UMAP computation")
         
         # First pass: extract all features
         features = []
         total_batches = len(data_loader)
+        
+        # Use the appropriate model for feature extraction
+        model = self._get_model_for_layer_extraction(layer_name)
         
         # Handle special case for output layer
         if layer_name == 'output':
@@ -245,7 +303,7 @@ class UMAPInterpreter:
                     images = images.to(self.device)
                     
                     # Get model output
-                    outputs = self.trainer.model(images)
+                    outputs = model(images)
                     features.append(outputs.cpu().numpy())
                     
                     # Clear GPU memory after each batch
@@ -269,7 +327,7 @@ class UMAPInterpreter:
                         images = images.to(self.device)
                         
                         # Forward pass (hook will capture the features)
-                        _ = self.trainer.model(images)
+                        _ = model(images)
                         
                         # Process the captured features
                         if layer_name == 'flatten':
@@ -315,7 +373,101 @@ class UMAPInterpreter:
         gc.collect()
         
         return self.features
-    
+
+    def extract_prediction_uncertainties(self, data_loader, max_samples: Optional[int] = None, 
+                                      random_state: int = 42) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract prediction probabilities and uncertainties for all model types.
+        
+        Parameters
+        ----------
+        data_loader : DataLoader
+            Source of input tensors.
+        max_samples : int, optional
+            If set, random subset used.
+        random_state : int
+            Seed for reproducible subsampling.
+            
+        Returns
+        -------
+        tuple
+            (probabilities, uncertainties) arrays
+            For standard models, uncertainties will be distance from decision boundary
+        """
+        print(f"Extracting prediction probabilities and uncertainties from {self.trainer_type} model...")
+        
+        probabilities = []
+        uncertainties = []
+        total_batches = len(data_loader)
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(data_loader):
+                if batch_idx % 10 == 0:
+                    print(f"Processing batch {batch_idx+1}/{total_batches}")
+                
+                images, *_ = batch
+                images = images.to(self.device)
+                
+                if hasattr(self.trainer, 'models'):  # Ensemble
+                    individual_probs = []
+                    for model in self.trainer.models:
+                        outputs = model(images)
+                        probs = torch.sigmoid(outputs.squeeze())
+                        individual_probs.append(probs)
+                    
+                    # Stack all model probabilities
+                    ensemble_probs = torch.stack(individual_probs)  # [num_models, batch_size]
+                    
+                    # Mean probability and uncertainty
+                    mean_probs = ensemble_probs.mean(dim=0)
+                    uncertainty = ensemble_probs.std(dim=0)  # Standard deviation as uncertainty
+                    
+                elif hasattr(self.trainer, 'model1'):  # CoTeaching
+                    outputs1 = self.trainer.model1(images)
+                    outputs2 = self.trainer.model2(images)
+                    probs1 = torch.sigmoid(outputs1.squeeze())
+                    probs2 = torch.sigmoid(outputs2.squeeze())
+                    
+                    # Average the two models
+                    mean_probs = (probs1 + probs2) / 2
+                    uncertainty = torch.abs(probs1 - probs2)  # Disagreement as uncertainty
+                    
+                else:  # Standard model
+                    outputs = self.trainer.model(images)
+                    mean_probs = torch.sigmoid(outputs.squeeze())
+                    # For standard models, use distance from decision boundary as uncertainty proxy
+                    uncertainty = torch.abs(mean_probs - 0.5)
+                
+                probabilities.append(mean_probs.cpu().numpy())
+                uncertainties.append(uncertainty.cpu().numpy())
+                
+                # Clear GPU memory after each batch
+                del images
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        # Concatenate all results
+        all_probabilities = np.concatenate(probabilities)
+        all_uncertainties = np.concatenate(uncertainties)
+        
+        # Apply sampling if needed (use same indices as features if available)
+        if max_samples is not None and len(all_probabilities) > max_samples:
+            if self.sample_indices is not None:
+                # Use the same indices as feature extraction
+                indices = self.sample_indices
+            else:
+                np.random.seed(random_state)
+                indices = np.random.choice(len(all_probabilities), size=max_samples, replace=False)
+                indices = np.sort(indices)
+            
+            all_probabilities = all_probabilities[indices]
+            all_uncertainties = all_uncertainties[indices]
+        
+        uncertainty_type = "ensemble std" if hasattr(self.trainer, 'models') else \
+                          "model disagreement" if hasattr(self.trainer, 'model1') else \
+                          "decision boundary distance"
+        print(f"Extracted {len(all_probabilities)} prediction probabilities and uncertainties ({uncertainty_type})")
+        return all_probabilities, all_uncertainties
+
     def optimize_umap_parameters(self, param_grid: Dict = None, 
                                 n_samples: int = 1000, random_state: int = 42) -> Dict:
         """Grid-search heuristic for approximate UMAP parameter selection.
@@ -479,8 +631,10 @@ class UMAPInterpreter:
 
     def create_interpretability_dataframe(self, predictions: np.ndarray, labels: np.ndarray,
                                 data_loader, sample_indices: Optional[np.ndarray] = None,
-                                additional_features: Optional[Dict[str, np.ndarray]] = None) -> pd.DataFrame:
-        """Build DataFrame joining UMAP output + classification + hover images."""
+                                additional_features: Optional[Dict[str, np.ndarray]] = None,
+                                probabilities: Optional[np.ndarray] = None,
+                                uncertainties: Optional[np.ndarray] = None) -> pd.DataFrame:
+        """Build DataFrame joining UMAP output + classification + hover images + uncertainties."""
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         
@@ -516,36 +670,44 @@ class UMAPInterpreter:
             cluster_strings = np.where(self.high_dim_clusters == -1, "Noise", self.high_dim_clusters.astype(str))
             df['high_dim_cluster'] = cluster_strings
         
-        # Add embeddable images
-        print("Creating embeddable images for hover tooltips...")
-        images = []
-        current_idx = 0
+        # OPTIMIZATION: Use pre-computed probabilities/uncertainties if available
+        print("Adding prediction probabilities and uncertainties...")
         
-        for batch_idx, batch in enumerate(data_loader):
-            if batch_idx % 10 == 0 and batch_idx > 0:
-                print(f"Processed {current_idx} images...")
+        if probabilities is not None and uncertainties is not None:
+            print("Using pre-computed probabilities and uncertainties from inference results")
+            # Use the already computed values, applying sampling if needed
+            df['prediction_probability'] = probabilities[sample_indices]
+            df['prediction_uncertainty'] = uncertainties[sample_indices]
             
-            batch_images, *_ = batch
-            batch_size = batch_images.shape[0]
-            
-            for i in range(batch_size):
-                if current_idx < len(sample_indices):
-                    # Convert tensor to numpy if needed
-                    if hasattr(batch_images, 'cpu'):
-                        img_array = batch_images[i].cpu().numpy()
-                    else:
-                        img_array = batch_images[i]
-                    
-                    # Convert to embeddable format
-                    embeddable_img = embeddable_image(img_array)
-                    images.append(embeddable_img)
-                    current_idx += 1
+            uncertainty_type = "ensemble std" if hasattr(self.trainer, 'models') else \
+                              "model disagreement" if hasattr(self.trainer, 'model1') else \
+                              "decision boundary distance"
+        else:
+            # Fall back to computing uncertainties only if not available
+            if hasattr(self.trainer, 'models') or hasattr(self.trainer, 'model1'):
+                print("Computing uncertainties for ensemble/coteaching model (not pre-computed)...")
+                computed_probs, computed_uncert = self._extract_uncertainties_efficient(data_loader, sample_indices)
+                df['prediction_probability'] = computed_probs
+                df['prediction_uncertainty'] = computed_uncert
+                uncertainty_type = "ensemble std" if hasattr(self.trainer, 'models') else "model disagreement"
+            else:
+                print("Creating uncertainty proxy for standard model...")
+                # For standard models, create uncertainty proxy from predictions
+                if probabilities is not None:
+                    probs_subset = probabilities[sample_indices]
                 else:
-                    break
-            
-            if current_idx >= len(sample_indices):
-                break
+                    # Use predictions as probability proxy
+                    probs_subset = predictions[sample_indices].astype(float)
+                
+                df['prediction_probability'] = probs_subset
+                df['prediction_uncertainty'] = np.abs(probs_subset - 0.5)  # Distance from decision boundary
+                uncertainty_type = "decision boundary distance"
         
+        print(f"Added prediction probabilities and uncertainties ({uncertainty_type})")
+        
+        # OPTIMIZATION: Efficient image processing - only process sampled indices
+        print("Creating embeddable images for hover tooltips...")
+        images = self._create_embeddable_images_efficient(data_loader, sample_indices)
         df['image'] = images
         print(f"Created {len(images)} embeddable images")
         
@@ -554,3 +716,141 @@ class UMAPInterpreter:
                 df[key] = values[sample_indices]
         
         return df
+
+    def _extract_uncertainties_efficient(self, data_loader, sample_indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Efficiently extract uncertainties only for sampled indices."""
+        print(f"Efficiently extracting uncertainties for {len(sample_indices)} samples...")
+        
+        probabilities = []
+        uncertainties = []
+        
+        # Create a set for O(1) lookup
+        indices_set = set(sample_indices)
+        current_idx = 0
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(data_loader):
+                if batch_idx % 20 == 0:  # Reduce print frequency
+                    print(f"Processing batch {batch_idx}/{len(data_loader)}")
+                
+                images, *_ = batch
+                batch_size = images.shape[0]
+                
+                # Check if any indices in this batch are needed
+                batch_indices = list(range(current_idx, current_idx + batch_size))
+                needed_indices = [i for i in batch_indices if i in indices_set]
+                
+                if not needed_indices:
+                    current_idx += batch_size
+                    continue
+                
+                # Only process if we need data from this batch
+                images = images.to(self.device)
+                
+                if hasattr(self.trainer, 'models'):  # Ensemble
+                    individual_probs = []
+                    for model in self.trainer.models:
+                        outputs = model(images)
+                        probs = torch.sigmoid(outputs.squeeze())
+                        individual_probs.append(probs)
+                    
+                    ensemble_probs = torch.stack(individual_probs)
+                    mean_probs = ensemble_probs.mean(dim=0)
+                    uncertainty = ensemble_probs.std(dim=0)
+                    
+                elif hasattr(self.trainer, 'model1'):  # CoTeaching
+                    outputs1 = self.trainer.model1(images)
+                    outputs2 = self.trainer.model2(images)
+                    probs1 = torch.sigmoid(outputs1.squeeze())
+                    probs2 = torch.sigmoid(outputs2.squeeze())
+                    
+                    mean_probs = (probs1 + probs2) / 2
+                    uncertainty = torch.abs(probs1 - probs2)
+                
+                # Extract only needed samples from this batch
+                batch_probs = mean_probs.cpu().numpy()
+                batch_uncert = uncertainty.cpu().numpy()
+                
+                for i, global_idx in enumerate(batch_indices):
+                    if global_idx in indices_set:
+                        probabilities.append(batch_probs[i])
+                        uncertainties.append(batch_uncert[i])
+                
+                current_idx += batch_size
+                
+                # Clear GPU memory
+                del images
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+        
+        return np.array(probabilities), np.array(uncertainties)
+
+    def _create_embeddable_images_efficient(self, data_loader, sample_indices: np.ndarray) -> List[str]:
+        """Efficiently create embeddable images only for sampled indices."""
+        print(f"Efficiently creating images for {len(sample_indices)} samples...")
+        
+        # Create mapping for quick lookup
+        indices_set = set(sample_indices)
+        index_to_position = {idx: pos for pos, idx in enumerate(sample_indices)}
+        images = [''] * len(sample_indices) # Pre-allocate
+        
+        current_idx = 0
+        processed_count = 0
+        
+        for batch_idx, batch in enumerate(data_loader):
+            if batch_idx % 20 == 0 and processed_count > 0:  # Reduce print frequency
+                print(f"Processed {processed_count}/{len(sample_indices)} images...")
+            
+            batch_images, *_ = batch
+            batch_size = batch_images.shape[0]
+            
+            # Check if any indices in this batch are needed
+            batch_indices = list(range(current_idx, current_idx + batch_size))
+            needed_indices = [i for i in batch_indices if i in indices_set]
+            
+            if not needed_indices:
+                current_idx += batch_size
+                continue
+            
+            # Process only needed images from this batch
+            for i, global_idx in enumerate(batch_indices):
+                if global_idx in indices_set:
+                    # Convert tensor to numpy if needed
+                    if hasattr(batch_images, 'cpu'):
+                        img_array = batch_images[i].cpu().numpy()
+                    else:
+                        img_array = batch_images[i]
+                    
+                    # Convert to embeddable format with RdYlGn colormap (preserves negatives)
+                    embeddable_img = embeddable_image(img_array, cmap='RdYlGn')
+                    position = index_to_position[global_idx]
+                    images[position] = embeddable_img
+                    processed_count += 1
+                    
+                    # Early exit if we've processed all needed images
+                    if processed_count >= len(sample_indices):
+                        return images
+            
+            current_idx += batch_size
+        
+        return images
+
+    def save_umap(self, path: str):
+        """Save the fitted UMAP reducer to disk."""
+        if self.umap_reducer is None:
+            raise ValueError("UMAP reducer not fitted yet.")
+        joblib.dump(self.umap_reducer, path)
+        print(f"UMAP reducer saved to {path}")
+
+    def load_umap(self, path: str):
+        """Load a fitted UMAP reducer from disk."""
+        self.umap_reducer = joblib.load(path)
+        print(f"UMAP reducer loaded from {path}")
+
+    def transform_with_umap(self, features: np.ndarray) -> np.ndarray:
+        """Transform features using the loaded/fitted UMAP reducer."""
+        if self.umap_reducer is None:
+            raise ValueError("UMAP reducer not loaded/fitted.")
+        embedding = self.umap_reducer.transform(features)
+        print(f"Transformed {features.shape[0]} samples with loaded UMAP.")
+        return embedding

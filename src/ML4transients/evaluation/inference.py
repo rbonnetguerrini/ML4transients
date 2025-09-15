@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
 
-def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None, model_hash=None):
+def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None, model_hash=None, return_probabilities=None):
     """
     Run inference using a trained model on a dataset with minimal memory usage.
 
@@ -20,6 +20,8 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
         dia_source_ids: Array of diaSourceIds corresponding to the inference data.
         visit: Optional visit number for logging purposes.
         model_hash: Optional model hash for saving in results metadata.
+        return_probabilities (bool): If True, also returns prediction probabilities and uncertainty.
+                                   If None, auto-detects based on model type.
 
     Returns:
         Optionally returns predictions, true labels, accuracy, and confusion matrix.
@@ -38,21 +40,64 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
         
         print(f"Loading model from {weights_path}...")
         config = load_config(f"{weights_path}/config.yaml")
-        trainer = get_trainer(config["training"]["trainer_type"], config["training"])
-        state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
-        trainer.model.load_state_dict(state_dict)
-        trainer.model.to(device)
-        trainer.model.eval()
+        trainer_type = config["training"]["trainer_type"]
+        trainer = get_trainer(trainer_type, config["training"])
+        print(trainer_type)
+        if trainer_type == "ensemble":
+            num_models = config["training"]["num_models"]
+            print(f"Ensemble model, loading {num_models} models.")
+            for i in range(num_models):
+                model_path = f"{weights_path}/ensemble_model_{i}_best.pth"   
+                print(f"Loading model {i} from {model_path}")
+                state_dict = torch.load(model_path, map_location=device)
+                trainer.models[i].load_state_dict(state_dict)
+                trainer.models[i].to(device)
+                trainer.models[i].eval()
+        elif trainer_type == "coteaching":
+            # Load both models for co-teaching
+            state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
+            state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
+            trainer.model1.load_state_dict(state_dict1)
+            trainer.model2.load_state_dict(state_dict2)
+            trainer.model1.to(device)
+            trainer.model2.to(device)
+            trainer.model1.eval()
+            trainer.model2.eval()
+        else:
+            # Standard single model
+            state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
+            trainer.model.load_state_dict(state_dict)
+            trainer.model.to(device)
+            trainer.model.eval()
     else:
         print(f"Using cached model{visit_str}...")
 
-    model = trainer.model
-    # Ensure model is in eval mode and on correct device
-    model.eval()
-    model.to(device)
+    # Auto-detect if we should return probabilities based on trainer type
+    if return_probabilities is None:
+        if hasattr(trainer, 'models') or hasattr(trainer, 'model1'):
+            return_probabilities = True  # Ensemble or CoTeaching - extract uncertainties
+            print("Auto-detected ensemble/coteaching model - will extract probabilities and uncertainties")
+        else:
+            return_probabilities = False  # Standard model
+
+    # Set all models to eval mode and correct device
+    if hasattr(trainer, 'models'):  # Ensemble
+        for model in trainer.models:
+            model.eval()
+            model.to(device)
+    elif hasattr(trainer, 'model1'):  # CoTeaching
+        trainer.model1.eval()
+        trainer.model1.to(device)
+        trainer.model2.eval()
+        trainer.model2.to(device)
+    else:  # Standard
+        trainer.model.eval()
+        trainer.model.to(device)
 
     all_preds = []
     all_labels = []
+    all_probabilities = []
+    all_uncertainties = []
 
     try:
         with torch.no_grad():
@@ -68,16 +113,58 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                 
                 images, labels, *_ = batch
                 images = images.to(device)
-                outputs = model(images)
-                preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float().cpu().numpy()
+                
+                # Get predictions based on trainer type
+                if hasattr(trainer, 'models'):  # Ensemble
+                    individual_probs = []
+                    for model in trainer.models:
+                        outputs = model(images)
+                        probs = torch.sigmoid(outputs.squeeze())
+                        individual_probs.append(probs)
+                    
+                    # Stack all model probabilities
+                    ensemble_probs = torch.stack(individual_probs)  # [num_models, batch_size]
+                    
+                    # Mean probability and uncertainty
+                    mean_probs = ensemble_probs.mean(dim=0)
+                    uncertainty = ensemble_probs.std(dim=0)  # Standard deviation as uncertainty
+                    
+                    preds = (mean_probs > 0.5).float().cpu().numpy()
+                    probs = mean_probs.cpu().numpy()
+                    uncert = uncertainty.cpu().numpy()
+                    
+                elif hasattr(trainer, 'model1'):  # CoTeaching
+                    outputs1 = trainer.model1(images)
+                    outputs2 = trainer.model2(images)
+                    probs1 = torch.sigmoid(outputs1.squeeze())
+                    probs2 = torch.sigmoid(outputs2.squeeze())
+                    
+                    # Average the two models
+                    mean_probs = (probs1 + probs2) / 2
+                    uncertainty = torch.abs(probs1 - probs2)  # Disagreement as uncertainty
+                    
+                    preds = (mean_probs > 0.5).float().cpu().numpy()
+                    probs = mean_probs.cpu().numpy()
+                    uncert = uncertainty.cpu().numpy()
+                    
+                else:  # Standard
+                    outputs = trainer.model(images)
+                    probs = torch.sigmoid(outputs.squeeze())
+                    preds = (probs > 0.5).float().cpu().numpy()
+                    probs = probs.cpu().numpy()
+                    uncert = np.zeros_like(probs)  # No uncertainty for single model
+                
                 labels = labels.cpu().numpy()
 
                 if return_preds:
                     all_preds.append(preds)
                     all_labels.append(labels)
+                    if return_probabilities:
+                        all_probabilities.append(probs)
+                        all_uncertainties.append(uncert)
                 
                 # Clear batch from GPU memory immediately
-                del images, outputs
+                del images
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
@@ -93,6 +180,11 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
 
         results["y_pred"] = y_pred
         results["y_true"] = y_true
+        
+        if return_probabilities:
+            results["y_prob"] = np.concatenate(all_probabilities)
+            results["uncertainty"] = np.concatenate(all_uncertainties)
+            print(f"Extracted probabilities and uncertainties (uncertainty mean: {results['uncertainty'].mean():.4f})")
 
         if compute_metrics:
             accuracy = accuracy_score(y_true, y_pred.astype(int))
@@ -103,6 +195,7 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
 
         # Save results if requested
         if save_path is not None:
+            print(f"Saving inference results to {save_path}...")
             save_inference_results(results, save_path, weights_path, dia_source_ids, visit, model_hash)
         
         if visit is not None:
@@ -128,6 +221,12 @@ def save_inference_results(results, save_path, weights_path=None, dia_source_ids
     with h5py.File(save_path, 'w') as f:
         f.create_dataset('predictions', data=results['y_pred'])
         f.create_dataset('labels', data=results['y_true'])
+        
+        # Save probabilities and uncertainties if available
+        if 'y_prob' in results:
+            f.create_dataset('probabilities', data=results['y_prob'])
+        if 'uncertainty' in results:
+            f.create_dataset('uncertainties', data=results['uncertainty'])
         
         if dia_source_ids is not None:
             f.create_dataset('diaSourceId', data=dia_source_ids)

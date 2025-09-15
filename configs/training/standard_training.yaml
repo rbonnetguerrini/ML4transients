@@ -1,0 +1,81 @@
+# Standard training configuration with optimized hyperparameters from bayes
+data:
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm"
+  visits: null  # Use all visits, or specify list 
+  test_size: 0.2
+  val_size: 0.1
+
+training:
+  trainer_type: "standard"
+  epochs: 1500
+  learning_rate: 0.001
+  batch_size: 256  # Optimized from Bayesian search
+  num_iter_per_epoch: 400
+  epoch_decay_start: 80
+  num_workers: 4 
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/optimized_run"
+
+  # TensorBoard configuration
+  use_tensorboard: true
+  tensorboard_log_dir: "runs"
+  experiment_name: "optimized_standard"
+  log_interval: 100
+  
+  early_stopping:
+    enabled: true
+    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
+    mode: "min"                         # Want to minimize FNR
+    patience: 80
+    min_delta: 0.001  
+    
+  bayes_search:
+    enabled: false
+    direction: minimize
+    n_trials: 30
+    max_epochs: 300
+    prune: true
+    params:
+      batch_size:
+        type: int
+        low: 64
+        high: 512
+        step: 64
+      model_params.num_conv_blocks:
+        type: int
+        low: 2
+        high: 4
+        step: 1
+      model_params.filters_1:
+        type: int
+        low: 8
+        high: 64
+        step: 8
+      model_params.filters_2:
+        type: int
+        low: 32
+        high: 128
+        step: 32
+      model_params.dropout_1:
+        type: float
+        low: 0.1
+        high: 0.5
+      model_params.units:
+        type: int
+        low: 32
+        high: 512
+        step: 32
+    
+  model_params:
+    input_shape: [30, 30, 1]
+    num_classes: 2
+    num_conv_blocks: 4                    # Optimized: 4 conv blocks
+    filters_1: 16                         # Optimized
+    filters_2: 64                         # Optimized  
+    filters_3: 256                        # Optimized
+    filters_4: 384                        # Optimized (close to 384)
+    dropout_1: 0.41                       # Optimized: 0.4113467995641051
+    dropout_2: 0.32                       # Optimized: 0.31532548735236227
+    dropout_3: 0.49                       # Optimized: 0.4884026164429377
+    units: 64                             # Optimized
+
+random_state: 42

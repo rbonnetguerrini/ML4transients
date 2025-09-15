@@ -1,0 +1,30 @@
+collection: run/ssp_ud_cosmos/step5_new
+cutout:
+  coadd_science: false
+  return_data: false
+  save: true
+  save_features_only: false
+  size: 30
+injection: false
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/UDEEP_norm
+repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+run_info:
+  finished: '2025-08-14T17:29:27.515280'
+  started: '2025-07-24T14:01:00'
+  status: running
+visits:
+- 100836
+- 100838
+- 100840
+- 100850
+- 100852
+- 101418
+- 101428
+- 101438
+- 101448
+- 101450
+- 101460
+- 101470
+- 101480
+- 101490
+- 101500

@@ -1,0 +1,69 @@
+collection: run/ssp_ud_cosmos/step5_new
+cutout:
+  coadd_science: false
+  return_data: false
+  save: true
+  save_features_only: false
+  size: 30
+injection: false
+lightcurves:
+  cache_size: 5
+  patches: []
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP
+repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+run_info:
+  finished: '2025-09-05T11:06:41.262277'
+  started: '2025-07-24T14:01:00'
+  status: completed
+skip_global_index: true
+visits:
+- 19684
+- 19694
+- 19696
+- 19698
+- 19708
+- 19710
+- 19712
+- 22602
+- 22604
+- 22606
+- 22608
+- 22626
+- 22628
+- 22630
+- 22632
+- 22642
+- 22644
+- 22646
+- 22648
+- 22658
+- 22660
+- 22662
+- 22664
+- 23594
+- 23596
+- 23598
+- 23600
+- 23602
+- 23604
+- 23606
+- 23690
+- 23692
+- 23694
+- 23704
+- 23706
+- 23716
+- 23718
+- 28354
+- 28356
+- 28358
+- 28360
+- 28362
+- 28364
+- 28366
+- 28368
+- 28370
+- 28372
+- 28374
+- 28376
+- 28378
