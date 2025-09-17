@@ -37,13 +37,13 @@ def get_udeep_dataset_loader():
         return DatasetLoader(udeep_path)
     except ImportError as e:
         print(f"Could not import DatasetLoader: {e}")
-        print("Make sure you're running with the correct conda environment (env_ML)")
+        print("Make sure you're running with the correct conda environment")
         return None
 
 
 def get_lightcurve_info_from_udeep(dia_object_id, dataset_loader):
     """
-    Get lightcurve length and SNN inference results from the UDEEP dataset.
+    Get lightcurve length, SNN inference results, and average flux from the UDEEP dataset.
     
     Parameters
     ----------
@@ -55,14 +55,26 @@ def get_lightcurve_info_from_udeep(dia_object_id, dataset_loader):
     Returns
     -------
     dict
-        Dictionary with 'length', 'snn_info'
+        Dictionary with 'length', 'snn_info', 'avg_flux'
     """
     try:
         import pandas as pd
+        import numpy as np
         
-        # Get lightcurve length
+        # Get lightcurve data
         lc = dataset_loader.lightcurves.get_lightcurve(int(dia_object_id))
-        lc_length = len(lc) if lc is not None else "N/A"
+        
+        if lc is not None:
+            lc_length = len(lc)
+            # Calculate average flux (assuming 'psfFlux' column exists)
+            if 'psfFlux' in lc.columns:
+                avg_flux = lc['psfFlux'].mean()
+                avg_flux_str = f"{avg_flux:.2e}" if not pd.isna(avg_flux) else "N/A"
+            else:
+                avg_flux_str = "N/A"
+        else:
+            lc_length = "N/A"
+            avg_flux_str = "N/A"
         
         # Get SNN inference results - use cached version if available
         if not hasattr(dataset_loader.lightcurves, '_cached_snn_data'):
@@ -103,14 +115,16 @@ def get_lightcurve_info_from_udeep(dia_object_id, dataset_loader):
         
         return {
             'length': lc_length,
-            'snn_info': snn_info
+            'snn_info': snn_info,
+            'avg_flux': avg_flux_str
         }
         
     except Exception as e:
         print(f"Error getting info for diaObjectId {dia_object_id}: {e}")
         return {
             'length': "N/A",
-            'snn_info': "N/A"
+            'snn_info': "N/A",
+            'avg_flux': "N/A"
         }
 
 
@@ -212,6 +226,41 @@ def create_lightcurve_index(directory_path, output_filename="index.html"):
             padding: 15px;
             background-color: #2a2a2a;
             border-radius: 10px;
+        }}
+        
+        .controls-row {{
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }}
+        
+        .sort-controls {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        
+        .sort-label {{
+            color: #870000;
+            font-weight: bold;
+            font-size: 14px;
+        }}
+        
+        .sort-select {{
+            padding: 8px;
+            background-color: #333;
+            color: white;
+            border: 2px solid #666;
+            border-radius: 5px;
+            font-size: 14px;
+        }}
+        
+        .sort-select:focus {{
+            outline: none;
+            border-color: #870000;
         }}
         
         .search-box {{
@@ -412,9 +461,23 @@ def create_lightcurve_index(directory_path, output_filename="index.html"):
     </div>
 
     <div class="controls">
-        <input type="text" class="search-box" id="searchBox" placeholder="Search by diaObjectId..." onkeyup="filterLightcurves()">
-        <button class="btn" onclick="clearSearch()">Clear</button>
-        <button class="btn" onclick="openAllVisible()">Open All Visible</button>
+        <div class="controls-row">
+            <input type="text" class="search-box" id="searchBox" placeholder="Search by diaObjectId..." onkeyup="filterLightcurves()">
+            <button class="btn" onclick="clearSearch()">Clear</button>
+            <button class="btn" onclick="openAllVisible()">Open All Visible</button>
+        </div>
+        <div class="controls-row">
+            <div class="sort-controls">
+                <span class="sort-label">Sort by:</span>
+                <select class="sort-select" id="sortSelect" onchange="sortLightcurves()">
+                    <option value="id">diaObjectId</option>
+                    <option value="length">LC Length</option>
+                    <option value="flux">Avg Flux</option>
+                    <option value="snn">SNN Probability</option>
+                </select>
+                <button class="btn" onclick="toggleSortOrder()" id="sortOrderBtn">↑ Asc</button>
+            </div>
+        </div>
     </div>
 
     <div class="lightcurve-grid" id="lightcurveGrid">
@@ -430,17 +493,42 @@ def create_lightcurve_index(directory_path, output_filename="index.html"):
             lc_info = get_lightcurve_info_from_udeep(dia_object_id, udeep_loader)
             lc_length = lc_info['length']
             snn_info = lc_info['snn_info']
+            avg_flux = lc_info['avg_flux']
         else:
             lc_length = "N/A"
             snn_info = "N/A"
+            avg_flux = "N/A"
+        
+        # Prepare sortable values
+        length_val = lc_length if isinstance(lc_length, (int, float)) else -1
+        flux_val = avg_flux if avg_flux != "N/A" else -1
+        snn_val = -1
+        
+        # Extract numeric value from SNN info for sorting
+        if snn_info != "N/A" and "±" in snn_info:
+            try:
+                snn_val = float(snn_info.split("±")[0].strip())
+            except:
+                snn_val = -1
+        
+        # Convert scientific notation flux to float for sorting
+        if isinstance(avg_flux, str) and avg_flux != "N/A":
+            try:
+                flux_val = float(avg_flux)
+            except:
+                flux_val = -1
         
         html_content += f"""
-        <div class="lightcurve-card" data-dia-id="{dia_object_id}">
+        <div class="lightcurve-card" data-dia-id="{dia_object_id}" 
+             data-length="{length_val}" 
+             data-flux="{flux_val}" 
+             data-snn="{snn_val}">
             <h3>diaObjectId: {dia_object_id}</h3>
             <div class="lightcurve-info">
                 <div><strong>Modified:</strong> {mod_time}</div>
                 <div><strong>LC Length:</strong> {lc_length}</div>
                 <div><strong>SNN Prob:</strong> {snn_info}</div>
+                <div><strong>Avg Flux:</strong> {avg_flux}</div>
             </div>
             <div class="lightcurve-actions">
                 <a href="{file_path.name}" class="action-btn primary" target="_blank">Open Lightcurve</a>
@@ -504,6 +592,63 @@ def create_lightcurve_index(directory_path, output_filename="index.html"):
                 console.log('Copied diaObjectId: ' + diaId);
                 // Could add a temporary visual indicator here
             }});
+        }}
+        
+        // Sorting functionality
+        let currentSortOrder = 'asc';
+        
+        function sortLightcurves() {{
+            const sortBy = document.getElementById('sortSelect').value;
+            const grid = document.getElementById('lightcurveGrid');
+            const cards = Array.from(grid.children);
+            
+            cards.sort((a, b) => {{
+                let valueA, valueB;
+                
+                switch (sortBy) {{
+                    case 'id':
+                        valueA = parseInt(a.getAttribute('data-dia-id'));
+                        valueB = parseInt(b.getAttribute('data-dia-id'));
+                        break;
+                    case 'length':
+                        valueA = parseFloat(a.getAttribute('data-length'));
+                        valueB = parseFloat(b.getAttribute('data-length'));
+                        break;
+                    case 'flux':
+                        valueA = parseFloat(a.getAttribute('data-flux'));
+                        valueB = parseFloat(b.getAttribute('data-flux'));
+                        break;
+                    case 'snn':
+                        valueA = parseFloat(a.getAttribute('data-snn'));
+                        valueB = parseFloat(b.getAttribute('data-snn'));
+                        break;
+                    default:
+                        return 0;
+                }}
+                
+                // Handle N/A values (represented as -1)
+                if (valueA === -1 && valueB === -1) return 0;
+                if (valueA === -1) return 1;  // Put N/A at the end
+                if (valueB === -1) return -1;
+                
+                // Sort logic
+                if (currentSortOrder === 'asc') {{
+                    return valueA - valueB;
+                }} else {{
+                    return valueB - valueA;
+                }}
+            }});
+            
+            // Clear the grid and re-append sorted cards
+            grid.innerHTML = '';
+            cards.forEach(card => grid.appendChild(card));
+        }}
+        
+        function toggleSortOrder() {{
+            currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+            const button = document.getElementById('sortOrderBtn');
+            button.textContent = currentSortOrder === 'asc' ? '↑ Asc' : '↓ Desc';
+            sortLightcurves();
         }}
         
         function scrollToTop() {{

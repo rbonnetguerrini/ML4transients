@@ -1646,7 +1646,7 @@ class LightCurveLoader:
         print(f"Mean uncertainty: {snn_processed['prob_class1_std'].mean():.3f}")
         print(f"Objects with high uncertainty (>0.1): {(snn_processed['prob_class1_std'] > 0.1).sum()}")
 
-        return ensemble_df
+        return top_candidates
    
     
     def get_high_conf_sn_sources(self, prob_threshold=0.7, std_threshold=0.05, snn_dataset_name="snn_inference"):

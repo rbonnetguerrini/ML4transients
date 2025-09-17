@@ -20,7 +20,7 @@ from ML4transients.utils import load_config
 import warnings
 warnings.filterwarnings("ignore", message="out of range integer may result in loss of precision", category=UserWarning)
 
-def embeddable_image(image_array: np.ndarray, cmap: str = 'RdYlGn') -> str:
+def embeddable_image(image_array: np.ndarray, cmap: str = 'gray') -> str:
     """Convert numpy array to embeddable base64 image string with colormap.
     
     Simple approach for grayscale astronomical images that creates
@@ -822,7 +822,7 @@ class UMAPInterpreter:
                         img_array = batch_images[i]
                     
                     # Convert to embeddable format with RdYlGn colormap (preserves negatives)
-                    embeddable_img = embeddable_image(img_array, cmap='RdYlGn')
+                    embeddable_img = embeddable_image(img_array, cmap='gray')
                     position = index_to_position[global_idx]
                     images[position] = embeddable_img
                     processed_count += 1
