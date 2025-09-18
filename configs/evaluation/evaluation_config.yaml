@@ -46,7 +46,6 @@ interpretability:
     n_components: 2
     random_state: 42
     optimize_params: false  # Set to true to optimize UMAP parameters
-    
   # High-dimensional clustering parameters performed before UMAP -- WARNING very long
   clustering:
     enabled: false  # Set to true to enable HDBSCAN clustering on high-dimensional features

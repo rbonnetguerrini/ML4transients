@@ -902,17 +902,18 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         layer_name=interp_config.get('layer_name', 'fc1'),
         max_samples=interp_config.get('max_samples', 3000)
     )
-    print(f"Feature extraction completed in {time.time() - start_time:.2f}s")
-    
-    # Fit UMAP
-    print("Step 2: Fitting UMAP embedding...")
-    start_time = time.time()
-    embedding = interpreter.fit_umap(
-        n_neighbors=umap_config.get('n_neighbors', 15),
-        min_dist=umap_config.get('min_dist', 0.1),
-        optimize_params=umap_config.get('optimize_params', False)
-    )
-    print(f"UMAP fitting completed in {time.time() - start_time:.2f}s")
+    if hasattr(interpreter, 'umap_reducer') and interpreter.umap_reducer is not None:
+        print("Transforming features with loaded UMAP reducer...")
+        embedding = interpreter.transform_with_umap(features)
+        interpreter.umap_embedding = embedding
+    else:
+        print("Fitting UMAP embedding...")
+        embedding = interpreter.fit_umap(
+            n_neighbors=umap_config.get('n_neighbors', 15),
+            min_dist=umap_config.get('min_dist', 0.1),
+            optimize_params=umap_config.get('optimize_params', False)
+        )
+    print(f"Feature extraction and UMAP fitting completed in {time.time() - start_time:.2f}s")
     
     # Optional clustering
     if clustering_config.get('enabled', False):

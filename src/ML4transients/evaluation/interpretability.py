@@ -646,6 +646,56 @@ class UMAPInterpreter:
             else:
                 sample_indices = np.arange(len(predictions))
                 print(f"No sample indices available, using all {len(sample_indices)} samples")
+        
+        # Check if sample_indices are compatible with the provided predictions/labels
+        # This handles the case where predictions/labels are filtered (e.g., by object IDs)
+        # but sample_indices still reference the original unfiltered dataset
+        max_index = np.max(sample_indices) if len(sample_indices) > 0 else -1
+        
+        if len(predictions) < len(sample_indices) or max_index >= len(predictions):
+            print(f"Warning: Sample indices mismatch detected!")
+            print(f"  - UMAP samples: {len(sample_indices)} (max index: {max_index})")
+            print(f"  - Available predictions: {len(predictions)}")
+            print(f"  - Available labels: {len(labels)}")
+            
+            # Strategy 1: If we have the right number of samples but wrong indices, remap to sequential
+            if len(predictions) == len(self.umap_embedding):
+                print("  - Predictions/labels match UMAP embedding size: using sequential indices")
+                sample_indices = np.arange(len(predictions))
+            
+            # Strategy 2: If we have more UMAP embeddings than predictions, truncate UMAP
+            elif len(self.umap_embedding) > len(predictions):
+                print(f"  - Truncating UMAP embedding from {len(self.umap_embedding)} to {len(predictions)} samples")
+                self.umap_embedding = self.umap_embedding[:len(predictions)]
+                sample_indices = np.arange(len(predictions))
+                print(f"  - New UMAP embedding shape: {self.umap_embedding.shape}")
+                
+            # Strategy 3: If UMAP embedding matches sample_indices length, remap indices
+            elif len(self.umap_embedding) == len(sample_indices):
+                print(f"  - UMAP embedding matches sample count: remapping indices sequentially")
+                sample_indices = np.arange(len(self.umap_embedding))
+                print(f"  - Using indices 0 to {len(sample_indices)-1} for {len(self.umap_embedding)} UMAP points")
+                
+                # Verify predictions/labels have enough samples
+                if len(predictions) < len(sample_indices):
+                    print(f"  - Warning: Still not enough predictions ({len(predictions)}) for UMAP samples ({len(sample_indices)})")
+                    print(f"  - Truncating to minimum: {min(len(predictions), len(sample_indices))}")
+                    min_samples = min(len(predictions), len(sample_indices))
+                    self.umap_embedding = self.umap_embedding[:min_samples]
+                    sample_indices = np.arange(min_samples)
+                    
+            else:
+                print("  - Error: Cannot resolve sample indices mismatch")
+                print(f"    UMAP embedding shape: {self.umap_embedding.shape}")
+                print(f"    Sample indices length: {len(sample_indices)}")
+                print(f"    Predictions length: {len(predictions)}")
+                raise ValueError(
+                    f"Cannot align sample indices (count: {len(sample_indices)}, max: {max_index}) "
+                    f"with predictions array (size: {len(predictions)}). "
+                    f"UMAP embedding has {len(self.umap_embedding)} samples. "
+                    f"This usually happens when filtering by object IDs - "
+                    f"the feature extraction and inference use different filtered datasets."
+                )
     
         # Create base DataFrame with UMAP coordinates
         df = pd.DataFrame({
@@ -676,13 +726,29 @@ class UMAPInterpreter:
         if probabilities is not None and uncertainties is not None:
             print("Using pre-computed probabilities and uncertainties from inference results")
             # Use the already computed values, applying sampling if needed
-            df['prediction_probability'] = probabilities[sample_indices]
-            df['prediction_uncertainty'] = uncertainties[sample_indices]
+            # Check if probabilities/uncertainties arrays match sample_indices requirements
+            if len(probabilities) >= len(sample_indices) and np.max(sample_indices) < len(probabilities):
+                df['prediction_probability'] = probabilities[sample_indices]
+                df['prediction_uncertainty'] = uncertainties[sample_indices]
+            else:
+                # If there's a size mismatch, use direct alignment
+                print(f"Warning: Probability array size mismatch. Using direct alignment.")
+                print(f"  - Probabilities length: {len(probabilities)}")
+                print(f"  - Sample indices length: {len(sample_indices)}, max: {np.max(sample_indices)}")
+                if len(probabilities) == len(self.umap_embedding):
+                    df['prediction_probability'] = probabilities
+                    df['prediction_uncertainty'] = uncertainties
+                else:
+                    print("Cannot align probabilities with UMAP embedding. Falling back to computation.")
+                    probabilities = None
+                    uncertainties = None
             
-            uncertainty_type = "ensemble std" if hasattr(self.trainer, 'models') else \
-                              "model disagreement" if hasattr(self.trainer, 'model1') else \
-                              "decision boundary distance"
-        else:
+            if probabilities is not None:  # Check if we still have valid probabilities
+                uncertainty_type = "ensemble std" if hasattr(self.trainer, 'models') else \
+                                  "model disagreement" if hasattr(self.trainer, 'model1') else \
+                                  "decision boundary distance"
+        
+        if probabilities is None or uncertainties is None:
             # Fall back to computing uncertainties only if not available
             if hasattr(self.trainer, 'models') or hasattr(self.trainer, 'model1'):
                 print("Computing uncertainties for ensemble/coteaching model (not pre-computed)...")

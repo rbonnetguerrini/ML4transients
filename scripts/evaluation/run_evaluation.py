@@ -2,10 +2,17 @@
 """
 Script to run comprehensive model evaluation including metrics and interpretability analysis.
 """
+import os
+
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
 
 import argparse
 import yaml
 from pathlib import Path
+from typing import List
 import sys
 import torch
 import numpy as np
@@ -44,10 +51,10 @@ def parse_args():
                        help="Optimize UMAP parameters during interpretability analysis")
     parser.add_argument("--enable-clustering", action="store_true",
                        help="Enable HDBSCAN clustering on high-dimensional features")
-    parser.add_argument("--port", type=int, default=5006,
-                       help="Port for Bokeh server (default: 5006)")
     parser.add_argument("--snr-threshold", type=float, default=5.0,
                        help="SNR threshold to separate low and high SNR samples (default: 5.0)")
+    parser.add_argument("--object-ids-file", type=str, default=None,
+                       help="Path to file containing diaObjectIds (one per line)")
     
     return parser.parse_args()
 
@@ -67,6 +74,178 @@ def load_evaluation_config(config_path: Path) -> dict:
     # Load configuration
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
+
+def load_object_ids_from_file(file_path: str) -> List[str]:
+    """Load diaObjectIds from a text file (one per line).
+    
+    Parameters
+    ----------
+    file_path : str
+        Path to the file containing diaObjectIds
+        
+    Returns
+    -------
+    List[str]
+        List of diaObjectIds as strings to preserve precision
+    """
+    object_ids = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):  # Skip empty lines and comments
+                if line.isdigit():  # Simple validation for numeric string
+                    object_ids.append(line)
+                else:
+                    print(f"Warning: Skipping invalid object ID: {line}")
+    return object_ids
+
+def filter_inference_results_by_object_ids(dataset_loader: DatasetLoader, 
+                                         inference_results: dict, 
+                                         object_ids: List[str]) -> dict:
+    """Filter inference results to only include sources from specified diaObjectIds.
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader for accessing lightcurve data
+    inference_results : dict
+        Dictionary mapping visit -> InferenceLoader
+    object_ids : List[str]
+        List of diaObjectIds to filter by (as strings to preserve precision)
+        
+    Returns
+    -------
+    dict
+        Filtered inference results containing only sources from specified objects
+    """
+    if not object_ids:
+        return inference_results
+    
+    print(f"Filtering inference results to {len(object_ids)} specified diaObjectIds...")
+    
+    print("Step 1: Collecting all diaSourceIds for specified diaObjectIds...")
+    target_source_ids = set()
+    
+    # Create lightcurve loader 
+    lightcurve_path = None
+    for data_path in dataset_loader.data_paths:
+        potential_lc_path = data_path / "lightcurves"
+        if potential_lc_path.exists():
+            lightcurve_path = potential_lc_path
+            break
+    
+    if lightcurve_path is None:
+        print("Error: No lightcurves directory found in dataset paths")
+        return {}
+    
+    print(f"Loading lightcurve data directly from: {lightcurve_path}")
+    from ML4transients.data_access.data_loaders import LightCurveLoader
+    lc_loader = LightCurveLoader(lightcurve_path)
+    
+    print(f"Lightcurve loader loaded with {len(lc_loader.index)} objects")
+    available_objects = set(lc_loader.index.index.astype(str))
+    
+    # Use the new function to map diaObjectId -> diaSourceIds
+    print("Using get_source_ids_for_objects to map diaObjectId -> diaSourceIds...")
+    
+    # Convert string object IDs to integers for the function
+    object_ids_int = []
+    for obj_id_str in object_ids:
+        obj_id_int = int(obj_id_str)
+        object_ids_int.append(obj_id_int)
+
+    if not object_ids_int:
+        print("ERROR: No valid integer object IDs found")
+        return {}
+    
+    # Map objects to their source IDs
+    object_to_sources = lc_loader.get_source_ids_for_objects(object_ids_int)
+    
+    # Collect all diaSourceIds
+    for obj_id, source_ids in object_to_sources.items():
+        target_source_ids.update(source_ids)
+        
+    found_objects = len(object_to_sources)
+    total_sources = len(target_source_ids)
+    
+    print(f"  Mapped {found_objects}/{len(object_ids)} objects to {total_sources} diaSourceIds")
+    
+    # Filter each inference loader to only include target source IDs
+    print("Step 2: Filtering inference results...")
+    filtered_results = {}
+    
+    for visit, loader in inference_results.items():
+        # Get source IDs from this visit's inference results
+        visit_source_ids = loader.ids
+        
+        # Find intersection with target source IDs
+        filtered_source_ids = [sid for sid in visit_source_ids if sid in target_source_ids]
+        
+        if filtered_source_ids:
+            print(f"  Visit {visit}: {len(filtered_source_ids)}/{len(visit_source_ids)} sources match")
+            
+            # Create a filtered version of the inference loader
+            filtered_loader = FilteredInferenceLoader(loader, filtered_source_ids, target_source_ids)
+            filtered_results[visit] = filtered_loader
+        else:
+            print(f"  Visit {visit}: No matching sources found")
+    
+    print(f"Filtering complete: {len(filtered_results)}/{len(inference_results)} visits have matching sources")
+    return filtered_results
+
+class FilteredInferenceLoader:
+    """Wrapper around InferenceLoader that filters results to specific source IDs."""
+    
+    def __init__(self, original_loader, filtered_source_ids: List[int], target_source_ids: set):
+        self.original_loader = original_loader
+        self.filtered_source_ids = filtered_source_ids
+        self.target_source_ids = target_source_ids
+        
+        # Create index mapping for filtering arrays
+        all_ids = original_loader.ids
+        self.filter_indices = [i for i, sid in enumerate(all_ids) if sid in target_source_ids]
+        
+        # Cache filtered data
+        self._filtered_predictions = None
+        self._filtered_labels = None
+        self._filtered_probabilities = None
+        self._filtered_uncertainties = None
+        self._filtered_ids = None
+    
+    @property
+    def predictions(self):
+        if self._filtered_predictions is None:
+            original = self.original_loader.predictions
+            self._filtered_predictions = original[self.filter_indices] if original is not None else None
+        return self._filtered_predictions
+    
+    @property
+    def labels(self):
+        if self._filtered_labels is None:
+            original = self.original_loader.labels
+            self._filtered_labels = original[self.filter_indices] if original is not None else None
+        return self._filtered_labels
+    
+    @property
+    def probabilities(self):
+        if self._filtered_probabilities is None:
+            original = self.original_loader.probabilities
+            self._filtered_probabilities = original[self.filter_indices] if original is not None else None
+        return self._filtered_probabilities
+    
+    @property
+    def uncertainties(self):
+        if self._filtered_uncertainties is None:
+            original = self.original_loader.uncertainties
+            self._filtered_uncertainties = original[self.filter_indices] if original is not None else None
+        return self._filtered_uncertainties
+    
+    @property
+    def ids(self):
+        if self._filtered_ids is None:
+            original = self.original_loader.ids
+            self._filtered_ids = original[self.filter_indices] if original is not None else None
+        return self._filtered_ids
 
 def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str = None,
                             visits: list = None, model_hash: str = None) -> dict:
@@ -332,6 +511,17 @@ def main():
     dataset_loader = DatasetLoader(args.data_path)
     print(f"Dataset loaded in {time.time() - step_start:.2f}s")
     
+    # Process object IDs filtering if specified
+    object_ids = None
+
+    object_ids = load_object_ids_from_file(args.object_ids_file)
+    print(f"Loaded {len(object_ids)} object IDs from file: {args.object_ids_file}")
+    
+    if object_ids:
+        print(f"Evaluation will be filtered to {len(object_ids)} specified diaObjectIds")
+    else:
+        print("Evaluation will include all available data")
+    
     # Show available inference results if using model_hash
     if args.model_hash:
         print("\nAvailable inference results:")
@@ -389,6 +579,23 @@ def main():
     if set(actual_visits) != set(visits_to_eval):
         print(f"\nNote: Evaluation will proceed with {len(actual_visits)} visits instead of {len(visits_to_eval)} originally requested")
         visits_to_eval = actual_visits
+    
+    # Apply object ID filtering if specified
+    if object_ids:
+        print(f"Applying diaObjectId filtering to {len(object_ids)} objects...")
+        step_start = time.time()
+        inference_results = filter_inference_results_by_object_ids(
+            dataset_loader, inference_results, object_ids
+        )
+        print(f"Object ID filtering completed in {time.time() - step_start:.2f}s")
+        
+        if not inference_results:
+            print("Error: No inference results remain after object ID filtering")
+            return
+        
+        # Update visits list after filtering
+        actual_visits = list(inference_results.keys())
+        print(f"After filtering: {len(actual_visits)} visits contain matching sources")
     
     # Aggregate results across visits
     print("Aggregating results...")

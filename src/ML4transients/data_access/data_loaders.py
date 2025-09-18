@@ -576,7 +576,11 @@ class LightCurveLoader:
         self._cache_hits = 0
         self._cache_misses = 0
         self._max_cache_size = 10  # Configurable cache limit
-    
+    """
+    =====================================================================
+    INDEXES MANAGEMENT
+    =====================================================================
+    """
     @property
     def index(self) -> pd.DataFrame:
         """Lazy load the lightcurve index.
@@ -613,8 +617,37 @@ class LightCurveLoader:
         if self._diasource_index is None:
             index_file = self.lightcurve_path / "diasource_patch_index.h5"
             if index_file.exists():
-                self._diasource_index = pd.read_hdf(index_file, key="diasource_index")
+                try:
+                    # Try the expected key first
+                    self._diasource_index = pd.read_hdf(index_file, key="diasource_index")
+                except KeyError:
+                    # Check what keys are available
+                    try:
+                        with pd.HDFStore(index_file, 'r') as store:
+                            available_keys = list(store.keys())
+                            print(f"Available keys in {index_file}: {available_keys}")
+                            
+                            # Try some common key names
+                            possible_keys = ["index", "diasource", "sources", "/diasource_index"]
+                            for key in possible_keys:
+                                if key in available_keys:
+                                    print(f"Using key '{key}' instead of 'diasource_index'")
+                                    self._diasource_index = pd.read_hdf(index_file, key=key)
+                                    break
+                            else:
+                                # If no suitable key found, try the first available key
+                                if available_keys:
+                                    first_key = available_keys[0]
+                                    print(f"Using first available key '{first_key}'")
+                                    self._diasource_index = pd.read_hdf(index_file, key=first_key)
+                                else:
+                                    print(f"No keys found in {index_file}")
+                                    self._diasource_index = pd.DataFrame()  # Empty fallback
+                    except Exception as e:
+                        print(f"Error reading {index_file}: {e}")
+                        self._diasource_index = pd.DataFrame()  # Empty fallback
             else:
+                print(f"diasource_patch_index.h5 not found at {index_file}")
                 self._diasource_index = pd.DataFrame()  # Empty fallback
         return self._diasource_index
     
@@ -874,6 +907,45 @@ class LightCurveLoader:
         except (KeyError, IndexError):
             pass
         return None
+        
+    def get_source_ids_for_objects(self, dia_object_ids: List[int]) -> Dict[int, List[int]]:
+        """Get all diaSourceIds that belong to each specified diaObjectId.
+        
+        This function maps each diaObjectId to all the diaSourceIds (across all visits)
+        that belong to that object's lightcurve.
+        
+        Args:
+            dia_object_ids: List of diaObjectIds to map
+            
+        Returns:
+            Dict[int, List[int]]: Dictionary mapping diaObjectId to list of diaSourceIds
+        """
+        print(f"Mapping {len(dia_object_ids)} diaObjectIds to their diaSourceIds...")
+        
+        # Convert to appropriate data types
+        dia_object_ids = [int(obj_id) for obj_id in dia_object_ids]
+        
+        results = {}
+        missing_objects = []
+        
+        # First, try using diasource_index if available
+        print("Using diasource_index for mapping...")
+        
+        # Ensure proper data types
+        diasource_index = self.diasource_index.copy()
+        if diasource_index['diaObjectId'].dtype == 'object':
+            diasource_index['diaObjectId'] = pd.to_numeric(diasource_index['diaObjectId'], errors='coerce').astype(np.int64)
+        
+        for obj_id in dia_object_ids:
+            # Find all sources for this object
+            sources_for_object = diasource_index[diasource_index['diaObjectId'] == obj_id]
+            if len(sources_for_object) > 0:
+                source_ids = sources_for_object.index.tolist()
+                results[obj_id] = source_ids
+            else:
+                missing_objects.append(obj_id)
+        
+        return results
     
     def find_patches_for_objects(self, dia_object_ids: List[int]) -> Dict[int, str]:
         """Efficiently find patches for multiple objects at once.
@@ -893,7 +965,90 @@ class LightCurveLoader:
             print(f"Error in batch patch lookup: {e}")
             # Fallback to individual lookups
             return {obj_id: self.find_patch(obj_id) for obj_id in dia_object_ids}
+        
 
+    def list_available_patches(self) -> List[str]:
+        """List all available patch files.
+        
+        Returns:
+            List[str]: List of available patch identifiers
+        """
+        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
+        return [f.stem.replace("patch_", "") for f in patch_files]
+    
+    def clear_cache(self):
+        """Clear the patch cache to free memory."""
+        self._patch_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+    
+    def set_cache_size(self, max_size: int):
+        """Set maximum cache size.
+        
+        Args:
+            max_size: Maximum number of patches to keep in cache
+        """
+        self._max_cache_size = max_size
+        # Clear excess entries if needed
+        while len(self._patch_cache) > max_size:
+            oldest_key = next(iter(self._patch_cache))
+            del self._patch_cache[oldest_key]
+    
+    @property
+    def cache_stats(self):
+        """Get cache performance statistics.
+        
+        Returns:
+            Dict: Dictionary containing cache performance metrics
+        """
+        total = self._cache_hits + self._cache_misses
+        hit_rate = self._cache_hits / total if total > 0 else 0
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'hit_rate': hit_rate,
+            'cached_patches': len(self._patch_cache),
+            'cache_size_limit': self._max_cache_size
+        }
+    
+    def _load_patch_data(self, patch_key: str) -> Optional[pd.DataFrame]:
+        """Load lightcurve data for a specific patch.
+        
+        Args:
+            patch_key: The patch identifier to load
+            
+        Returns:
+            Optional[pd.DataFrame]: Patch data if successful, None otherwise
+        """
+        patch_file = self.lightcurve_path / f"patch_{patch_key}.h5"
+        
+        if patch_file.exists():
+            try:
+                data = pd.read_hdf(patch_file, key="lightcurves")
+                return data
+            except Exception as e:
+                return None
+        else:
+            return None
+    
+    def _manage_cache(self, new_patch_key: str, new_data: pd.DataFrame):
+        """Manage cache size by removing least recently used items.
+        
+        Args:
+            new_patch_key: Key for the new patch data to cache
+            new_data: The patch data to cache
+        """
+        if len(self._patch_cache) >= self._max_cache_size:
+            # Remove oldest entry (simple FIFO for now)
+            oldest_key = next(iter(self._patch_cache))
+            del self._patch_cache[oldest_key]
+        
+        self._patch_cache[new_patch_key] = new_data
+    """
+    =====================================================================
+    LIGHT CURVE STATS
+    =====================================================================
+    """
     def get_lightcurve_stats(self, dia_object_id: int) -> Optional[Dict]:
         """Get basic statistics for a lightcurve without loading full data.
         
@@ -1277,83 +1432,12 @@ class LightCurveLoader:
             if show:
                 plt.show()
 
-    def list_available_patches(self) -> List[str]:
-        """List all available patch files.
-        
-        Returns:
-            List[str]: List of available patch identifiers
-        """
-        patch_files = list(self.lightcurve_path.glob("patch_*.h5"))
-        return [f.stem.replace("patch_", "") for f in patch_files]
-    
-    def clear_cache(self):
-        """Clear the patch cache to free memory."""
-        self._patch_cache.clear()
-        self._cache_hits = 0
-        self._cache_misses = 0
-    
-    def set_cache_size(self, max_size: int):
-        """Set maximum cache size.
-        
-        Args:
-            max_size: Maximum number of patches to keep in cache
-        """
-        self._max_cache_size = max_size
-        # Clear excess entries if needed
-        while len(self._patch_cache) > max_size:
-            oldest_key = next(iter(self._patch_cache))
-            del self._patch_cache[oldest_key]
-    
-    @property
-    def cache_stats(self):
-        """Get cache performance statistics.
-        
-        Returns:
-            Dict: Dictionary containing cache performance metrics
-        """
-        total = self._cache_hits + self._cache_misses
-        hit_rate = self._cache_hits / total if total > 0 else 0
-        return {
-            'hits': self._cache_hits,
-            'misses': self._cache_misses,
-            'hit_rate': hit_rate,
-            'cached_patches': len(self._patch_cache),
-            'cache_size_limit': self._max_cache_size
-        }
-    
-    def _load_patch_data(self, patch_key: str) -> Optional[pd.DataFrame]:
-        """Load lightcurve data for a specific patch.
-        
-        Args:
-            patch_key: The patch identifier to load
-            
-        Returns:
-            Optional[pd.DataFrame]: Patch data if successful, None otherwise
-        """
-        patch_file = self.lightcurve_path / f"patch_{patch_key}.h5"
-        
-        if patch_file.exists():
-            try:
-                data = pd.read_hdf(patch_file, key="lightcurves")
-                return data
-            except Exception as e:
-                return None
-        else:
-            return None
-    
-    def _manage_cache(self, new_patch_key: str, new_data: pd.DataFrame):
-        """Manage cache size by removing least recently used items.
-        
-        Args:
-            new_patch_key: Key for the new patch data to cache
-            new_data: The patch data to cache
-        """
-        if len(self._patch_cache) >= self._max_cache_size:
-            # Remove oldest entry (simple FIFO for now)
-            oldest_key = next(iter(self._patch_cache))
-            del self._patch_cache[oldest_key]
-        
-        self._patch_cache[new_patch_key] = new_data
+
+    """
+    =====================================================================
+    SNN INFERENCE
+    =====================================================================
+    """
 
     def load_snn_inference(self, columns=None, snn_dataset_name="snn_inference"):
         """
