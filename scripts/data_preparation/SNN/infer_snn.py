@@ -1,4 +1,8 @@
 import os
+
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import glob
 import pandas as pd
 import numpy as np

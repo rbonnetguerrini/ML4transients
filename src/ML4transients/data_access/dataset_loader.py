@@ -91,7 +91,7 @@ class DatasetLoader:
         self._build_global_index_fallback()
 
     def _build_global_index_fallback(self):
-        """Fallback method to build global index dynamically (legacy behavior)."""
+        """Fallback method to build global index dynamically."""
         print("Building global index from feature files...")
         self._global_id_index = {}
         
@@ -124,6 +124,7 @@ class DatasetLoader:
         if visit and visit in self._cutout_loaders:
             return self._cutout_loaders[visit].get_by_id(dia_source_id)
         return None
+    
     def get_cutout(self, visit: int, dia_source_id: int):
         """Get specific cutout by visit and diaSourceId."""
         if visit in self._cutout_loaders:

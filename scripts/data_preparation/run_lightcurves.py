@@ -37,24 +37,7 @@ def main():
 
     try:
         print("=== Extracting lightcurves and creating indices ===")
-        extract_and_save_lightcurves_with_index(config)
-        
-        # Perform cross-matching if enabled
-        if args.crossmatch and args.catalogs:
-            print("\n=== Performing cross-matching ===")
-            perform_crossmatching(
-                lsst_config=config,
-                catalog_paths=args.catalogs,
-                catalog_names=args.catalog_names,
-                tolerances_arcsec=args.tolerances,
-                ra_columns=args.ra_columns,
-                dec_columns=args.dec_columns
-            )
-        elif args.crossmatch:
-            print("Cross-matching enabled but no catalogs specified. Use --catalogs option.")
-        else:
-            print("Cross-matching not requested")
-            
+        extract_and_save_lightcurves_with_index(config)                  
         config["run_info"]["status"] = "completed"
     except Exception as e:
         config["run_info"]["status"] = "failed"
