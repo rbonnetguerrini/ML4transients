@@ -89,6 +89,32 @@ python scripts/data_preparation/run_lightcurves.py configs/data_preparation/conf
 
 The resulting files in `lightcurves/` include patch-based HDF5 tables and index files for rapid access.
 
+## Cross-matching with External Catalogs
+
+Cross-match your lightcurve dataset with external catalogs (e.g., Gaia) to identify stellar contamination or validate transient candidates:
+
+```sh
+python scripts/data_preparation/run_crossmatch.py \
+    --dataset /path/to/lightcurve/data \
+    --catalog_file saved/source_cat_gaia.pkl
+```
+
+Results are saved to `crossmatch/crossmatch_results.h5` and can be used to filter datasets by match status.
+
+### Filtering by Cross-match Results
+
+Once cross-matching is complete, you can easily filter your dataset to separate stellar contaminants from transient candidates:
+
+```py
+# Load dataset with cross-match results
+dataset = DatasetLoader("/path/to/your/dataset")
+
+# Get objects matched to Gaia (likely stellar contaminants)
+gaia_stars = dataset.filter_by_crossmatch('source_cat_gaia', matched=True)
+``
+
+The `filter_by_crossmatch()` method returns lists of `diaObjectId` values that can be used for further analysis or to create filtered subsets.
+
 ## Load dataset:
 ```py
 from ML4transients.data_access import DatasetLoader

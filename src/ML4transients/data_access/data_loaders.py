@@ -2,6 +2,7 @@ import h5py
 import pandas as pd
 import numpy as np
 import time
+import gc
 from pathlib import Path
 from typing import List, Dict, Optional
 import hashlib
@@ -1762,6 +1763,16 @@ class LightCurveLoader:
                 print(f"Saved filtered {index_file}: {len(df)} entries")
 
         # 3. Save patch files with only high-conf sources
+        # First, get high-confidence diaObjectIds from the high-confidence diaSourceIds
+        if not self.diasource_index.empty:
+            high_conf_objids = set(self.diasource_index.loc[
+                self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'
+            ].unique())
+            print(f"Found {len(high_conf_objids)} high-confidence diaObjectIds")
+        else:
+            print("Warning: No diasource_index available, cannot filter patch files")
+            high_conf_objids = set()
+        
         patch_files = list((self.lightcurve_path).glob("patch_*.h5"))
         for patch_file in patch_files:
             out_patch = out_lc_dir / patch_file.name
@@ -1772,15 +1783,18 @@ class LightCurveLoader:
             # Load original lightcurves
             df = pd.read_hdf(patch_file, key="lightcurves")
             
-            # Filter to only high-confidence sources
-            if 'diaSourceId' in df.columns:
+            # Filter by diaObjectId since patch files contain lightcurve data organized by object
+            if 'diaObjectId' in df.columns:
+                df_filtered = df[df["diaObjectId"].isin(high_conf_objids)]
+            elif 'diaSourceId' in df.columns:
+                # Fallback: filter by diaSourceId if available 
                 df_filtered = df[df["diaSourceId"].isin(high_conf_ids)]
             elif df.index.name == "diaSourceId":
                 df_filtered = df[df.index.isin(high_conf_ids)]
-            elif df.index.name is None and df.index.dtype == np.int64:
-                df_filtered = df[df.index.isin(high_conf_ids)]
             else:
-                print(f"Warning: Could not find 'diaSourceId' in patch file: {patch_file}")
+                print(f"Warning: Could not find 'diaObjectId' or 'diaSourceId' in patch file: {patch_file}")
+                print(f"Columns available: {list(df.columns)}")
+                print(f"Index name: {df.index.name}")
                 continue
             
             if len(df_filtered) > 0:
@@ -1790,13 +1804,11 @@ class LightCurveLoader:
                 # Also copy SNN inference data if it exists
                 try:
                     snn_df = pd.read_hdf(patch_file, key="snn_inference")
-                    # Filter SNN data to only high-confidence objects
-                    high_conf_objids = self.diasource_index.loc[
-                        self.diasource_index.index.isin(high_conf_ids), 'diaObjectId'
-                    ].unique()
+                    # Filter SNN data to only high-confidence objects (use pre-computed objids)
                     snn_filtered = snn_df[snn_df['diaObjectId'].isin(high_conf_objids)]
                     if len(snn_filtered) > 0:
                         arr = snn_filtered.to_records(index=False)
+                        import h5py  # Local import to ensure availability
                         with h5py.File(out_patch, "a") as h5f:
                             h5f.create_dataset("snn_inference", data=arr)
                         print(f"Saved {len(df_filtered)} lightcurve sources + {len(snn_filtered)} SNN results to {patch_file.name}")

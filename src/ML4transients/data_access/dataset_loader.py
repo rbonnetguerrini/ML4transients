@@ -2,6 +2,7 @@ import yaml
 import json
 import torch
 import pandas as pd
+import numpy as np
 import time
 from pathlib import Path
 from typing import List, Dict, Optional, Union
@@ -35,6 +36,7 @@ class DatasetLoader:
         self._cached_trainers = {}  # Cache trainers by weights_path
         self._inference_registry = {}  # Registry of available inference files
         self._discovery_done = False  # Track if discovery has been performed
+        self._crossmatch_data = None  # Cache for cross-match results
 
         # Only load critical components immediately
         self._load_config_summary()
@@ -974,3 +976,302 @@ class DatasetLoader:
 
     def __str__(self):
         return self.__repr__()
+
+    def load_crossmatch_data(self, data_path: Path = None) -> Optional[pd.DataFrame]:
+        """
+        Load cross-match results for diaObjectIds.
+        
+        Parameters
+        ----------
+        data_path : Path, optional
+            Specific data path to use. If None, uses first available.
+            
+        Returns
+        -------
+        pd.DataFrame or None
+            Cross-match results with diaObjectId and catalog flags
+        """
+        if self._crossmatch_data is not None:
+            return self._crossmatch_data
+            
+        if not data_path:
+            data_path = self.data_paths[0]
+            
+        crossmatch_file = data_path / "crossmatch" / "crossmatch_results.h5"
+        
+        if not crossmatch_file.exists():
+            print(f"No cross-match results found at {crossmatch_file}")
+            return None
+            
+        try:
+            self._crossmatch_data = pd.read_hdf(crossmatch_file, key='crossmatch')
+            print(f"Loaded cross-match data for {len(self._crossmatch_data)} objects")
+            return self._crossmatch_data
+        except Exception as e:
+            print(f"Error loading cross-match data: {e}")
+            return None
+    
+    def get_crossmatch_info(self, dia_object_id: int, data_path: Path = None) -> Optional[Dict]:
+        """
+        Get cross-match information for a specific diaObjectId.
+        
+        Parameters
+        ----------
+        dia_object_id : int
+            The diaObjectId to query
+        data_path : Path, optional
+            Specific data path to use
+            
+        Returns
+        -------
+        Dict or None
+            Cross-match information including catalog flags
+        """
+        crossmatch_data = self.load_crossmatch_data(data_path)
+        
+        if crossmatch_data is None:
+            return None
+            
+        match_row = crossmatch_data[crossmatch_data['diaObjectId'] == dia_object_id]
+        
+        if len(match_row) == 0:
+            return None
+            
+        return match_row.iloc[0].to_dict()
+    
+    def filter_by_crossmatch(self, catalog_name: str, matched: bool = True, 
+                           data_path: Path = None) -> List[int]:
+        """
+        Get list of diaObjectIds based on cross-match results.
+        
+        Parameters
+        ----------
+        catalog_name : str
+            Name of catalog to filter by (e.g., 'gaia')
+        matched : bool
+            If True, return objects matched to catalog. If False, return unmatched.
+        data_path : Path, optional
+            Specific data path to use
+            
+        Returns
+        -------
+        List[int]
+            List of diaObjectIds matching the filter criteria
+        """
+        crossmatch_data = self.load_crossmatch_data(data_path)
+        
+        if crossmatch_data is None:
+            print("No cross-match data available")
+            return []
+            
+        flag_column = f'in_{catalog_name}'
+        
+        if flag_column not in crossmatch_data.columns:
+            print(f"No cross-match results for catalog '{catalog_name}'")
+            available_catalogs = [col.replace('in_', '') for col in crossmatch_data.columns 
+                                if col.startswith('in_')]
+            print(f"Available catalogs: {available_catalogs}")
+            return []
+            
+        if matched:
+            filtered_data = crossmatch_data[crossmatch_data[flag_column] == True]
+        else:
+            filtered_data = crossmatch_data[crossmatch_data[flag_column] == False]
+            
+        return filtered_data['diaObjectId'].tolist()
+    
+    def get_crossmatch_summary(self, data_path: Path = None) -> Optional[Dict]:
+        """
+        Get summary statistics of cross-match results.
+        
+        Parameters
+        ----------
+        data_path : Path, optional
+            Specific data path to use
+            
+        Returns
+        -------
+        Dict or None
+            Summary statistics including match counts and rates
+        """
+        if not data_path:
+            data_path = self.data_paths[0]
+            
+        summary_file = data_path / "crossmatch" / "crossmatch_summary.pkl"
+        
+        if not summary_file.exists():
+            # Generate summary from data if summary file doesn't exist
+            crossmatch_data = self.load_crossmatch_data(data_path)
+            if crossmatch_data is None:
+                return None
+                
+            summary = {'total_objects': len(crossmatch_data)}
+            
+            # Calculate match rates for each catalog
+            for col in crossmatch_data.columns:
+                if col.startswith('in_'):
+                    catalog_name = col.replace('in_', '')
+                    match_count = crossmatch_data[col].sum()
+                    match_rate = match_count / len(crossmatch_data) * 100
+                    summary[f'{catalog_name}_matches'] = match_count
+                    summary[f'{catalog_name}_match_rate_percent'] = match_rate
+                    
+            return summary
+            
+        try:
+            import pickle
+            with open(summary_file, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            print(f"Error loading cross-match summary: {e}")
+            return None
+
+    def extract_coordinates(self) -> pd.DataFrame:
+        """
+        Extract unique coordinates (ra, dec) for all diaObjectIds from lightcurve data.
+        
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns [diaObjectId, coord_ra, coord_dec]
+            One row per unique diaObjectId with representative coordinates.
+        """
+        self._ensure_discovery()
+        
+        if not hasattr(self, 'lightcurves') or not self.lightcurves:
+            raise ValueError("No lightcurve data available for coordinate extraction")
+        
+        print("Extracting coordinates from lightcurve data...")
+        
+        all_coords = []
+        
+        # Get list of available patches
+        available_patches = self.lightcurves.list_available_patches()
+        
+        if not available_patches:
+            raise ValueError("No lightcurve patch files found")
+        
+        print(f"Found {len(available_patches)} patches to process")
+        
+        # Process each patch
+        for i, patch_id in enumerate(available_patches):
+            if i % 10 == 0:
+                print(f"  Processing patch {i+1}/{len(available_patches)}: {patch_id}")
+            
+            try:
+                patch_data = self.lightcurves._load_patch_data(patch_id)
+                
+                if patch_data is None or patch_data.empty:
+                    continue
+                
+                # Check for required columns
+                if 'diaObjectId' not in patch_data.columns:
+                    print(f"    Warning: No diaObjectId column in patch {patch_id}")
+                    continue
+                
+                # Try coord_ra/coord_dec first, then fallback to ra/dec
+                ra_col = 'coord_ra' if 'coord_ra' in patch_data.columns else 'ra'
+                dec_col = 'coord_dec' if 'coord_dec' in patch_data.columns else 'dec'
+                
+                if ra_col not in patch_data.columns or dec_col not in patch_data.columns:
+                    print(f"    Warning: No coordinate columns in patch {patch_id}")
+                    continue
+                
+                # Get unique coordinates per diaObjectId (taking first occurrence)
+                coords_subset = patch_data[['diaObjectId', ra_col, dec_col]].drop_duplicates(
+                    subset=['diaObjectId'], keep='first'
+                )
+                
+                # Rename columns to standard names
+                coords_subset = coords_subset.rename(columns={
+                    ra_col: 'coord_ra',
+                    dec_col: 'coord_dec'
+                })
+                
+                all_coords.append(coords_subset)
+                
+            except Exception as e:
+                print(f"    Error processing patch {patch_id}: {e}")
+                continue
+        
+        if not all_coords:
+            raise RuntimeError("No coordinate data extracted from any patch")
+        
+        # Combine all coordinates
+        coords_df = pd.concat(all_coords, ignore_index=True)
+        
+        # Remove duplicates across patches (keep first occurrence)
+        coords_df = coords_df.drop_duplicates(subset=['diaObjectId'], keep='first')
+        
+        # Ensure diaObjectId is int64
+        coords_df['diaObjectId'] = coords_df['diaObjectId'].astype(np.int64)
+        
+        print(f"Extracted coordinates for {len(coords_df)} unique diaObjectIds")
+        return coords_df
+
+    def perform_crossmatch(self, catalog_file: str, catalog_name: str = None,
+                          ra_col: str = 'ra', dec_col: str = 'dec',
+                          tolerance_arcsec: float = 1.0,
+                          output_file: str = None) -> pd.DataFrame:
+        """
+        Perform cross-matching with an external catalog at the DatasetLoader level.
+        
+        Parameters
+        ----------
+        catalog_file : str
+            Path to catalog file (.pkl, .csv, .h5)
+        catalog_name : str, optional
+            Name for the catalog (default: use filename)
+        ra_col : str, default 'ra'
+            RA column name in external catalog
+        dec_col : str, default 'dec'
+            Dec column name in external catalog
+        tolerance_arcsec : float, default 1.0
+            Matching tolerance in arcseconds
+        output_file : str, optional
+            Output file path for results
+            
+        Returns
+        -------
+        pd.DataFrame
+            Cross-match results with columns [diaObjectId, coord_ra, coord_dec, in_{catalog_name}]
+        """
+        # Import cross-matching functionality
+        from ..data_preparation.crossmatch import CrossMatcher
+        
+        if catalog_name is None:
+            catalog_name = Path(catalog_file).stem
+        
+        print(f"=== Cross-matching with {catalog_name} ===")
+        
+        # Extract coordinates from lightcurve data
+        coords_df = self.extract_coordinates()
+        
+        # Initialize CrossMatcher
+        crossmatcher = CrossMatcher({})
+        
+        # Load external catalog
+        print(f"Loading external catalog: {catalog_file}")
+        crossmatcher.load_catalog(catalog_name, catalog_file, ra_col, dec_col)
+        
+        # Perform cross-matching
+        results = crossmatcher.crossmatch_objects(
+            coords_df, catalog_name, tolerance_arcsec
+        )
+        
+        # Save results if output file specified
+        if output_file:
+            output_path = Path(output_file)
+            if not output_path.is_absolute():
+                # Save relative to first data path
+                output_path = self.data_paths[0] / output_file
+            
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            crossmatcher.save_crossmatch_results(results, output_path)
+            
+            print(f"Results saved to: {output_path}")
+        
+        # Cache results for later use
+        self._crossmatch_data = results
+        
+        return results
