@@ -183,7 +183,14 @@ More details in `notebooks/inference_example.ipynb`
 ## Perform evaluation: 
 
 ```sh
-python scripts/evaluation/run_evaluation.py     --config configs/evaluation/evaluation_config.yaml     --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm     --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized     --output-dir saved/test_eval/ensemble_umap_uncertainty     --interpretability     --optimize-umap   --run-inference
+python scripts/evaluation/run_evaluation.py \
+--config configs/evaluation/evaluation_config.yaml \
+--data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm \
+--weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized \
+--output-dir saved/test_eval/ensemble_umap_uncertainty \
+--interpretability \
+--optimize-umap \
+--run-inference
 ```
 
 More details in `notebooks/evaluation_example.ipynb`
