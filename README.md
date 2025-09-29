@@ -111,7 +111,7 @@ dataset = DatasetLoader("/path/to/your/dataset")
 
 # Get objects matched to Gaia (likely stellar contaminants)
 gaia_stars = dataset.filter_by_crossmatch('source_cat_gaia', matched=True)
-``
+```
 
 The `filter_by_crossmatch()` method returns lists of `diaObjectId` values that can be used for further analysis or to create filtered subsets.
 
