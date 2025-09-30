@@ -92,10 +92,15 @@ def main():
     
     # Set default output path if not provided
     if args.output_file is None:
-        output_path = dataset_path / "crossmatch" / "crossmatch_results.h5"
-        # Create crossmatch directory if it doesn't exist
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Use catalog name and tolerance in filename to avoid overwriting
+        output_dir = dataset_path / "crossmatch"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_filename = f"crossmatch_{catalog_name}.h5"
+        output_path = output_dir / output_filename
         args.output_file = str(output_path)
+    else:
+        output_path = Path(args.output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
     
     print("=== Cross-Matching Configuration ===")
     print(f"Dataset: {args.dataset}")
@@ -122,6 +127,20 @@ def main():
             output_file=args.output_file
         )
         
+        # Only save diaObjectId and crossmatch column to output file
+        match_col = f'in_{catalog_name}'
+        minimal_results = results[['diaObjectId', match_col]] if match_col in results.columns else results[['diaObjectId']]
+        if output_path.suffix == '.h5':
+            minimal_results.to_hdf(output_path, key='crossmatch', mode='w', format='table', index=False)
+        elif output_path.suffix == '.csv':
+            minimal_results.to_csv(output_path, index=False)
+        elif output_path.suffix == '.pkl':
+            import pickle
+            with open(output_path, 'wb') as f:
+                pickle.dump(minimal_results, f)
+        else:
+            print(f"Unsupported output format: {output_path.suffix}")
+        
         end_time = datetime.utcnow()
         duration = (end_time - start_time).total_seconds()
         
@@ -130,7 +149,6 @@ def main():
         print(f"Total objects: {len(results)}")
         
         # Print summary statistics
-        match_col = f'in_{catalog_name}'
         if match_col in results.columns:
             match_count = results[match_col].sum()
             match_rate = match_count / len(results) * 100

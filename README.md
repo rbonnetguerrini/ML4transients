@@ -188,6 +188,7 @@ python scripts/evaluation/run_evaluation.py \
 --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm \
 --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized \
 --output-dir saved/test_eval/ensemble_umap_uncertainty \
+--object-ids-file saved/object_ID/transient_id_high_conf.txt \
 --interpretability \
 --optimize-umap \
 --run-inference

@@ -978,7 +978,7 @@ class DatasetLoader:
     def __str__(self):
         return self.__repr__()
 
-    def load_crossmatch_data(self, data_path: Path = None) -> Optional[pd.DataFrame]:
+    def load_crossmatch_data(self, data_path: Path = None, catalog_name: str = None) -> Optional[pd.DataFrame]:
         """
         Load cross-match results for diaObjectIds.
         
@@ -998,7 +998,7 @@ class DatasetLoader:
         if not data_path:
             data_path = self.data_paths[0]
             
-        crossmatch_file = data_path / "crossmatch" / "crossmatch_results.h5"
+        crossmatch_file = data_path / "crossmatch" / f"crossmatch_{catalog_name}.h5"
         
         if not crossmatch_file.exists():
             print(f"No cross-match results found at {crossmatch_file}")
@@ -1012,7 +1012,7 @@ class DatasetLoader:
             print(f"Error loading cross-match data: {e}")
             return None
     
-    def get_crossmatch_info(self, dia_object_id: int, data_path: Path = None) -> Optional[Dict]:
+    def get_crossmatch_info(self, dia_object_id: int, data_path: Path = None, catalog_name: str = None) -> Optional[Dict]:
         """
         Get cross-match information for a specific diaObjectId.
         
@@ -1028,7 +1028,7 @@ class DatasetLoader:
         Dict or None
             Cross-match information including catalog flags
         """
-        crossmatch_data = self.load_crossmatch_data(data_path)
+        crossmatch_data = self.load_crossmatch_data(data_path, catalog_name)
         
         if crossmatch_data is None:
             return None
@@ -1059,7 +1059,7 @@ class DatasetLoader:
         List[int]
             List of diaObjectIds matching the filter criteria
         """
-        crossmatch_data = self.load_crossmatch_data(data_path)
+        crossmatch_data = self.load_crossmatch_data(data_path, catalog_name)
         
         if crossmatch_data is None:
             print("No cross-match data available")
