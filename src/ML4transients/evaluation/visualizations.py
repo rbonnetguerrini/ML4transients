@@ -722,7 +722,7 @@ class UMAPVisualizer:
         """Plot UMAP with fixed classification colors and symbols for TP/FP/TN/FN."""
         p = figure(title=title, width=self.width, height=self.height,
                   tools=['pan', 'wheel_zoom', 'reset', 'save'])
-        
+         
         # Create data sources for each class type
         tp_data = ColumnDataSource(df[df['class_type'] == 'True Positive'])
         tn_data = ColumnDataSource(df[df['class_type'] == 'True Negative'])

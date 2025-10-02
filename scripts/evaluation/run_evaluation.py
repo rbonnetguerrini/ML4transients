@@ -12,7 +12,7 @@ os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import argparse
 import yaml
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import sys
 import torch
 import numpy as np
@@ -55,6 +55,10 @@ def parse_args():
                        help="SNR threshold to separate low and high SNR samples (default: 5.0)")
     parser.add_argument("--object-ids-file", type=str, default=None,
                        help="Path to file containing diaObjectIds (one per line)")
+    parser.add_argument("--umap-load-path", type=str, default=None,
+                       help="Path to load an existing UMAP fit for interpretability")
+    parser.add_argument("--umap-save-path", type=str, default=None,
+                       help="Path to save the fitted UMAP after interpretability analysis")
     
     return parser.parse_args()
 
@@ -175,7 +179,7 @@ def filter_inference_results_by_object_ids(dataset_loader: DatasetLoader,
     filtered_results = {}
     
     for visit, loader in inference_results.items():
-        # Get source IDs from this visit's inference results
+        # Get source ID from this visit's inference results
         visit_source_ids = loader.ids
         
         # Find intersection with target source IDs
@@ -462,8 +466,21 @@ def extract_snr_values(dataset_loader: DatasetLoader, source_ids: np.ndarray) ->
         return None
 
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
-                                max_samples: int = 3000) -> DataLoader:
-    """Return DataLoader tailored for feature extraction / interpretability."""
+                                max_samples: int = 3000, 
+                                object_ids: Optional[List[str]] = None) -> DataLoader:
+    """Return DataLoader tailored for feature extraction / interpretability.
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader instance
+    visits : list
+        List of visits to include
+    max_samples : int
+        Maximum number of samples for UMAP
+    object_ids : Optional[List[str]]
+        If provided, only include sources from these diaObjectIds
+    """
     print(f"Creating evaluation dataset from {len(visits)} visits...")
     
     # Create inference dataset for the specified visits
@@ -472,16 +489,162 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
         visits=visits
     )
     
+    # Filter dataset by object IDs if specified
+    if object_ids:
+        print(f"Filtering dataset to {len(object_ids)} specified diaObjectIds...")
+        eval_dataset = filter_pytorch_dataset_by_object_ids(
+            eval_dataset, dataset_loader, object_ids
+        )
+        print(f"Filtered dataset contains {len(eval_dataset)} samples")
+    
     # Use optimized DataLoader settings for evaluation
     return DataLoader(
         eval_dataset,
-        batch_size=128,  # Increase batch size for better GPU utilization
+        batch_size=128,
         shuffle=False,
-        num_workers=0,  # Avoid multiprocessing overhead for evaluation
-        pin_memory=False,  # Save memory
+        num_workers=0,
+        pin_memory=False,
         drop_last=False,
-        prefetch_factor=2 if hasattr(DataLoader, 'prefetch_factor') else None  # Prefetch next batch
+        prefetch_factor=2 if hasattr(DataLoader, 'prefetch_factor') else None
     )
+
+def filter_pytorch_dataset_by_object_ids(dataset, dataset_loader: DatasetLoader, 
+                                        object_ids: List[str]):
+    """Filter a PyTorch dataset to only include sources from specified diaObjectIds.
+    
+    Parameters
+    ----------
+    dataset : PytorchDataset
+        Original dataset
+    dataset_loader : DatasetLoader
+        Dataset loader for accessing lightcurve data
+    object_ids : List[str]
+        List of diaObjectIds to filter by
+        
+    Returns
+    -------
+    FilteredPytorchDataset
+        Filtered dataset containing only specified objects
+    """
+    # Get lightcurve loader
+    lightcurve_path = None
+    for data_path in dataset_loader.data_paths:
+        potential_lc_path = data_path / "lightcurves"
+        if potential_lc_path.exists():
+            lightcurve_path = potential_lc_path
+            break
+    
+    if lightcurve_path is None:
+        print("Error: No lightcurves directory found")
+        return dataset
+    
+    from ML4transients.data_access.data_loaders import LightCurveLoader
+    lc_loader = LightCurveLoader(lightcurve_path)
+    
+    # Convert object IDs to integers and get source IDs
+    object_ids_int = [int(obj_id) for obj_id in object_ids]
+    object_to_sources = lc_loader.get_source_ids_for_objects(object_ids_int)
+    
+    # Collect all target source IDs
+    target_source_ids = set()
+    for source_ids in object_to_sources.values():
+        target_source_ids.update(source_ids)
+    
+    print(f"Found {len(target_source_ids)} diaSourceIds for {len(object_ids)} diaObjectIds")
+    
+    # Access the underlying dataset if this is already a Subset
+    base_dataset = dataset.dataset if hasattr(dataset, 'dataset') else dataset
+    
+    # Find indices in dataset that correspond to target source IDs
+    filtered_indices = []
+    
+    # Check if the dataset has _sample_index (lazy loading) or dia_source_ids attribute
+    if hasattr(base_dataset, '_sample_index'):
+        # Lazy loading dataset - check source IDs in sample index
+        for idx in range(len(dataset)):
+            # Get actual index if this is a Subset
+            actual_idx = dataset.indices[idx] if hasattr(dataset, 'indices') else idx
+            visit, source_id = base_dataset._sample_index[actual_idx]
+            if source_id in target_source_ids:
+                filtered_indices.append(idx)
+    elif hasattr(base_dataset, 'dia_source_ids'):
+        # Pre-loaded dataset - use dia_source_ids array
+        for idx in range(len(dataset)):
+            actual_idx = dataset.indices[idx] if hasattr(dataset, 'indices') else idx
+            source_id = base_dataset.dia_source_ids[actual_idx]
+            if source_id in target_source_ids:
+                filtered_indices.append(idx)
+    else:
+        print("Warning: Cannot determine dataset structure, trying direct access...")
+        # Fallback: try accessing samples directly
+        for idx in range(len(dataset)):
+            try:
+                # This will trigger __getitem__ which should work
+                _, _, meta_idx = dataset[idx]
+                # meta_idx should be the index, we can use it to get source_id
+                if hasattr(base_dataset, '_sample_index'):
+                    actual_idx = dataset.indices[idx] if hasattr(dataset, 'indices') else idx
+                    _, source_id = base_dataset._sample_index[actual_idx]
+                elif hasattr(base_dataset, 'dia_source_ids'):
+                    actual_idx = dataset.indices[idx] if hasattr(dataset, 'indices') else idx
+                    source_id = base_dataset.dia_source_ids[actual_idx]
+                else:
+                    continue
+                    
+                if source_id in target_source_ids:
+                    filtered_indices.append(idx)
+            except Exception as e:
+                print(f"Error processing index {idx}: {e}")
+                continue
+    
+    print(f"Filtered dataset from {len(dataset)} to {len(filtered_indices)} samples")
+    
+    if len(filtered_indices) == 0:
+        print("ERROR: No matching samples found! Check that object IDs exist in the dataset.")
+        return dataset  # Return original to avoid complete failure
+    
+    # Create a custom filtered dataset that preserves source_ids access
+    return FilteredPytorchDataset(dataset, filtered_indices, target_source_ids, base_dataset)
+
+
+class FilteredPytorchDataset:
+    """Wrapper that filters a PyTorch dataset while preserving metadata access."""
+    
+    def __init__(self, dataset, filtered_indices, target_source_ids, base_dataset):
+        self.dataset = dataset
+        self.filtered_indices = filtered_indices
+        self.target_source_ids = target_source_ids
+        self.base_dataset = base_dataset
+        
+        # Create mapping of filtered index to original index
+        self.index_mapping = {i: filtered_indices[i] for i in range(len(filtered_indices))}
+    
+    def __len__(self):
+        return len(self.filtered_indices)
+    
+    def __getitem__(self, idx):
+        original_idx = self.filtered_indices[idx]
+        return self.dataset[original_idx]
+    
+    @property
+    def source_ids(self):
+        """Expose source_ids for efficient filtering."""
+        # Build source_ids array on demand
+        source_ids = []
+        for idx in self.filtered_indices:
+            # Get actual index in base dataset
+            actual_idx = self.dataset.indices[idx] if hasattr(self.dataset, 'indices') else idx
+            
+            if hasattr(self.base_dataset, '_sample_index'):
+                _, source_id = self.base_dataset._sample_index[actual_idx]
+            elif hasattr(self.base_dataset, 'dia_source_ids'):
+                source_id = self.base_dataset.dia_source_ids[actual_idx]
+            else:
+                source_id = -1
+                
+            source_ids.append(source_id)
+        
+        return np.array(source_ids)
 
 def main():
     """Orchestrate full evaluation with ensemble model support."""
@@ -514,8 +677,10 @@ def main():
     # Process object IDs filtering if specified
     object_ids = None
 
-    object_ids = load_object_ids_from_file(args.object_ids_file)
-    print(f"Loaded {len(object_ids)} object IDs from file: {args.object_ids_file}")
+    if args.object_ids_file:  # only if user provided the path
+        object_ids = load_object_ids_from_file(args.object_ids_file)
+        print(f"Loaded {len(object_ids)} object IDs from file: {args.object_ids_file}")
+
     
     if object_ids:
         print(f"Evaluation will be filtered to {len(object_ids)} specified diaObjectIds")
@@ -684,35 +849,51 @@ def main():
         
         # Initialize interpretability components
         try:
-            print("Creating evaluation data loader...")
+            print("Creating evaluation data loader (with object ID filtering if specified)...")
             step_start = time.time()
             eval_data_loader = create_evaluation_data_loader(
                 dataset_loader, visits_to_eval, 
-                max_samples=config.get('interpretability', {}).get('max_samples', 3000)
+                max_samples=config.get('interpretability', {}).get('max_samples', 3000),
+                object_ids=object_ids  # Pass object_ids to filter the data loader
             )
             print(f"Data loader created in {time.time() - step_start:.2f}s")
             
-            print("Initializing UMAP interpreter...")
-            step_start = time.time()
-            interpreter = UMAPInterpreter(args.weights_path)
-            print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
-            
-            # Update config with command line overrides
-            interp_config = config.copy()
-            if 'interpretability' not in interp_config:
-                interp_config['interpretability'] = {}
-            if 'umap' not in interp_config['interpretability']:
-                interp_config['interpretability']['umap'] = {}
-            if 'clustering' not in interp_config['interpretability']:
-                interp_config['interpretability']['clustering'] = {}
-            
-            if args.optimize_umap:
-                interp_config['interpretability']['umap']['optimize_params'] = True
-            if args.enable_clustering:
-                interp_config['interpretability']['clustering']['enabled'] = True
+            # Verify the data loader has samples
+            if len(eval_data_loader.dataset) == 0:
+                print("ERROR: Filtered data loader is empty! Skipping interpretability analysis.")
+                interpreter = None
+                eval_data_loader = None
+            else:
+                print(f"Data loader contains {len(eval_data_loader.dataset)} samples")
+                
+                print("Initializing UMAP interpreter...")
+                step_start = time.time()
+                interpreter = UMAPInterpreter(args.weights_path, load_path=args.umap_load_path, save_path=args.umap_save_path)
+                print(f"Interpreter initialized in {time.time() - step_start:.2f}s")
+                
+                # Update config with command line overrides
+                interp_config = config.copy()
+                if 'interpretability' not in interp_config:
+                    interp_config['interpretability'] = {}
+                if 'umap' not in interp_config['interpretability']:
+                    interp_config['interpretability']['umap'] = {}
+                if 'clustering' not in interp_config['interpretability']:
+                    interp_config['interpretability']['clustering'] = {}
+                
+                if args.optimize_umap:
+                    interp_config['interpretability']['umap']['optimize_params'] = True
+                if args.enable_clustering:
+                    interp_config['interpretability']['clustering']['enabled'] = True
+                # Add UMAP load/save paths to config
+                if args.umap_load_path:
+                    interp_config['interpretability']['umap']['load_path'] = args.umap_load_path
+                if args.umap_save_path:
+                    interp_config['interpretability']['umap']['save_path'] = args.umap_save_path
                 
         except Exception as e:
             print(f"Error initializing interpretability components: {e}")
+            import traceback
+            traceback.print_exc()
             print("Will create metrics-only dashboard...")
             interpreter = None
             eval_data_loader = None

@@ -103,16 +103,21 @@ class UMAPInterpreter:
     4. create_interpretability_dataframe()
     """
     
-    def __init__(self, model_path: str, device: Optional[torch.device] = None):
+    def __init__(self, model_path: str, device: Optional[torch.device] = None, 
+                 load_path: Optional[str] = None, save_path: Optional[str] = None):
         """
         Initialize UMAP interpreter with a trained model.
         
         Args:
             model_path: Path to trained model directory
             device: Device to run model on
+            load_path: Optional path to load an existing UMAP fit
+            save_path: Optional path to save the fitted UMAP
         """
         self.model_path = Path(model_path)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.load_path = load_path
+        self.save_path = save_path
         
         # Load model
         config = load_config(self.model_path / "config.yaml")
@@ -284,6 +289,12 @@ class UMAPInterpreter:
         if max_samples is not None:
             print(f"Will sample up to {max_samples} samples for UMAP computation")
         
+        # Check if data_loader has any data
+        if len(data_loader.dataset) == 0:
+            raise ValueError("DataLoader has no samples! Cannot extract features from empty dataset.")
+        
+        print(f"DataLoader has {len(data_loader.dataset)} samples in {len(data_loader)} batches")
+        
         # First pass: extract all features
         features = []
         total_batches = len(data_loader)
@@ -348,6 +359,10 @@ class UMAPInterpreter:
                     self.hook_handle.remove()
                     self.hook_handle = None
         
+        # Check if we extracted any features
+        if len(features) == 0:
+            raise ValueError("No features were extracted! Check that the DataLoader is working correctly.")
+        
         # Stack all features
         all_features = np.vstack(features)
         print(f"Total extracted features shape: {all_features.shape}")
@@ -367,7 +382,7 @@ class UMAPInterpreter:
             print(f"Using all {len(all_features)} samples (no sampling needed)")
             self.features = all_features
             self.sample_indices = np.arange(len(all_features))
-        
+                
         # Force garbage collection after feature extraction
         import gc
         gc.collect()
@@ -546,11 +561,35 @@ class UMAPInterpreter:
 
     def fit_umap(self, n_neighbors: int = 15, min_dist: float = 0.1, 
                  n_components: int = 2, random_state: int = 42,
-                 optimize_params: bool = False) -> np.ndarray:
-        """Fit UMAP on previously extracted features (with optional param search)."""
+                 optimize_params: bool = False, load_path: Optional[str] = None, 
+                 save_path: Optional[str] = None) -> np.ndarray:
+        """Fit UMAP on previously extracted features (with optional param search).
+        
+        If load_path is provided and the file exists, load the UMAP reducer and 
+        transform the current features. Otherwise, fit a new UMAP and optionally 
+        save it if save_path is provided.
+        
+        Args:
+            load_path: Override instance load_path if provided
+            save_path: Override instance save_path if provided
+        """
         if self.features is None:
             raise ValueError("No features extracted. Call extract_features first.")
         
+        # Use provided paths or fall back to instance defaults
+        effective_load_path = load_path if load_path is not None else self.load_path
+        effective_save_path = save_path if save_path is not None else self.save_path
+        
+        # Check if we should load an existing UMAP
+        if effective_load_path and Path(effective_load_path).exists():
+            print(f"Loading existing UMAP from {effective_load_path}...")
+            self.load_umap(effective_load_path)
+            print(f"Transforming {len(self.features)} samples with loaded UMAP.")
+            self.umap_embedding = self.transform_with_umap(self.features)
+            print(f"UMAP transformation completed. Embedding shape: {self.umap_embedding.shape}")
+            return self.umap_embedding
+        
+        # Otherwise, fit a new UMAP
         # Print number of samples being used for UMAP
         print(f"Building UMAP embedding with {len(self.features)} samples")
         print(f"Feature dimensionality: {self.features.shape[1]}D -> {n_components}D")
@@ -576,11 +615,16 @@ class UMAPInterpreter:
                 min_dist=min_dist,
                 n_components=n_components,
                 random_state=random_state,
-                verbose=True
+                verbose=True, 
             )
             
             self.umap_embedding = self.umap_reducer.fit_transform(self.features)
             print(f"UMAP embedding completed. Final embedding shape: {self.umap_embedding.shape}")
+            
+            # Save the fitted UMAP if save_path is provided
+            if effective_save_path:
+                self.save_umap(effective_save_path)
+            
             return self.umap_embedding
             
         except Exception as e:
@@ -638,71 +682,35 @@ class UMAPInterpreter:
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         
-        # Use stored sample indices if not provided
-        if sample_indices is None:
-            if self.sample_indices is not None:
-                sample_indices = self.sample_indices
-                print(f"Using stored sample indices ({len(sample_indices)} samples)")
-            else:
-                sample_indices = np.arange(len(predictions))
-                print(f"No sample indices available, using all {len(sample_indices)} samples")
-        
-        # Check if sample_indices are compatible with the provided predictions/labels
-        # This handles the case where predictions/labels are filtered (e.g., by object IDs)
-        # but sample_indices still reference the original unfiltered dataset
-        max_index = np.max(sample_indices) if len(sample_indices) > 0 else -1
-        
-        if len(predictions) < len(sample_indices) or max_index >= len(predictions):
-            print(f"Warning: Sample indices mismatch detected!")
-            print(f"  - UMAP samples: {len(sample_indices)} (max index: {max_index})")
-            print(f"  - Available predictions: {len(predictions)}")
-            print(f"  - Available labels: {len(labels)}")
+      
+        if len(self.umap_embedding) != len(predictions):
+            print(f"WARNING: UMAP embedding size ({len(self.umap_embedding)}) != predictions size ({len(predictions)})")
+            print("This suggests the data loader and inference results are from different filtered datasets.")
             
-            # Strategy 1: If we have the right number of samples but wrong indices, remap to sequential
-            if len(predictions) == len(self.umap_embedding):
-                print("  - Predictions/labels match UMAP embedding size: using sequential indices")
-                sample_indices = np.arange(len(predictions))
+            # Use minimum size to avoid index errors
+            min_size = min(len(self.umap_embedding), len(predictions))
+            print(f"Truncating to minimum size: {min_size}")
             
-            # Strategy 2: If we have more UMAP embeddings than predictions, truncate UMAP
-            elif len(self.umap_embedding) > len(predictions):
-                print(f"  - Truncating UMAP embedding from {len(self.umap_embedding)} to {len(predictions)} samples")
-                self.umap_embedding = self.umap_embedding[:len(predictions)]
-                sample_indices = np.arange(len(predictions))
-                print(f"  - New UMAP embedding shape: {self.umap_embedding.shape}")
-                
-            # Strategy 3: If UMAP embedding matches sample_indices length, remap indices
-            elif len(self.umap_embedding) == len(sample_indices):
-                print(f"  - UMAP embedding matches sample count: remapping indices sequentially")
-                sample_indices = np.arange(len(self.umap_embedding))
-                print(f"  - Using indices 0 to {len(sample_indices)-1} for {len(self.umap_embedding)} UMAP points")
-                
-                # Verify predictions/labels have enough samples
-                if len(predictions) < len(sample_indices):
-                    print(f"  - Warning: Still not enough predictions ({len(predictions)}) for UMAP samples ({len(sample_indices)})")
-                    print(f"  - Truncating to minimum: {min(len(predictions), len(sample_indices))}")
-                    min_samples = min(len(predictions), len(sample_indices))
-                    self.umap_embedding = self.umap_embedding[:min_samples]
-                    sample_indices = np.arange(min_samples)
-                    
-            else:
-                print("  - Error: Cannot resolve sample indices mismatch")
-                print(f"    UMAP embedding shape: {self.umap_embedding.shape}")
-                print(f"    Sample indices length: {len(sample_indices)}")
-                print(f"    Predictions length: {len(predictions)}")
-                raise ValueError(
-                    f"Cannot align sample indices (count: {len(sample_indices)}, max: {max_index}) "
-                    f"with predictions array (size: {len(predictions)}). "
-                    f"UMAP embedding has {len(self.umap_embedding)} samples. "
-                    f"This usually happens when filtering by object IDs - "
-                    f"the feature extraction and inference use different filtered datasets."
-                )
-    
+            self.umap_embedding = self.umap_embedding[:min_size]
+            predictions = predictions[:min_size]
+            labels = labels[:min_size]
+            
+            if probabilities is not None:
+                probabilities = probabilities[:min_size]
+            if uncertainties is not None:
+                uncertainties = uncertainties[:min_size]
+            if additional_features:
+                additional_features = {k: v[:min_size] for k, v in additional_features.items()}
+        
+        # Use sequential indices for alignment
+        sample_indices = np.arange(len(self.umap_embedding))
+        
         # Create base DataFrame with UMAP coordinates
         df = pd.DataFrame({
             'umap_x': self.umap_embedding[:, 0],
             'umap_y': self.umap_embedding[:, 1],
-            'prediction': predictions[sample_indices],
-            'true_label': labels[sample_indices],
+            'prediction': predictions,
+            'true_label': labels,
             'sample_index': sample_indices
         })
         
@@ -919,4 +927,6 @@ class UMAPInterpreter:
             raise ValueError("UMAP reducer not loaded/fitted.")
         embedding = self.umap_reducer.transform(features)
         print(f"Transformed {features.shape[0]} samples with loaded UMAP.")
+        
         return embedding
+    
