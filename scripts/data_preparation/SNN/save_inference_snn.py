@@ -186,7 +186,7 @@ def save_predictions_to_h5(pred_dir, h5_dir, csv_dir=None):
         print(f"\nThis indicates a mismatch between filtering and inference!")
         print(f"Consider re-running the SNN pipeline to ensure consistency.")
     else:
-        print(f"\n✓ Validation passed: SNN results match filtering expectations")
+        print(f"\n Validation passed: SNN results match filtering expectations")
 
 
 if __name__ == "__main__":

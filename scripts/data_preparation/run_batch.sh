@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=cutout_batches
 #SBATCH --time=04:00:00
-#SBATCH --mem=16G
+#SBATCH --mem=24G
 #SBATCH --cpus-per-task=1
-#SBATCH --output=logs/batch_%A_%a.out
-#SBATCH --error=logs/batch_%A_%a.err
+#SBATCH --output=logs/data_preparation/batch_%A_%a.out
+#SBATCH --error=logs/data_preparation/batch_%A_%a.err
 
 # Get config base name from argument
 CONFIG_BASE=${1:-"configs_cutout"}
@@ -35,6 +35,11 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Run the script
-python scripts/data_preparation/run_cutout.py "$CONFIG_FILE"
+# Run the script with unbuffered output for real-time logging
+python -u scripts/data_preparation/run_cutout.py "$CONFIG_FILE"
+exit_code=$?
+
+echo "Finished at: $(date)"
+echo "Exit code: $exit_code"
+
 exit $exit_code

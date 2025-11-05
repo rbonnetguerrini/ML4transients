@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: ./scripts/data_preparation/submit_collection.sh configs/configs_cutout.yaml [batch_size]
+# Usage: ./scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml [batch_size]
 
 CONFIG_FILE=${1:-"configs/data_preparation/configs_cutout.yaml"}
 BATCH_SIZE=${2:-50}
@@ -51,7 +51,7 @@ echo "Monitor progress with:"
 echo "  squeue -u $USER"
 echo "  sacct -j $SLURM_JOB_ID"
 echo ""
-echo "Check logs in: logs/batch_${SLURM_JOB_ID}_*.{out,err}"
+echo "Check logs in: logs/data_preparation/batch_${SLURM_JOB_ID}_*.{out,err}"
 echo ""
 echo "After all jobs complete, run:"
 echo "  python scripts/data_preparation/create_global_index_post_batch.py $CONFIG_FILE"

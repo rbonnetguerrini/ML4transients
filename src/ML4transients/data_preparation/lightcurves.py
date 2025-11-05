@@ -9,6 +9,7 @@ from lsst.daf.butler import Butler
 import numpy as np
 import pandas as pd
 import os
+import sys
 import h5py
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -279,48 +280,60 @@ def extract_and_save_lightcurves_with_index(config: dict):
     output_path = config['path']
     print(f"Using output path: {output_path}")
 
-    print("=== Creating diaObjectId→patch index ===")
-    object_index_df = create_lightcurve_index(config)
-    print("\n=== Creating diaSourceId→patch index ===")
-    source_index_df = create_diasource_patch_index(config)
+    # Check if we should skip global index creation (for parallel batch jobs)
+    skip_lightcurve_index = config.get("skip_lightcurve_index", False)
+    
+    if not skip_lightcurve_index:
+        print("=== Creating diaObjectId→patch index ===")
+        object_index_df = create_lightcurve_index(config)
+        print("\n=== Creating diaSourceId→patch index ===")
+        source_index_df = create_diasource_patch_index(config)
 
-    path_lightcurves = f"{output_path}/lightcurves"
-    os.makedirs(path_lightcurves, exist_ok=True)
-    
-    object_index_path = os.path.join(path_lightcurves, "lightcurve_index.h5")
-    source_index_path = os.path.join(path_lightcurves, "diasource_patch_index.h5")
-    
-    save_lightcurve_index(object_index_df, object_index_path)
-    save_diasource_patch_index(source_index_df, source_index_path)
-    
-    print(f"Object index saved to {object_index_path}")
-    print(f"Source index saved to {source_index_path}")
+        path_lightcurves = f"{output_path}/lightcurves"
+        os.makedirs(path_lightcurves, exist_ok=True)
+        
+        object_index_path = os.path.join(path_lightcurves, "lightcurve_index.h5")
+        source_index_path = os.path.join(path_lightcurves, "diasource_patch_index.h5")
+        
+        save_lightcurve_index(object_index_df, object_index_path)
+        save_diasource_patch_index(source_index_df, source_index_path)
+        
+        print(f"Object index saved to {object_index_path}")
+        print(f"Source index saved to {source_index_path}")
+    else:
+        print("Skipping lightcurve index creation (batch mode)")
+        sys.stdout.flush()
     
     # Then extract lightcurves as before
     print("\n=== Extracting lightcurve data ===")
     extract_and_save_lightcurves(config)
     
-    total_time = time.time() - start_time
-    print(f"\n=== Completed ===")
-    print(f"Created diaObjectId index with {len(object_index_df)} object→patch mappings")
-    print(f"Created diaSourceId index with {len(source_index_df)} source→patch mappings")
-    print(f"Total processing time: {total_time/60:.1f} minutes")
-    
-    # Save extraction summary 
-    summary = {
-        'total_objects': len(object_index_df),
-        'total_sources': len(source_index_df),
-        'unique_patches': object_index_df['patch_key'].nunique(),
-        'processing_time_minutes': total_time / 60,
-        'config': config,
-        'created_at': pd.Timestamp.now().isoformat()
-    }
-    
-    summary_path = os.path.join(path_lightcurves, "extraction_summary.yaml")
-    import yaml
-    with open(summary_path, 'w') as f:
-        yaml.dump(summary, f, default_flow_style=False)
-    print(f"Extraction summary saved to {summary_path}")
+    if not skip_lightcurve_index:
+        total_time = time.time() - start_time
+        print(f"\n=== Completed ===")
+        print(f"Created diaObjectId index with {len(object_index_df)} object-->patch mappings")
+        print(f"Created diaSourceId index with {len(source_index_df)} source-->ch mappings")
+        print(f"Total processing time: {total_time/60:.1f} minutes")
+        
+        # Save extraction summary 
+        summary = {
+            'total_objects': len(object_index_df),
+            'total_sources': len(source_index_df),
+            'unique_patches': object_index_df['patch_key'].nunique(),
+            'processing_time_minutes': total_time / 60,
+            'config': config,
+            'created_at': pd.Timestamp.now().isoformat()
+        }
+        
+        summary_path = os.path.join(path_lightcurves, "extraction_summary.yaml")
+        import yaml
+        with open(summary_path, 'w') as f:
+            yaml.dump(summary, f, default_flow_style=False)
+            
+    else:
+        print(f"\n=== Lightcurve extraction completed (indices skipped) ===")
+        sys.stdout.flush()
+
 
 def get_lightcurve_for_object(dia_object_id: int, config: dict) -> Optional[pd.DataFrame]:
     """

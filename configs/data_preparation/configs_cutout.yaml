@@ -3,14 +3,16 @@ collection: run/ssp_ud_cosmos/step5_new
 injection: false
 cutout:
   size: 30
-  coadd_science: false
+  coadd_science: true
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm_high_conf_smallv4
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_SNN
 lightcurves:
   patches: []
   cache_size: 5
+skip_global_index: true
+skip_lightcurve_index: true
 run_info:
   status: running
   started: '2025-07-24T14:01:00'

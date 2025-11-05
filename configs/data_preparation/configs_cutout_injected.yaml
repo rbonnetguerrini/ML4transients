@@ -3,11 +3,13 @@ collection: u/rbonnetguerrini/injected_step6
 injection: true
 cutout:
   size: 30
-  coadd_science: false
+  coadd_science: true
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd
+skip_global_index: true
+skip_lightcurve_index: true
 run_info:
   status: completed
   started: '2025-07-24T14:01:00'

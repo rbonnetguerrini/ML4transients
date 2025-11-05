@@ -6,14 +6,8 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd/lightcurves"
 CSV_DIR="${INPUT_DIR}/csv"
-
-# Clean up any old debug files to prevent conflicts
-echo "=== Cleaning old debug files ==="
-rm -f "${CSV_DIR}"/*debug_counts*.csv
-rm -f "${CSV_DIR}"/*filtered_ids*.txt
-rm -f "${CSV_DIR}"/*inference_counts*.csv
 
 echo "=== Running CSV conversion ==="
 python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/convert_lc_for_snn.py "$INPUT_DIR" "$CSV_DIR"

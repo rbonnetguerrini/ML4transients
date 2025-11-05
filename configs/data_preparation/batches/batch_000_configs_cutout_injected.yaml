@@ -1,17 +1,19 @@
 collection: u/rbonnetguerrini/injected_step6
 cutout:
-  coadd_science: false
+  coadd_science: true
   return_data: false
   save: true
   save_features_only: false
   size: 30
 injection: true
-path: saved/test_inj
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd
 repo: /sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml
 run_info:
-  finished: '2025-07-24T14:15:58.010163'
+  finished: '2025-11-05T15:25:26.845963'
   started: '2025-07-24T14:01:00'
   status: completed
+skip_global_index: true
+skip_lightcurve_index: true
 visits:
 - 322
 - 346
@@ -33,23 +35,3 @@ visits:
 - 11724
 - 11738
 - 11740
-- 17900
-- 17904
-- 17906
-- 17926
-- 17948
-- 17950
-- 19680
-- 19684
-- 19694
-- 19696
-- 22632
-- 22662
-- 23694
-- 23704
-- 23706
-- 23718
-- 29336
-- 29350
-- 30482
-- 30490
