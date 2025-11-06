@@ -1,6 +1,5 @@
 import yaml
 import json
-import torch
 import pandas as pd
 import numpy as np
 import time
@@ -107,13 +106,15 @@ class DatasetLoader:
             self._load_global_index()
         return self._global_id_index
     
-    def get_cutout_by_id(self, dia_source_id: int):
+    def get_cutout_by_id(self, dia_source_id: int, cutout_type: str = 'diff'):
         """Get cutout by diaSourceId (searches all visits).
         
         Parameters
         ----------
         dia_source_id : int
             The diaSourceId to retrieve
+        cutout_type : str, default 'diff'
+            Type of cutout to retrieve: 'diff', 'coadd', or 'science'
             
         Returns
         -------
@@ -122,13 +123,28 @@ class DatasetLoader:
         """
         visit = self.global_index.get(dia_source_id)
         if visit and visit in self._cutout_loaders:
-            return self._cutout_loaders[visit].get_by_id(dia_source_id)
+            return self._cutout_loaders[visit].get_by_id(dia_source_id, cutout_type=cutout_type)
         return None
     
-    def get_cutout(self, visit: int, dia_source_id: int):
-        """Get specific cutout by visit and diaSourceId."""
+    def get_cutout(self, visit: int, dia_source_id: int, cutout_type: str = 'diff'):
+        """Get specific cutout by visit and diaSourceId.
+        
+        Parameters
+        ----------
+        visit : int
+            Visit number
+        dia_source_id : int
+            The diaSourceId to retrieve
+        cutout_type : str, default 'diff'
+            Type of cutout to retrieve: 'diff', 'coadd', or 'science'
+            
+        Returns
+        -------
+        np.ndarray or None
+            Cutout array, or None if not found
+        """
         if visit in self._cutout_loaders:
-            return self._cutout_loaders[visit].get_by_id(dia_source_id)
+            return self._cutout_loaders[visit].get_by_id(dia_source_id, cutout_type=cutout_type)
         return None
     
     def get_features_by_id(self, dia_source_id: int):
@@ -259,10 +275,10 @@ class DatasetLoader:
                 # Pass the cached trainer to avoid reloading
                 inference_loader.run_inference(self, trainer=trainer, force=force)
                 results[visit] = inference_loader
-                print(f"✓ Completed inference for visit {visit}")
+                print(f" Completed inference for visit {visit}")
                 
             except Exception as e:
-                print(f"✗ Error running inference for visit {visit}: {e}")
+                print(f" Error running inference for visit {visit}: {e}")
                 failed_visits.append(visit)
                 continue
             
@@ -270,11 +286,15 @@ class DatasetLoader:
                 # Force memory cleanup after each visit
                 import gc
                 gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass  # torch not available in this environment
         
         if failed_visits:
-            print(f"\n⚠️  Failed visits: {failed_visits}")
+            print(f"\n  Failed visits: {failed_visits}")
         
         print(f"\nCompleted inference for {len(results)}/{len(self.visits)} visits")
         return results
@@ -366,7 +386,8 @@ class DatasetLoader:
         dia_source_id: int, 
         data_path: Path = None, 
         columns: list = None, 
-        load_cutouts: bool = False
+        load_cutouts: bool = False,
+        cutout_type: str = 'diff'
     ) -> Optional[Dict]:
         """Get all data for sources in a lightcurve given any diaSourceId from that lightcurve.
         
@@ -381,6 +402,7 @@ class DatasetLoader:
                     lightcurve columns: ["diaSourceId", "midpointMjdTai", "psFlux", 
                     "psFluxErr", "mag", "magErr", "band", "ccdVisitId", "visit"]
             load_cutouts: If True, also loads cutouts for all sources in the lightcurve
+            cutout_type: Type of cutout to load: 'diff' (default), 'coadd', or 'science'
         
         Returns:
             Optional[Dict]: Dictionary containing:
@@ -494,11 +516,13 @@ class DatasetLoader:
             # Load cutouts visit by visit using batch operations
             for visit, src_ids_in_visit in visit_groups.items():
                 if visit in self._cutout_loaders:
-                    batch_cutouts = self._cutout_loaders[visit].get_multiple_by_ids(src_ids_in_visit)
+                    batch_cutouts = self._cutout_loaders[visit].get_multiple_by_ids(
+                        src_ids_in_visit, cutout_type=cutout_type
+                    )
                     cutouts.update(batch_cutouts)
             
             step4_time = time.time() - step4_start
-            print(f"Step 4 - Get cutouts: {step4_time:.3f}s ({len(cutouts)} cutouts)")
+            print(f"Step 4 - Load {cutout_type} cutouts: {step4_time:.3f}s ({len(cutouts)} cutouts)")
 
         total_time = time.time() - start_time
         print(f"Total lightcurve data retrieval time: {total_time:.3f}s")
@@ -508,7 +532,8 @@ class DatasetLoader:
             'source_ids': source_ids,
             'cutouts': cutouts if load_cutouts else None,
             'object_id': object_id,
-            'num_sources': len(source_ids)
+            'num_sources': len(source_ids),
+            'cutout_type': cutout_type if load_cutouts else None
         }
 
     

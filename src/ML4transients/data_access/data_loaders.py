@@ -7,28 +7,107 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import hashlib
 import yaml
-import torch  
 import matplotlib.pyplot as plt
 
 class CutoutLoader:
     """Lazy loader for cutout data.
     
     Provides efficient access to astronomical image cutouts stored in HDF5 format.
+    Supports three types of cutouts: difference (default), coadd, and science.
     Data is loaded on-demand to minimize memory usage.
     """
     
     def __init__(self, file_path: Path):
         self.file_path = file_path
-        self._data = None
+        self._data = None  # Difference cutouts (default)
+        self._coadd_data = None  # Coadd/template cutouts
+        self._science_data = None  # Science/calexp cutouts
         self._ids = None
+        self._available_types = None  # Cache which types are available
     
     @property
     def data(self):
-        """Lazy load cutout arrays."""
-        if self._data is None:
+        """Load difference cutouts (default behavior for backward compatibility)."""
+        return self.get_data('diff')
+    
+    def get_data(self, cutout_type: str = 'diff'):
+        """Load cutout data of specified type.
+        
+        Parameters
+        ----------
+        cutout_type : str, default 'diff'
+            Type of cutout to load: 'diff', 'coadd', or 'science'
+            
+        Returns
+        -------
+        np.ndarray
+            Array of cutouts of the specified type
+        """
+        cutout_type = cutout_type.lower()
+        
+        # Map to the correct cache and dataset name
+        if cutout_type == 'diff':
+            if self._data is None:
+                self._data = self._load_cutouts_from_file('cutouts')
+            return self._data
+        elif cutout_type == 'coadd':
+            if self._coadd_data is None:
+                self._coadd_data = self._load_cutouts_from_file('coadd_cutouts')
+            return self._coadd_data
+        elif cutout_type == 'science':
+            if self._science_data is None:
+                self._science_data = self._load_cutouts_from_file('science_cutouts')
+            return self._science_data
+        else:
+            raise ValueError(f"Invalid cutout_type: {cutout_type}. Must be 'diff', 'coadd', or 'science'")
+    
+    def _load_cutouts_from_file(self, dataset_name: str):
+        """Load cutouts from specific dataset in HDF5 file.
+        
+        Parameters
+        ----------
+        dataset_name : str
+            Name of the dataset in the HDF5 file
+            
+        Returns
+        -------
+        np.ndarray or None
+            Cutout data if available, None otherwise
+        """
+        try:
             with h5py.File(self.file_path, 'r') as f:
-                self._data = f['cutouts'][:]
-        return self._data
+                if dataset_name in f:
+                    return f[dataset_name][:]
+                else:
+                    print(f"Warning: Dataset '{dataset_name}' not found in {self.file_path}")
+                    return None
+        except Exception as e:
+            print(f"Error loading {dataset_name} from {self.file_path}: {e}")
+            return None
+    
+    def _check_available_types(self):
+        """Check which cutout types are available in the file."""
+        if self._available_types is not None:
+            return self._available_types
+        
+        self._available_types = []
+        try:
+            with h5py.File(self.file_path, 'r') as f:
+                if 'cutouts' in f:
+                    self._available_types.append('diff')
+                if 'coadd_cutouts' in f:
+                    self._available_types.append('coadd')
+                if 'science_cutouts' in f:
+                    self._available_types.append('science')
+        except Exception as e:
+            print(f"Warning: Error checking available cutout types in {self.file_path}: {e}")
+        
+        return self._available_types
+    
+    @property
+    def available_types(self):
+        """Get list of available cutout types in this file."""
+        return self._check_available_types()
     
     @property
     def ids(self):
@@ -38,45 +117,60 @@ class CutoutLoader:
                 self._ids = f['diaSourceId'][:]
         return self._ids
     
-    def get_by_id(self, dia_source_id: int):
+    def get_by_id(self, dia_source_id: int, cutout_type: str = 'diff'):
         """Get specific cutout by diaSourceId.
         
         Parameters
         ----------
         dia_source_id : int
             The diaSourceId to retrieve
+        cutout_type : str, default 'diff'
+            Type of cutout to retrieve: 'diff', 'coadd', or 'science'
             
         Returns
         -------
         np.ndarray or None
             Cutout array, or None if ID not found
         """
+        cutout_type = cutout_type.lower()
+        
+        # Map cutout type to dataset name
+        dataset_map = {
+            'diff': 'cutouts',
+            'coadd': 'coadd_cutouts',
+            'science': 'science_cutouts'
+        }
+        
+        if cutout_type not in dataset_map:
+            raise ValueError(f"Invalid cutout_type: {cutout_type}. Must be 'diff', 'coadd', or 'science'")
+        
+        dataset_name = dataset_map[cutout_type]
+        
         # Try efficient row-based query first
         try:
             with h5py.File(self.file_path, 'r') as f:
-                # Get the IDs to find the index
-                ids = f['diaSourceId'][:]
-                idx = np.where(ids == dia_source_id)[0]
-                if len(idx) == 0:
+                if 'diaSourceId' not in f or dataset_name not in f:
                     return None
                 
-                # Read only the specific row from cutouts
-                cutout = f['cutouts'][idx[0]]
-                return cutout
+                ids = f['diaSourceId'][:]
+                idx = np.where(ids == dia_source_id)[0]
+                
+                if len(idx) > 0:
+                    return f[dataset_name][idx[0]]
+                    
         except Exception as e:
-            # Fallback to property-based loading
-            idx = np.where(self.ids == dia_source_id)[0]
-            if len(idx) == 0:
-                return None
-            return self.data[idx[0]]
+            print(f"Error retrieving {cutout_type} cutout for ID {dia_source_id}: {e}")
+            return None
 
-    def get_multiple_by_ids(self, dia_source_ids: List[int]) -> Dict[int, np.ndarray]:
+    def get_multiple_by_ids(self, dia_source_ids: List[int], cutout_type: str = 'diff') -> Dict[int, np.ndarray]:
         """Efficiently get multiple cutouts by diaSourceIds from this file.
         
         Parameters
         ----------
         dia_source_ids : List[int]
             List of diaSourceIds to retrieve
+        cutout_type : str, default 'diff'
+            Type of cutout to retrieve: 'diff', 'coadd', or 'science'
             
         Returns
         -------
@@ -85,67 +179,71 @@ class CutoutLoader:
         """
         if not dia_source_ids:
             return {}
+        
+        cutout_type = cutout_type.lower()
+        
+        # Map cutout type to dataset name
+        dataset_map = {
+            'diff': 'cutouts',
+            'coadd': 'coadd_cutouts',
+            'science': 'science_cutouts'
+        }
+        
+        if cutout_type not in dataset_map:
+            raise ValueError(f"Invalid cutout_type: {cutout_type}. Must be 'diff', 'coadd', or 'science'")
+        
+        dataset_name = dataset_map[cutout_type]
 
         start_time = time.time()
         results = {}
         try:
-            file_start = time.time()
             with h5py.File(self.file_path, 'r') as f:
-                file_open_time = time.time() - file_start
-
-                # Get all IDs once
-                ids_start = time.time()
+                if 'diaSourceId' not in f or dataset_name not in f:
+                    print(f"Warning: Required datasets not found in {self.file_path}")
+                    return results
+                
+                # Load all IDs from file
                 all_ids = f['diaSourceId'][:]
-                ids_time = time.time() - ids_start
-
-                # Find indices for all requested IDs
-                index_start = time.time()
-                indices = []
-                id_to_idx = {}
-                for target_id in dia_source_ids:
-                    idx = np.where(all_ids == target_id)[0]
-                    if len(idx) > 0:
-                        indices.append(idx[0])
-                        id_to_idx[target_id] = len(indices) - 1
-                # If indices are not sorted, sort them and remap id_to_idx accordingly
-                if indices:
-                    sorted_indices = np.argsort(indices)
-                    indices_sorted = [indices[i] for i in sorted_indices]
-                    # Remap id_to_idx to match sorted indices
-                    id_to_idx_sorted = {}
-                    for orig_pos, sorted_pos in enumerate(sorted_indices):
-                        target_id = list(id_to_idx.keys())[orig_pos]
-                        id_to_idx_sorted[target_id] = sorted_pos
-                    indices = indices_sorted
-                    id_to_idx = id_to_idx_sorted
-                # ------------------------------------------------
-                index_time = time.time() - index_start
-
-                if indices:
-                    # Read only the specific rows we need
-                    read_start = time.time()
-                    cutouts = f['cutouts'][indices]
-                    read_time = time.time() - read_start
-
-                    # Map back to original IDs
-                    map_start = time.time()
-                    for target_id in dia_source_ids:
-                        if target_id in id_to_idx:
-                            results[target_id] = cutouts[id_to_idx[target_id]]
-                    map_time = time.time() - map_start
-
-                    total_time = time.time() - start_time
-                    # Optional: log only for very slow operations
-                    # if total_time > 1.0:
-                    #     print(f"      Cutout batch load ({len(dia_source_ids)} IDs): {total_time:.3f}s")
+                
+                # Create a mapping from diaSourceId to index
+                id_to_idx = {dia_id: idx for idx, dia_id in enumerate(all_ids)}
+                
+                # Find indices for requested IDs
+                indices_to_load = []
+                id_mapping = []  # Keep track of which ID corresponds to which index
+                
+                for dia_id in dia_source_ids:
+                    if dia_id in id_to_idx:
+                        idx = id_to_idx[dia_id]
+                        indices_to_load.append(idx)
+                        id_mapping.append(dia_id)
+                
+                if not indices_to_load:
+                    return results
+                
+                # Sort indices for efficient sequential reading
+                sorted_pairs = sorted(zip(indices_to_load, id_mapping))
+                sorted_indices = [p[0] for p in sorted_pairs]
+                sorted_ids = [p[1] for p in sorted_pairs]
+                
+                # Load cutouts in batches for efficiency
+                batch_size = 100
+                for i in range(0, len(sorted_indices), batch_size):
+                    batch_indices = sorted_indices[i:i+batch_size]
+                    batch_ids = sorted_ids[i:i+batch_size]
+                    
+                    # Load batch of cutouts
+                    for idx, dia_id in zip(batch_indices, batch_ids):
+                        cutout = f[dataset_name][idx]
+                        results[dia_id] = cutout
+                
+                elapsed = time.time() - start_time
+                print(f"Loaded {len(results)}/{len(dia_source_ids)} {cutout_type} cutouts from {self.file_path.name} in {elapsed:.3f}s")
 
         except Exception as e:
-            print(f"Error in batch cutout loading: {e}, falling back to individual loads")
-            # Fallback to individual queries
-            for dia_source_id in dia_source_ids:
-                cutout = self.get_by_id(dia_source_id)
-                if cutout is not None:
-                    results[dia_source_id] = cutout
+            elapsed = time.time() - start_time
+            print(f"Error loading {cutout_type} cutouts from {self.file_path}: {e}")
+            print(f"Partial results: {len(results)} cutouts loaded in {elapsed:.3f}s")
 
         return results
 
@@ -380,6 +478,8 @@ class InferenceLoader:
             trainer: Pre-loaded trainer (optional, for efficiency)
             force: Force re-run even if results exist
         """
+        import torch
+        
         if not force and self.has_inference_results():
             print(f"Inference results already exist for visit {self.visit}")
             return
