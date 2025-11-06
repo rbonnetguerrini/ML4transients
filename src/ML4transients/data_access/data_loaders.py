@@ -2003,7 +2003,7 @@ class LightCurveLoader:
             else:
                 print(f"No high-confidence sources found in {patch_file.name}")
 
-        # 4. Save cutouts for high-conf sources
+        # 4. Save cutouts for high-conf sources (all three types: diff, coadd, science)
         cutout_dir = self.lightcurve_path.parent / "cutouts"
         if cutout_dir.exists():
             for cutout_file in cutout_dir.glob("visit_*.h5"):
@@ -2014,13 +2014,40 @@ class LightCurveLoader:
                 cloader = CutoutLoader(cutout_file)
                 ids_in_file = set(cloader.ids) & high_conf_ids
                 if ids_in_file:
-                    cutouts = cloader.get_multiple_by_ids(list(ids_in_file))
-                    if cutouts:
-                        import h5py
-                        with h5py.File(out_cutout_file, "w") as f:
-                            f.create_dataset("diaSourceId", data=np.array(list(cutouts.keys()), dtype=np.int64))
-                            f.create_dataset("cutouts", data=np.stack(list(cutouts.values())))
-                        print(f"Saved {len(cutouts)} cutouts to {out_cutout_file}")
+                    id_list = list(ids_in_file)
+                    
+                    # Get all available cutout types
+                    available_types = cloader.available_types
+                    saved_types = []
+                    
+                    import h5py
+                    with h5py.File(out_cutout_file, "w") as f:
+                        # Save diaSourceIds
+                        f.create_dataset("diaSourceId", data=np.array([k for k in id_list], dtype=np.int64))
+                        
+                        # Save difference cutouts (always present)
+                        if 'diff' in available_types:
+                            cutouts = cloader.get_multiple_by_ids(id_list, cutout_type='diff')
+                            if cutouts:
+                                f.create_dataset("cutouts", data=np.stack([cutouts[k] for k in id_list if k in cutouts]))
+                                saved_types.append('diff')
+                        
+                        # Save coadd cutouts if available
+                        if 'coadd' in available_types:
+                            coadd_cutouts = cloader.get_multiple_by_ids(id_list, cutout_type='coadd')
+                            if coadd_cutouts:
+                                f.create_dataset("coadd_cutouts", data=np.stack([coadd_cutouts[k] for k in id_list if k in coadd_cutouts]))
+                                saved_types.append('coadd')
+                        
+                        # Save science cutouts if available
+                        if 'science' in available_types:
+                            science_cutouts = cloader.get_multiple_by_ids(id_list, cutout_type='science')
+                            if science_cutouts:
+                                f.create_dataset("science_cutouts", data=np.stack([science_cutouts[k] for k in id_list if k in science_cutouts]))
+                                saved_types.append('science')
+                    
+                    types_str = ', '.join(saved_types)
+                    print(f"Saved {len(id_list)} cutouts ({types_str}) to {out_cutout_file}")
 
         # 5. Save features for high-conf sources
         feature_dir = self.lightcurve_path.parent / "features"

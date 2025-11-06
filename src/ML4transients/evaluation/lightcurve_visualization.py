@@ -32,10 +32,6 @@ from ML4transients.evaluation.interpretability import embeddable_image
 # Default data path - can be overridden via command line
 DEFAULT_DATA_PATH = Path("/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_norm")
 
-# --- FUNCTIONS ---
-def load_dataset_loader(data_path):
-    """Initialize DatasetLoader with the given data path."""
-    return DatasetLoader(data_path)
 
 def run_inference(dataset_loader, visits, weights_path, force=False):
     """Run inference for the specified visits if not already available.
@@ -165,6 +161,7 @@ def get_lightcurve_and_inference_data(dataset_loader, dia_object_id, weights_pat
     # Load features and create a lightcurve-like structure
     lightcurve_points = []
     cutouts = {}
+    coadd_cutout = None  # Store single coadd template (same for all sources in lightcurve)
     
     for visit in visit_groups.keys():
         if visit in dataset_loader.features:
@@ -220,11 +217,18 @@ def get_lightcurve_and_inference_data(dataset_loader, dia_object_id, weights_pat
                         
                         lightcurve_points.append(lc_point)
                         
-                        # Load cutout for this source
+                        # Load cutouts for this source (difference and coadd)
                         if visit in dataset_loader.cutouts:
-                            cutout = dataset_loader.cutouts[visit].get_by_id(src_id)
+                            cutout_loader = dataset_loader.cutouts[visit]
+                            
+                            # Load difference cutout
+                            cutout = cutout_loader.get_by_id(src_id, cutout_type='diff')
                             if cutout is not None:
                                 cutouts[src_id] = cutout
+                            
+                            # Load coadd template (only once, as it's the same for all sources)
+                            if coadd_cutout is None and 'coadd' in cutout_loader.available_types:
+                                coadd_cutout = cutout_loader.get_by_id(src_id, cutout_type='coadd')
                                 
                 except Exception:
                     continue
@@ -296,6 +300,7 @@ def get_lightcurve_and_inference_data(dataset_loader, dia_object_id, weights_pat
     return {
         'lightcurve': lc_data,
         'cutouts': cutouts,
+        'coadd_cutout': coadd_cutout,  # Add coadd template to return dict
         'inference': inference_data,
         'object_id': dia_object_id
     }
@@ -696,6 +701,7 @@ def create_cutout_display(data_dict, max_cutouts=24):
     """
     cutouts = data_dict['cutouts']
     lc_data = data_dict['lightcurve']
+    coadd_cutout = data_dict.get('coadd_cutout', None)  # Get coadd template from data_dict
     
     if not cutouts:
         return Div(text='<div style="color: white; background-color: #2F2F2F; padding: 15px; border-radius: 5px;"><h3>No cutout images available</h3></div>')
@@ -717,6 +723,33 @@ def create_cutout_display(data_dict, max_cutouts=24):
     
     # Select a subset to display
     cutout_items = cutout_with_time[:max_cutouts]
+    
+    # Get band information for the template
+    coadd_band = None
+    if cutout_items and len(lc_data) > 0:
+        first_src_id = cutout_items[0][0]
+        first_lc_point = lc_data[lc_data['diaSourceId'] == first_src_id]
+        
+        if len(first_lc_point) > 0:
+            if 'band' in first_lc_point.columns:
+                coadd_band = first_lc_point['band'].iloc[0]
+            elif 'filter' in first_lc_point.columns:
+                coadd_band = first_lc_point['filter'].iloc[0]
+    
+    # Create template display section if we have one
+    template_section = None
+    if coadd_cutout is not None:
+        template_base64 = embeddable_image(coadd_cutout)
+        if template_base64:
+            band_text = f" ({coadd_band})" if coadd_band else ""
+            template_html = f"""
+            <div style="background-color: #2F2F2F; padding: 10px; border-radius: 5px; border: 1px solid #666; margin-bottom: 10px; text-align: center;">
+                <h4 style="color: #870000; margin-top: 0;">Coadd Template{band_text}</h4>
+                <img src="{template_base64}" style="width: 150px; height: 150px; border: 2px solid #666; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges;">
+                <p style="color: white; font-size: 11px; margin: 5px 0 0 0;">Reference template image for this lightcurve</p>
+            </div>
+            """
+            template_section = Div(text=template_html, width=900)
     
     cutout_plots = []
     for src_id, cutout_arr, time_value in cutout_items:
@@ -749,7 +782,7 @@ def create_cutout_display(data_dict, max_cutouts=24):
     # Add a compact header for the cutout section
     header_html = f"""
     <div style="background-color: #2F2F2F; padding: 8px; border-radius: 5px; border: 1px solid #666; margin-bottom: 5px;">
-        <h4 style="color: #870000; margin: 0; text-align: center;">Cutouts (ordered by date)</h4>
+        <h4 style="color: #870000; margin: 0; text-align: center;">Difference Image Cutouts (ordered by date)</h4>
         <p style="color: white; margin: 2px 0 0 0; text-align: center; font-size: 10px;">Showing {len(cutout_plots)} of {len(cutouts)} available</p>
     </div>
     """
@@ -757,6 +790,11 @@ def create_cutout_display(data_dict, max_cutouts=24):
     
     # Arrange cutouts in a compact grid (8 columns for maximum compactness)
     rows = [header_div]
+    
+    # Add template section if available
+    if template_section:
+        rows.append(template_section)
+    
     for i in range(0, len(cutout_plots), 8):
         row_plots = cutout_plots[i:i+8]
         rows.append(row(*row_plots))
@@ -787,7 +825,7 @@ def visualize(dia_object_id, data_path=None, weights_path=None, model_hash=None,
         data_path = DEFAULT_DATA_PATH
     
     # Load dataset
-    dataset_loader = load_dataset_loader(data_path)
+    dataset_loader = DatasetLoader(data_path)
     
     # Check if we need to run inference
     if weights_path and run_inference_flag:

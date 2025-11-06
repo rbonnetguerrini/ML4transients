@@ -9,7 +9,7 @@ injection: true
 path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd
 repo: /sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml
 run_info:
-  finished: '2025-11-05T15:25:26.845963'
+  finished: '2025-11-05T15:45:19.532580'
   started: '2025-07-24T14:01:00'
   status: completed
 skip_global_index: true

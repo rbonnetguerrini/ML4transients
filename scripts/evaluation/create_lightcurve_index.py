@@ -7,7 +7,7 @@ with thumbnails, navigation, and easy access to individual lightcurves.
 
 Usage:
     python create_lightcurve_index.py /path/to/lightcurve/directory
-    python create_lightcurve_index.py /sps/lsst/users/rbonnetguerrini/ML4transients/saved/lc/highconfv4
+    python scripts/evaluation/create_lightcurve_index.py /sps/lsst/users/rbonnetguerrini/ML4transients/saved/lc/highconfv4
 """
 import os
 
@@ -38,7 +38,7 @@ def get_udeep_dataset_loader():
     """Initialize DatasetLoader for the full UDEEP dataset where SNN inference was performed."""
     try:
         from ML4transients.data_access.dataset_loader import DatasetLoader
-        udeep_path = Path("/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP")
+        udeep_path = Path("/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd")
         return DatasetLoader(udeep_path)
     except ImportError as e:
         print(f"Could not import DatasetLoader: {e}")

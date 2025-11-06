@@ -4,7 +4,6 @@ import yaml
 import argparse
 from pathlib import Path
 from ML4transients.data_preparation.lightcurves import extract_and_save_lightcurves_with_index
-from ML4transients.data_preparation.crossmatch import perform_crossmatching
 from datetime import datetime
 from ML4transients.utils import realtime_update, append_config
 
