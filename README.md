@@ -55,9 +55,7 @@ pip install --editable .
 ```
 
 
-# Quick tutorial 
-
-## Generating injection catalogues
+# INJECTION
 The injection module allows you to create fake source catalogs for transient detection training. It supports both galaxy-hosted and hostless transients with realistic magnitude distributions.
 
 - To **configure injection parameters** edit `configs/injection_all_bands.yaml` 
@@ -70,33 +68,38 @@ python scripts/injection/gen_injection_catalogue.py --config configs/injection/i
 ./scripts/injection/submit_band_catalogue.sh
 ```
 
-
+# DATA PREPARATION
 ## Performing cutouts:
 
 - Using `scripts/run_cutout.py` you can produce cutout given a specific yaml, template can be found in `ML4transients/configs/configs_cutout.yaml` . From there you can specify visits inside of the collection and if you only want the features, cutouts, or both.
 
-- Since the main problem of producing those cutouts is that you have to split visit in different job for a given collection,  I made an automatic job submitter, that generates configs with a given amount of visit, and launched them all. You can do that using `scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml 100` , again selecting your own original config, and specifying how much you want it to be split by (here 100 visit per job max)
+- Since the main problem of producing those cutouts is that you have to split visit in different job for a given collection, an automatic job submitter is available. It generates configs with a given amount of visit, and launched them all. You can do that running, specifying the amount of visit per split and your own config: 
+```sh
+scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml 100
+``` 
 
-- Once the cutouts and features are made, if you created them using the automatic job submitter, you should run `python scripts/data_preparation/create_global_index_post_batch.py configs/data_preparation/configs_cutout.yaml` so that you create an index that list in which visit is each diaSourceId.
+- IMPORTANT : Once the cutouts and features are made, if you created them using the automatic job submitter, you should run `python scripts/data_preparation/create_global_index_post_batch.py configs/data_preparation/configs_cutout.yaml` so that you create an index that list in which visit is each diaSourceId.
 
 ## Lightcurve Extraction
-
 The lightcurve extraction module efficiently organizes and indexes time-series data for all detected objects. It groups detections by sky patch, saving each patch as an HDF5 file, and builds cross-reference indices for both `diaObjectId` and `diaSourceId`. This enables fast lookup and retrieval of full lightcurves or all sources belonging to a transient candidate. To extract and index lightcurves, use:
 
 ```sh
 python scripts/data_preparation/run_lightcurves.py configs/data_preparation/configs_cutout.yaml
 ```
 
-The resulting files in `lightcurves/` include patch-based HDF5 tables and index files for rapid access.
+The same config as the cutout creation can be use. The resulting files in `lightcurves/` include patch-based HDF5 tables and index files for rapid access.
 
-## Cross-matching with External Catalogs
+## Cross-matching 
+### Perform the crossmatching
 
 Cross-match your lightcurve dataset with external catalogs (e.g., Gaia) to identify stellar contamination or validate transient candidates:
 
 ```sh
 python scripts/data_preparation/run_crossmatch.py \
-    --dataset /path/to/lightcurve/data \
-    --catalog_file saved/source_cat_gaia.pkl
+--dataset /path/to/lightcurve/data \
+--catalog_file saved/source_cat_gaia.pkl \
+--ra_column "ra" \
+--dec_column "dec" \ 
 ```
 
 Results are saved to `crossmatch/crossmatch_results.h5` and can be used to filter datasets by match status.
@@ -115,17 +118,7 @@ gaia_stars = dataset.filter_by_crossmatch('source_cat_gaia', matched=True)
 
 The `filter_by_crossmatch()` method returns lists of `diaObjectId` values that can be used for further analysis or to create filtered subsets.
 
-## Load dataset:
-```py
-from ML4transients.data_access import DatasetLoader
-dataset = DatasetLoader('saved/test')
-print(dataset)
-``` 
-`DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
-when creating this set, it creates a dictionary that assigned each diaSourceId their visit number
-
-
-## Lightcurve Inference with SuperNNova
+## Lightcurve classification with SuperNNova
 
 The pipeline for running lightcurve-based inference using SuperNNova (SNN) consists of three main steps, they need specific python env to be ran:
 
@@ -141,7 +134,26 @@ The pipeline for running lightcurve-based inference using SuperNNova (SNN) consi
 A bash script (`scripts/data_preparation/SNN/snn_inference.sh`) is provided to automate this workflow, including environment setup for each step.  
 This process avoids code redundancy and ensures efficient batch processing of large datasets. 
 
-To then perform the analysis of the SNN model, please look at the `notebooks/data_loading_example.ipynb`
+To then perform the analysis of the SNN model results, please look at the `notebooks/data_loading_example.ipynb`. Functions are available to create sub-dataset of selected lightcurves. 
+
+
+# DATA ACCESS
+## Load dataset:
+```py
+from ML4transients.data_access import DatasetLoader
+dataset = DatasetLoader('saved/test')
+print(dataset)
+``` 
+`DatasetLoader` allows you to lazy load the different components of a dataset (cutout, lc, features, inference).
+when creating this set, it creates a dictionary that assigned each diaSourceId their visit number.
+
+Many functions are defined within this class, and some example of how to use them are displayed in the `notebooks/data_loading_example.ipynb`. 
+
+
+
+# TRAINING 
+ML4transients supports different types of training strategy: Standard CNN, Deep Ensemble CNN and Co Teaching loss CNN. 
+It also supports the training with different type of data: Difference Image only, or Difference Image + Coadded Image. 
 
 
 ## Hyperparameter Optimization:
@@ -150,26 +162,30 @@ Run Bayesian optimization to find optimal hyperparameters:
 
 ```sh
 # Standard CNN optimization
-sbatch scripts/training/submit_training.sh configs/training/standard_training.yaml "standard_bayes_opt" "--hpo"
+sbatch scripts/training/submit_training.sh configs/training/standard_training.yaml "standard_bayes_opt" --hpo
 
-# Ensemble optimization  
-sbatch scripts/training/submit_training.sh configs/training/ensemble_training.yaml "ensemble_bayes_opt" "--hpo"
-
-# Co-teaching optimization
-sbatch scripts/training/submit_training.sh configs/training/coteaching_training.yaml "coteaching_bayes_opt" "--hpo"
 ```
 
-Configure search space in the config file under `bayes_search` section. Best parameters are saved to `bayes_best_params.yaml` in the output directory. Each optimization runs short trials (max_epochs) to efficiently explore hyperparameter space.
+Configure search space in the config file under `bayes_optim` prefix. Best parameters are saved to `bayes_best_params.yaml` in the output directory. Each optimization runs short trials (max_epochs) to efficiently explore hyperparameter space.
 
 ## Launch a training:
 ```sh
-sbatch scripts/training/submit_training.sh configs/training/standard_training.yaml "standard_training"
+sbatch scripts/training/submit_training.sh configs/training/standard_training.yaml standard_training
 
-sbatch scripts/training/submit_training.sh configs/training/ensemble_training.yaml "ensemble_training"
+sbatch scripts/training/submit_training.sh configs/training/ensemble_training.yaml ensemble_training
 
-sbatch scripts/training/submit_training.sh configs/training/coteaching_training.yaml "coteaching_training"
+sbatch scripts/training/submit_training.sh configs/training/coteaching_training.yaml coteaching_training
+
+sbatch scripts/training/submit_training.sh configs/training/ensemble_training_multichannel.yaml multichannel_training
 ```
 Allows to submit job to your GPU. The number of workers can be change in the config, as well as all the training parameter. 
+
+Training progress can be followed using tensorboard running 
+
+```sh 
+python -m tensorboard.main --logdir=runs --port=6006 --host=localhost
+```
+
 
 ## Perform Inference: 
 
@@ -194,5 +210,19 @@ python scripts/evaluation/run_evaluation.py \
 --run-inference
 ```
 
+Few important arguments here are `--interpretability` that will produce the UMAP analysis, `--objects-ods-file`, that allows you to perform the evaluation on a subset of lightcurves only.
 More details in `notebooks/evaluation_example.ipynb`
+
+## Lightcurve evaluation 
+
+The visualization of Lightcurve with their associated cutout prediction can be performed running:
+```sh
+./scripts/evaluation/submit_lightcurve_batch.sh
+``` 
+This submit one job per lightcurve. Each lightcurve as its own html visualizer, to facilitate their readability, an index can be created using : 
+
+```sh
+python create_lightcurve_index.py /path/to/lightcurve/directory
+``` 
+
 
