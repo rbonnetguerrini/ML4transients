@@ -196,7 +196,8 @@ python scripts/evaluation/run_inference.py \
 ```
 More details in `notebooks/inference_example.ipynb`
 
-## Perform evaluation: 
+# EVALUATION
+## Cutout evaluation: 
 
 ```sh
 python scripts/evaluation/run_evaluation.py \
