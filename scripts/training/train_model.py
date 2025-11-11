@@ -25,11 +25,13 @@ def create_data_loaders(config):
     data_path = config['data']['path']
     visits = config['data'].get('visits', None)
     batch_size = config['training']['batch_size']
+    cutout_types = config['data'].get('cutout_types', ['diff'])  # Default to diff only
     
     # Create splits efficiently
     splits = PytorchDataset.create_splits(
         data_source=data_path,
         visits=visits,
+        cutout_types=cutout_types,  # Pass cutout types to dataset
         test_size=config['data'].get('test_size', 0.2),
         val_size=config['data'].get('val_size', 0.1),
         random_state=config.get('random_state', 42)
@@ -123,12 +125,14 @@ def run_bayesian_optimization(config):
     n_trials = bs_cfg.get('n_trials', 20)
     max_epochs = bs_cfg.get('max_epochs', config['training']['epochs'])
     prune = bs_cfg.get('prune', False)
+    cutout_types = config['data'].get('cutout_types', ['diff'])  # Get cutout types
 
     # Precompute dataset splits once
     print("Preparing datasets for Bayesian optimization...")
     splits = PytorchDataset.create_splits(
         data_source=config['data']['path'],
         visits=config['data'].get('visits'),
+        cutout_types=cutout_types,  # Pass cutout types
         test_size=config['data'].get('test_size', 0.2),
         val_size=config['data'].get('val_size', 0.1),
         random_state=config.get('random_state', 42)
@@ -154,13 +158,27 @@ def run_bayesian_optimization(config):
         trainer = get_trainer(trial_config['training']['trainer_type'], trial_config['training'])
         best_metric = trainer.fit(train_loader, val_loader, test_loader)
 
+        # Run inference on validation set to compute FNR (if we want to optimize for it)
+        monitor_metric = bs_cfg.get('monitor', 'loss')
+        if monitor_metric == 'fnr' and val_loader is not None:
+            print(f"Computing FNR on validation set for trial {trial.number}...")
+            val_results = infer(val_loader, trainer=trainer, return_preds=True, compute_metrics=True)
+            
+            # Extract confusion matrix and compute FNR
+            tn, fp, fn, tp = val_results['confusion_matrix'].ravel()
+            fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+            print(f"Trial {trial.number} - Validation FNR: {fnr:.4f}")
+            metric_to_return = fnr
+        else:
+            metric_to_return = best_metric
+
         # Report for pruning (uses monitored metric; assumed lower is better if minimizing loss)
         if prune:
-            trial.report(best_metric, step=trainer.best_epoch if trainer.best_epoch >= 0 else trial.number)
+            trial.report(metric_to_return, step=trainer.best_epoch if trainer.best_epoch >= 0 else trial.number)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
-        return best_metric
+        return metric_to_return
 
     study = optuna.create_study(direction=direction)
     print(f"Starting Bayesian optimization for {n_trials} trials (direction={direction})")
@@ -228,6 +246,17 @@ def main():
             print(f"TensorBoard will log to: {log_dir}/{exp_name}")
             print(f"To view logs, run: tensorboard --logdir={log_dir}")
         
+        # Determine number of input channels from cutout_types
+        cutout_types = config['data'].get('cutout_types', ['diff'])
+        in_channels = len(cutout_types)
+        print(f"Using {in_channels} input channel(s): {cutout_types}")
+        
+        # Set in_channels in model_params if not already set
+        if 'in_channels' not in config['training'].get('model_params', {}):
+            if 'model_params' not in config['training']:
+                config['training']['model_params'] = {}
+            config['training']['model_params']['in_channels'] = in_channels
+        
         # Create data loaders
         print("Creating data loaders...")
         train_loader, val_loader, test_loader = create_data_loaders(config)
@@ -251,10 +280,10 @@ def main():
             print("Running inference on test set...")
             test_results = infer(test_loader, trainer=trainer, return_preds=True, compute_metrics=True)
             print(f"Accuracy on the test set: {test_results['accuracy']}")
-            print(f"TP on the test set: {test_results['confusion_matrix'][0][0]}")
-            print(f"FP on the test set: {test_results['confusion_matrix'][0][1]}")
+            print(f"TN on the test set: {test_results['confusion_matrix'][0][0]}")  
+            print(f"TP on the test set: {test_results['confusion_matrix'][1][1]}")  
             print(f"FN on the test set: {test_results['confusion_matrix'][1][0]}")
-            print(f"TN on the test set: {test_results['confusion_matrix'][1][1]}")
+            print(f"TP on the test set: {test_results['confusion_matrix'][1][1]}")
             
     except Exception as e:
         print(f"ERROR: {str(e)}")

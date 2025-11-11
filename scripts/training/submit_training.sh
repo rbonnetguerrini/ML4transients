@@ -4,9 +4,9 @@
 #SBATCH --error=logs/trainings/training_%j.err
 #SBATCH --time=18:00:00
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:v100:2
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=10G
+#SBATCH --mem=32G
 
 # Exit on any error
 set -e

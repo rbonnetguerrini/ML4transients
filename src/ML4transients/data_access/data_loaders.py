@@ -492,11 +492,21 @@ class InferenceLoader:
         
         print(f"Running inference for visit {self.visit}...")
         
+        # Load config to get cutout_types for multi-channel support
+        from ML4transients.utils import load_config
+        config = load_config(f"{self.weights_path}/config.yaml")
+        cutout_types = config.get('data', {}).get('cutout_types', ['diff'])
+        print(f"Using cutout types from model config: {cutout_types}")
+        
         # Create inference dataset for this visit
         from ML4transients.training.pytorch_dataset import PytorchDataset
         
         print(f"Creating inference dataset for visit {self.visit}...")
-        inference_dataset = PytorchDataset.create_inference_dataset(dataset_loader, visit=self.visit)
+        inference_dataset = PytorchDataset.create_inference_dataset(
+            dataset_loader, 
+            visit=self.visit,
+            cutout_types=cutout_types  # Pass cutout types from model config
+        )
         print(f"Created inference dataset for visit {self.visit} with {len(inference_dataset)} samples")
         
         # Create DataLoader

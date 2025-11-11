@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import torch
 from bokeh.plotting import figure, save, output_file
 from bokeh.models import (
     HoverTool, ColumnDataSource, ColorBar, LinearColorMapper,
@@ -485,7 +486,7 @@ class UMAPVisualizer:
         # Priority: Use true model uncertainty if available, otherwise use probability-based proxy
         if 'prediction_uncertainty' in df.columns:
             uncertainty_col = 'prediction_uncertainty'
-            uncertainty_title = "Ensemble Model Disagreement"
+            uncertainty_title = "Ensemble Model Disagreement (std dev of the outputs)"
             title = "UMAP: Uncertainty + Prediction Correctness"
         elif 'prediction_probability' in df.columns:
             # For standard models, use distance from decision boundary as uncertainty proxy
@@ -573,8 +574,8 @@ class UMAPVisualizer:
         # Determine what uncertainty measure to use
         if 'prediction_uncertainty' in df.columns:
             uncertainty_col = 'prediction_uncertainty'
-            uncertainty_title = "Ensemble Model Disagreement"
-            title = "UMAP: Ensemble Model Disagreement"
+            uncertainty_title = "Ensemble Model Disagreement (std dev of the outputs)"
+            title = "UMAP: Ensemble Model Disagreement (std dev of the outputs)"
         elif 'prediction_probability' in df.columns:
             # For standard models, use distance from decision boundary as uncertainty proxy
             df = df.copy()
@@ -852,8 +853,8 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     else:
         return tab_panel, dashboard_layout
 
-def create_interpretability_dashboard(interpreter, data_loader, predictions: np.ndarray, 
-                                    labels: np.ndarray, output_path: Path = None,
+def create_interpretability_dashboard(interpreter, data_loader, predictions: np.ndarray = None, 
+                                    labels: np.ndarray = None, output_path: Path = None,
                                     additional_features: Dict = None, config: Dict = None,
                                     probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> Tuple[TabPanel, str]:
     """Create UMAP-based interpretability dashboard tab.
@@ -875,9 +876,9 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     config : Dict, optional
         Configuration dictionary with interpretability settings
     probabilities : np.ndarray, optional
-        Pre-computed prediction probabilities (avoids recomputation)
+        Pre-computed prediction probabilities 
     uncertainties : np.ndarray, optional
-        Pre-computed prediction uncertainties (avoids recomputation)
+        Pre-computed prediction uncertainties 
         
     Returns
     -------
@@ -894,14 +895,62 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     umap_config = interp_config.get('umap', {})
     clustering_config = interp_config.get('clustering', {})
     
-    # Extract features
-    print("Step 1: Extracting features...")
+    print("Step 1: Extracting features and predictions (single pass)...")
     start_time = time.time()
+    
+    # Extract features (this processes all batches once)
     features = interpreter.extract_features(
         data_loader,
         layer_name=interp_config.get('layer_name', 'fc1'),
         max_samples=interp_config.get('max_samples', 3000)
     )
+    
+    sample_indices_used = interpreter.sample_indices  # Indices into data_loader
+    print(f"Feature extraction used {len(sample_indices_used)} samples from data_loader")
+    
+    # Create a subset data loader with only the sampled indices
+    print(f"Running inference on {len(sample_indices_used)} sampled indices (avoiding duplicate processing)...")
+    inference_start = time.time()
+    
+    # Import required modules
+    from ML4transients.evaluation.inference import infer
+    from torch.utils.data import Subset, DataLoader
+    
+    # Create subset dataset with only sampled indices
+    subset_dataset = Subset(data_loader.dataset, sample_indices_used)
+    subset_loader = DataLoader(
+        subset_dataset,
+        batch_size=data_loader.batch_size,
+        shuffle=False,  # Keep order for alignment
+        num_workers=0
+    )
+    
+    print(f"  Processing {len(subset_loader)} batches ...")
+    inference_results = infer(
+        inference_loader=subset_loader,
+        trainer=interpreter.trainer,
+        return_preds=True,
+        compute_metrics=False,
+        device=interpreter.device,
+        return_probabilities=True
+    )
+    
+    # Extract results 
+    sampled_predictions = inference_results['y_pred']
+    sampled_labels = inference_results['y_true']
+    sampled_probabilities = inference_results.get('y_prob', None)
+    sampled_uncertainties = inference_results.get('uncertainty', None)
+    
+    print(f"Inference completed in {time.time() - inference_start:.2f}s")
+    print(f"Perfect alignment achieved: {len(sampled_predictions)} samples")
+    print(f"  - Features shape: {features.shape}")
+    print(f"  - Predictions: {len(sampled_predictions)}")
+    print(f"  - Labels: {len(sampled_labels)}")
+    if sampled_probabilities is not None:
+        print(f"  - Probabilities: {len(sampled_probabilities)}")
+    if sampled_uncertainties is not None:
+        print(f"  - Uncertainties: {len(sampled_uncertainties)}")
+    
     if hasattr(interpreter, 'umap_reducer') and interpreter.umap_reducer is not None:
         print("Transforming features with loaded UMAP reducer...")
         embedding = interpreter.transform_with_umap(features)
@@ -929,10 +978,10 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     print("Step 4: Creating interpretability dataframe...")
     start_time = time.time()
     df = interpreter.create_interpretability_dataframe(
-        predictions, labels, data_loader, 
+        sampled_predictions, sampled_labels, data_loader,
         additional_features=additional_features,
-        probabilities=probabilities,  # Pass pre-computed values
-        uncertainties=uncertainties   # Pass pre-computed values
+        probabilities=sampled_probabilities,  # Use sampled values
+        uncertainties=sampled_uncertainties   # Use sampled values
     )
     print(f"Dataframe creation completed in {time.time() - start_time:.2f}s")
     

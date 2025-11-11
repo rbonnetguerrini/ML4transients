@@ -1,6 +1,6 @@
 # Ensemble training configuration with optimized hyperparameters
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd"
   visits: null
   test_size: 0.2
   val_size: 0.1

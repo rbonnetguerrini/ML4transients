@@ -23,7 +23,7 @@ class PytorchDataset(Dataset):
             test_size: Fraction for test set
             val_size: Fraction for validation set  
             random_state: Random seed
-            **kwargs: Additional arguments (visits, transform, etc.)
+            **kwargs: Additional arguments (visits, transform, cutout_types, etc.)
             
         Returns:
             dict: {'train': PytorchDataset, 'val': PytorchDataset, 'test': PytorchDataset}
@@ -191,6 +191,7 @@ class PytorchDataset(Dataset):
                  test_size: float = 0.2,
                  val_size: float = 0.1,
                  random_state: int = 42,
+                 cutout_types: Optional[List[str]] = None,  # Parameter for multi-channel input
                  _split_info: dict = None,  # Internal use
                  _indices: np.ndarray = None,  # Internal use
                  _inference_info: dict = None):  # Internal use for inference
@@ -200,12 +201,22 @@ class PytorchDataset(Dataset):
         - PytorchDataset.create_splits() for training
         - PytorchDataset.create_inference_dataset() for inference
         - PytorchDataset.create_inference_dataset(visit=X) for visit-specific inference
+        
+        Parameters
+        ----------
+        cutout_types : List[str], optional
+            List of cutout types to stack as channels. Options: 'diff', 'coadd', 'science'
+            If None, defaults to ['diff'] 
+            Example: ['diff', 'coadd'] will create 2-channel input
         """
         # Handle both path and DatasetLoader instance
         if isinstance(data_source, DatasetLoader):
             self.loader = data_source
         else:
             self.loader = DatasetLoader(data_source)
+        
+        # Set cutout types (default to 'diff' only for backward compatibility)
+        self.cutout_types = cutout_types if cutout_types is not None else ['diff']
         
         self.transform = transform
         
@@ -229,13 +240,12 @@ class PytorchDataset(Dataset):
         all_cutouts = []
         all_labels = []
         all_ids = []
+        skipped = 0
         
         for visit in available_visits:
             if visit in self.loader.cutouts and visit in self.loader.features:
-                cutouts = self.loader.get_all_cutouts(visit)
+                # Get labels
                 labels_df = self.loader.features[visit].labels
-                
-                # Match cutouts with labels by diaSourceId
                 cutout_ids = self.loader.cutouts[visit].ids
                 label_ids = labels_df.index.values
                 
@@ -243,10 +253,18 @@ class PytorchDataset(Dataset):
                 common_ids = np.intersect1d(cutout_ids, label_ids)
                 
                 for dia_id in common_ids:
-                    cutout_idx = np.where(cutout_ids == dia_id)[0][0]
-                    all_cutouts.append(cutouts[cutout_idx])
+                    # Load and stack cutouts for each type
+                    cutout = self._load_and_stack_cutouts(visit, dia_id)
+                    if cutout is None:
+                        # Skip samples with missing cutout types
+                        skipped += 1
+                        continue
+                    all_cutouts.append(cutout)
                     all_labels.append(labels_df.loc[dia_id, 'is_injection'])
                     all_ids.append(dia_id)
+        
+        if skipped > 0:
+            print(f"Skipped {skipped} samples due to missing cutout types")
         
         # Convert to arrays
         self.images = np.array(all_cutouts)
@@ -323,17 +341,27 @@ class PytorchDataset(Dataset):
         selected_labels = all_labels[indices]
         
         # Load only required cutouts
-        print(f"Loading {len(selected_samples)} cutouts...")
+        print(f"Loading {len(selected_samples)} cutouts with types {self.cutout_types}...")
         all_cutouts = []
+        all_labels_kept = []
         all_ids = []
+        skipped = 0
         
-        for visit, dia_id in selected_samples:
-            cutout = self.loader.get_cutout(visit, dia_id)  # Load individual cutouts
+        for i, (visit, dia_id) in enumerate(selected_samples):
+            cutout = self._load_and_stack_cutouts(visit, dia_id)
+            if cutout is None:
+                # Skip samples with missing cutout types
+                skipped += 1
+                continue
             all_cutouts.append(cutout)
+            all_labels_kept.append(selected_labels[i])
             all_ids.append(dia_id)
         
+        if skipped > 0:
+            print(f"Skipped {skipped}/{len(selected_samples)} samples due to missing cutout types")
+        
         self.images = np.array(all_cutouts)
-        self.labels = selected_labels
+        self.labels = np.array(all_labels_kept)
         self.dia_source_ids = np.array(all_ids)
     
     def _apply_legacy_split(self, train, val, test, test_size, val_size, random_state):
@@ -412,7 +440,12 @@ class PytorchDataset(Dataset):
         if hasattr(self, '_sample_index') and self.images is None:
             if idx not in self._loaded_images:
                 visit, dia_id = self._sample_index[idx]
-                cutout = self.loader.get_cutout(visit, dia_id)
+                # Load multiple cutout types and stack them
+                cutout = self._load_and_stack_cutouts(visit, dia_id)
+                if cutout is None:
+                    # Skip this sample - raise an error to indicate data issue
+                    raise ValueError(f"Missing cutout types for visit {visit}, dia_id {dia_id}. "
+                                   f"Required types: {self.cutout_types}")
                 self._loaded_images[idx] = cutout
             image = self._loaded_images[idx]
         else:
@@ -421,14 +454,63 @@ class PytorchDataset(Dataset):
         label = self.labels[idx]
 
         # Convert image to PyTorch tensor
-        image = torch.tensor(image, dtype=torch.float32).squeeze(-1)
-        image = image.unsqueeze(0)
+        image = torch.tensor(image, dtype=torch.float32)
+        
+        # Handle multi-channel stacking
+        if len(self.cutout_types) == 1:
+            # Single channel squeeze last dim and add channel dim
+            image = image.squeeze(-1).unsqueeze(0)
+        else:
+            # Multi-channel already stacked, just ensure correct shape
+            # image should be [C, H, W] where C = number of cutout types
+            if image.ndim == 3 and image.shape[-1] == len(self.cutout_types):
+                # Shape is [H, W, C], transpose to [C, H, W]
+                image = image.permute(2, 0, 1)
+            elif image.ndim == 3 and image.shape[0] == len(self.cutout_types):
+                # Already [C, H, W], keep as is
+                pass
+            else:
+                # Fallback: squeeze and add channel
+                image = image.squeeze(-1).unsqueeze(0)
         
         if self.transform:
             image = self.transform(image)
 
         label = torch.tensor(label, dtype=torch.float32)
         return image, label, idx
+    
+    def _load_and_stack_cutouts(self, visit: int, dia_id: int) -> np.ndarray:
+        """Load and stack multiple cutout types for a given source.
+        
+        Parameters
+        ----------
+        visit : int
+            Visit number
+        dia_id : int
+            DIA source ID
+            
+        Returns
+        -------
+        np.ndarray or None
+            Stacked cutouts with shape [H, W, C] where C is number of cutout types.
+            Returns None if any cutout type is missing.
+        """
+        cutouts = []
+        for cutout_type in self.cutout_types:
+            cutout = self.loader.get_cutout(visit, dia_id, cutout_type=cutout_type)
+            if cutout is None:
+                # Discard sample completely if any cutout type is missing
+                return None
+            
+            # Ensure cutout has shape [H, W, 1]
+            if cutout.ndim == 2:
+                cutout = cutout[..., np.newaxis]
+            
+            cutouts.append(cutout.squeeze(-1))  # Remove last dim before stacking
+        
+        # Stack along last axis to get [H, W, C]
+        stacked = np.stack(cutouts, axis=-1)
+        return stacked
 
     def get_feature_by_idx(self, idx):
         """Get features for a specific index - loads on demand.
@@ -475,10 +557,14 @@ class PytorchDataset(Dataset):
         return self.dia_source_ids
     
     def __repr__(self):
+        cutout_info = f"Cutout types: {self.cutout_types}" if hasattr(self, 'cutout_types') else ""
+        
         if hasattr(self, '_sample_index') and self.images is None:
             return (f"PytorchDataset({len(self)} samples, lazy loading)\n"
+                    f"  {cutout_info}\n"
                     f"  Labels: {np.sum(self.labels)} injected, {len(self.labels) - np.sum(self.labels)} real")
         else:
             return (f"PytorchDataset({len(self)} samples)\n"
+                    f"  {cutout_info}\n"
                     f"  Image shape: {self.images.shape if self.images is not None else 'lazy'}\n"
                     f"  Labels: {np.sum(self.labels)} injected, {len(self.labels) - np.sum(self.labels)} real")

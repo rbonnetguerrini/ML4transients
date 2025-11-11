@@ -45,6 +45,15 @@ def main():
     print(f"Loading dataset from: {dataset_path}")
     print(f"Using weights from: {weights_path}")
     
+    # Load model config to check for multi-channel setup
+    model_config_path = Path(weights_path) / "config.yaml"
+    if model_config_path.exists():
+        model_config = load_config(str(model_config_path))
+        cutout_types = model_config.get('data', {}).get('cutout_types', ['diff'])
+        print(f"Model trained with cutout types: {cutout_types}")
+        if len(cutout_types) > 1:
+            print(f"→ Multi-channel model detected ({len(cutout_types)} channels)")
+    
     # Load dataset
     dataset_loader = DatasetLoader(dataset_path)
     

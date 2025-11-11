@@ -467,7 +467,8 @@ def extract_snr_values(dataset_loader: DatasetLoader, source_ids: np.ndarray) ->
 
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000, 
-                                object_ids: Optional[List[str]] = None) -> DataLoader:
+                                object_ids: Optional[List[str]] = None,
+                                weights_path: Optional[str] = None) -> DataLoader:
     """Return DataLoader tailored for feature extraction / interpretability.
     
     Parameters
@@ -480,13 +481,27 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
         Maximum number of samples for UMAP
     object_ids : Optional[List[str]]
         If provided, only include sources from these diaObjectIds
+    weights_path : Optional[str]
+        Path to model weights (to extract cutout_types from config)
     """
     print(f"Creating evaluation dataset from {len(visits)} visits...")
+    
+    # Extract cutout_types from model config if weights_path provided
+    cutout_types = ['diff']  # Default to single channel
+    if weights_path:
+        try:
+            config = load_config(Path(weights_path) / "config.yaml")
+            cutout_types = config.get('data', {}).get('cutout_types', ['diff'])
+            print(f"Using {len(cutout_types)} channel(s) from model config: {cutout_types}")
+        except Exception as e:
+            print(f"Warning: Could not load cutout_types from config: {e}")
+            print("Defaulting to single channel ['diff']")
     
     # Create inference dataset for the specified visits
     eval_dataset = PytorchDataset.create_inference_dataset(
         dataset_loader, 
-        visits=visits
+        visits=visits,
+        cutout_types=cutout_types
     )
     
     # Filter dataset by object IDs if specified
@@ -647,7 +662,7 @@ class FilteredPytorchDataset:
         return np.array(source_ids)
 
 def main():
-    """Orchestrate full evaluation with ensemble model support."""
+    """Orchestrate full evaluation process."""
     args = parse_args()
     
     # Start overall timing
@@ -854,7 +869,8 @@ def main():
             eval_data_loader = create_evaluation_data_loader(
                 dataset_loader, visits_to_eval, 
                 max_samples=config.get('interpretability', {}).get('max_samples', 3000),
-                object_ids=object_ids  # Pass object_ids to filter the data loader
+                object_ids=object_ids,  # Pass object_ids to filter the data loader
+                weights_path=args.weights_path  # Pass weights_path to extract cutout_types
             )
             print(f"Data loader created in {time.time() - step_start:.2f}s")
             

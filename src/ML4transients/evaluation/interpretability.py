@@ -30,9 +30,9 @@ def embeddable_image(image_array: np.ndarray, cmap: str = 'gray') -> str:
     Parameters
     ----------
     image_array : np.ndarray
-        Input image array (2D or 3D)
+        Input image array (2D or 3D for single/multi-channel)
     cmap : str
-        Matplotlib colormap name (default: 'RdYlGn')
+        Matplotlib colormap name (default: 'gray')
         For diverging colormaps, negative values are preserved
         
     Returns
@@ -42,19 +42,27 @@ def embeddable_image(image_array: np.ndarray, cmap: str = 'gray') -> str:
     """
     # Handle different image shapes - ensure we get a 2D grayscale array
     if len(image_array.shape) == 3:
-        # If 3D, take the middle channel (astronomical images often have 3 identical channels)
-        if image_array.shape[2] == 3:
-            img_data = image_array[:, :, 1]  # Take middle channel
-        elif image_array.shape[0] == 3:
-            img_data = image_array[1, :, :]  # Channel first format
+        # Channel-first format: [C, H, W]
+        if image_array.shape[0] in [1, 2, 3]:
+            # Take the first channel for visualization (typically 'diff' for astronomical data)
+            img_data = image_array[0, :, :]
+        # Channel-last format: [H, W, C]
+        elif image_array.shape[2] in [1, 2, 3]:
+            img_data = image_array[:, :, 0]  # Take first channel
         else:
-            img_data = image_array.squeeze()  # Remove singleton dimensions
-    else:
+            # Unknown format, try to squeeze
+            img_data = image_array.squeeze()
+    elif len(image_array.shape) == 2:
+        # Already 2D
         img_data = image_array
+    else:
+        # Try to squeeze to 2D
+        img_data = image_array.squeeze()
     
-    # Ensure 2D array
+    # Ensure 2D array after processing
     if len(img_data.shape) > 2:
-        img_data = img_data.squeeze()
+        # Last resort: take first slice along first dimension
+        img_data = img_data[0] if img_data.shape[0] < img_data.shape[-1] else img_data[:, :, 0]
     
     # Get colormap
     colormap = cm.get_cmap(cmap)
