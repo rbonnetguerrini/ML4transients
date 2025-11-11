@@ -962,6 +962,250 @@ class DatasetLoader:
         
         return None
 
+    def get_dataset_statistics(self, detailed: bool = False, plot: bool = False) -> Dict:
+        """Get comprehensive statistics about the dataset.
+        
+        Provides statistics including:
+        - Total visits, cutouts, features, lightcurves
+        - Percentage of injection vs real sources per visit
+        - Cutouts per visit distribution
+        - Label distribution across the dataset
+        - Inference results summary (if available)
+        
+        Parameters
+        ----------
+        detailed : bool, default False
+            If True, return per-visit statistics
+        plot : bool, default False
+            If True, display visualization plots
+            
+        Returns
+        -------
+        Dict
+            Dictionary containing dataset statistics
+        """
+        self._ensure_discovery()
+        
+        print("Computing dataset statistics...")
+        
+        stats = {
+            'summary': {},
+            'per_visit': {},
+            'labels': {},
+            'inference': {}
+        }
+        
+        # Summary statistics
+        total_cutouts = 0
+        total_features = 0
+        total_injections = 0
+        total_real = 0
+        visits_with_cutouts = 0
+        visits_with_features = 0
+        
+        per_visit_stats = {}
+        
+        # Compute per-visit statistics
+        for visit in self.visits:
+            visit_stat = {
+                'cutouts': 0,
+                'features': 0,
+                'injections': 0,
+                'real': 0,
+                'injection_pct': 0.0,
+                'real_pct': 0.0
+            }
+            
+            # Cutout statistics
+            if visit in self._cutout_loaders:
+                visit_stat['cutouts'] = len(self._cutout_loaders[visit].ids)
+                total_cutouts += visit_stat['cutouts']
+                visits_with_cutouts += 1
+            
+            # Feature statistics with labels
+            if visit in self._feature_loaders:
+                loader = self._feature_loaders[visit]
+                visit_stat['features'] = len(loader.ids)
+                total_features += visit_stat['features']
+                visits_with_features += 1
+                
+                # Get labels to count injections vs real
+                if loader.labels is not None:
+                    labels = loader.labels
+                    # Use .item() for numpy arrays or proper int conversion for Series
+                    injections_count = (labels == 1).sum()
+                    real_count = (labels == 0).sum()
+                    visit_stat['injections'] = int(injections_count.item()) if hasattr(injections_count, 'item') else int(injections_count)
+                    visit_stat['real'] = int(real_count.item()) if hasattr(real_count, 'item') else int(real_count)
+                    total_injections += visit_stat['injections']
+                    total_real += visit_stat['real']
+                    
+                    if visit_stat['features'] > 0:
+                        visit_stat['injection_pct'] = (visit_stat['injections'] / visit_stat['features']) * 100
+                        visit_stat['real_pct'] = (visit_stat['real'] / visit_stat['features']) * 100
+            
+            per_visit_stats[visit] = visit_stat
+        
+        # Overall summary
+        stats['summary'] = {
+            'num_visits': len(self.visits),
+            'num_data_paths': len(self.data_paths),
+            'total_cutouts': total_cutouts,
+            'total_features': total_features,
+            'visits_with_cutouts': visits_with_cutouts,
+            'visits_with_features': visits_with_features,
+            'avg_cutouts_per_visit': total_cutouts / visits_with_cutouts if visits_with_cutouts > 0 else 0,
+            'avg_features_per_visit': total_features / visits_with_features if visits_with_features > 0 else 0,
+        }
+        
+        # Label distribution
+        stats['labels'] = {
+            'total_injections': total_injections,
+            'total_real': total_real,
+            'total_labeled': total_injections + total_real,
+            'injection_pct': (total_injections / (total_injections + total_real) * 100) if (total_injections + total_real) > 0 else 0,
+            'real_pct': (total_real / (total_injections + total_real) * 100) if (total_injections + total_real) > 0 else 0,
+        }
+        
+        # Lightcurve statistics
+        total_lightcurve_objects = 0
+        for loader in self._lightcurve_loaders.values():
+            if hasattr(loader, 'index') and loader.index is not None:
+                total_lightcurve_objects += len(loader.index)
+                break  # Just count once since all paths should have same objects
+        
+        stats['summary']['total_lightcurve_objects'] = total_lightcurve_objects
+        
+        # Inference statistics (if available)
+        if self._inference_registry:
+            total_inference_results = 0
+            models_used = set()
+            
+            for data_path_str, visits_data in self._inference_registry.items():
+                for visit, models in visits_data.items():
+                    total_inference_results += len(models)
+                    models_used.update(models.keys())
+            
+            stats['inference'] = {
+                'total_inference_files': total_inference_results,
+                'num_models': len(models_used),
+                'visits_with_inference': len([v for v in self._inference_registry.values() for _ in v]),
+            }
+        
+        if detailed:
+            stats['per_visit'] = per_visit_stats
+        
+        # Print summary
+        self._print_statistics_summary(stats)
+        
+        # Optionally plot
+        if plot:
+            self._plot_statistics(stats)
+        
+        return stats
+    
+    def _print_statistics_summary(self, stats: Dict):
+        """Print formatted statistics summary."""
+        print("\n" + "="*70)
+        print("DATASET STATISTICS SUMMARY")
+        print("="*70)
+        
+        summary = stats['summary']
+        print(f"\nData Overview:")
+        print(f"  Total visits: {summary['num_visits']}")
+        print(f"  Data paths: {summary['num_data_paths']}")
+        print(f"  Visits with cutouts: {summary['visits_with_cutouts']}")
+        print(f"  Visits with features: {summary['visits_with_features']}")
+        
+        print(f"\nCutout Statistics:")
+        print(f"  Total cutouts: {summary['total_cutouts']:,}")
+        print(f"  Average per visit: {summary['avg_cutouts_per_visit']:.1f}")
+        
+        print(f"\nFeature Statistics:")
+        print(f"  Total features: {summary['total_features']:,}")
+        print(f"  Average per visit: {summary['avg_features_per_visit']:.1f}")
+        
+        labels = stats['labels']
+        if labels['total_labeled'] > 0:
+            print(f"\nLabel Distribution:")
+            print(f"  Total labeled sources: {labels['total_labeled']:,}")
+            print(f"  Injections: {labels['total_injections']:,} ({labels['injection_pct']:.1f}%)")
+            print(f"  Real sources: {labels['total_real']:,} ({labels['real_pct']:.1f}%)")
+        
+        if summary.get('total_lightcurve_objects', 0) > 0:
+            print(f"\nLightcurve Statistics:")
+            print(f"  Total objects: {summary['total_lightcurve_objects']:,}")
+        
+        if stats.get('inference') and stats['inference']:
+            inf = stats['inference']
+            print(f"\nInference Results:")
+            print(f"  Inference files: {inf['total_inference_files']}")
+            print(f"  Models used: {inf['num_models']}")
+            print(f"  Visits with inference: {inf['visits_with_inference']}")
+        
+        print("="*70 + "\n")
+    
+    def _plot_statistics(self, stats: Dict):
+        """Create visualization plots for statistics."""
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        if 'per_visit' not in stats or not stats['per_visit']:
+            print("Detailed per-visit statistics required for plotting. Run with detailed=True")
+            return
+        
+        per_visit = stats['per_visit']
+        visits = sorted(per_visit.keys())
+        
+        # Prepare data for plotting
+        cutouts_per_visit = [per_visit[v]['cutouts'] for v in visits]
+        features_per_visit = [per_visit[v]['features'] for v in visits]
+        injection_pct = [per_visit[v]['injection_pct'] for v in visits if per_visit[v]['features'] > 0]
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Plot 1: Cutouts per visit
+        ax1 = axes[0, 0]
+        ax1.bar(range(len(visits)), cutouts_per_visit, alpha=0.7, color='steelblue')
+        ax1.set_xlabel('Visit Index')
+        ax1.set_ylabel('Number of Cutouts')
+        ax1.set_title('Cutouts per Visit')
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot 2: Features per visit
+        ax2 = axes[0, 1]
+        ax2.bar(range(len(visits)), features_per_visit, alpha=0.7, color='coral')
+        ax2.set_xlabel('Visit Index')
+        ax2.set_ylabel('Number of Features')
+        ax2.set_title('Features per Visit')
+        ax2.grid(True, alpha=0.3)
+        
+        # Plot 3: Injection percentage distribution
+        ax3 = axes[1, 0]
+        if injection_pct:
+            ax3.hist(injection_pct, bins=20, alpha=0.7, color='green', edgecolor='black')
+            ax3.axvline(np.mean(injection_pct), color='red', linestyle='--', 
+                       label=f'Mean: {np.mean(injection_pct):.1f}%')
+            ax3.set_xlabel('Injection Percentage (%)')
+            ax3.set_ylabel('Number of Visits')
+            ax3.set_title('Distribution of Injection Percentage per Visit')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+        
+        # Plot 4: Overall label distribution pie chart
+        ax4 = axes[1, 1]
+        labels_data = stats['labels']
+        if labels_data['total_labeled'] > 0:
+            sizes = [labels_data['total_injections'], labels_data['total_real']]
+            labels = [f"Injections\n{labels_data['total_injections']:,}\n({labels_data['injection_pct']:.1f}%)",
+                     f"Real\n{labels_data['total_real']:,}\n({labels_data['real_pct']:.1f}%)"]
+            colors = ['#ff9999', '#66b3ff']
+            ax4.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            ax4.set_title('Overall Label Distribution')
+        
+        plt.tight_layout()
+        plt.show()
+
     def __repr__(self):
         if not self._discovery_done:
             return (f"DatasetLoader({len(self.data_paths)} paths)\n"
