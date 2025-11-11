@@ -4,7 +4,7 @@ import torch
 import torch.utils.data
 import umap.umap_ as umap
 from sklearn.model_selection import ParameterGrid
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 from pathlib import Path
 import base64
 import io
@@ -685,8 +685,34 @@ class UMAPInterpreter:
                                 data_loader, sample_indices: Optional[np.ndarray] = None,
                                 additional_features: Optional[Dict[str, np.ndarray]] = None,
                                 probabilities: Optional[np.ndarray] = None,
-                                uncertainties: Optional[np.ndarray] = None) -> pd.DataFrame:
-        """Build DataFrame joining UMAP output + classification + hover images + uncertainties."""
+                                uncertainties: Optional[np.ndarray] = None,
+                                separate_channel_images: bool = False) -> pd.DataFrame:
+        """Build DataFrame joining UMAP output + classification + hover images + uncertainties.
+        
+        Parameters
+        ----------
+        predictions : np.ndarray
+            Model predictions
+        labels : np.ndarray
+            True labels
+        data_loader : DataLoader
+            Data loader with samples
+        sample_indices : Optional[np.ndarray]
+            Indices of samples to include (default: all)
+        additional_features : Optional[Dict[str, np.ndarray]]
+            Additional features to include (e.g., SNR)
+        probabilities : Optional[np.ndarray]
+            Pre-computed prediction probabilities
+        uncertainties : Optional[np.ndarray]
+            Pre-computed prediction uncertainties
+        separate_channel_images : bool
+            If True, create separate image columns for each cutout type (diff, coadd, etc.)
+            
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with UMAP coordinates, predictions, labels, and images
+        """
         if self.umap_embedding is None:
             raise ValueError("No UMAP embedding. Call fit_umap first.")
         
@@ -789,9 +815,19 @@ class UMAPInterpreter:
         
         # OPTIMIZATION: Efficient image processing - only process sampled indices
         print("Creating embeddable images for hover tooltips...")
-        images = self._create_embeddable_images_efficient(data_loader, sample_indices)
-        df['image'] = images
-        print(f"Created {len(images)} embeddable images")
+        images_result = self._create_embeddable_images_efficient(
+            data_loader, sample_indices, separate_channels=separate_channel_images
+        )
+        
+        if separate_channel_images and isinstance(images_result, dict):
+            # Add separate image columns for each cutout type
+            for image_column, images_list in images_result.items():
+                df[image_column] = images_list
+            print(f"Created {len(images_list)} embeddable images per channel ({len(images_result)} channels)")
+        else:
+            # Backward compatible: single 'image' column
+            df['image'] = images_result
+            print(f"Created {len(images_result)} embeddable images")
         
         if additional_features:
             for key, values in additional_features.items():
@@ -867,14 +903,55 @@ class UMAPInterpreter:
         
         return np.array(probabilities), np.array(uncertainties)
 
-    def _create_embeddable_images_efficient(self, data_loader, sample_indices: np.ndarray) -> List[str]:
-        """Efficiently create embeddable images only for sampled indices."""
+    def _create_embeddable_images_efficient(self, data_loader, sample_indices: np.ndarray, 
+                                           separate_channels: bool = False) -> Union[List[str], Dict[str, List[str]]]:
+        """Efficiently create embeddable images only for sampled indices.
+        
+        Parameters
+        ----------
+        data_loader : DataLoader
+            Data loader with samples
+        sample_indices : np.ndarray
+            Indices of samples to create images for
+        separate_channels : bool
+            If True and data has multiple channels, return separate images for each channel.
+            Returns dict with keys like 'image_diff', 'image_coadd', etc.
+            If False, use only first channel (backward compatible).
+            
+        Returns
+        -------
+        Union[List[str], Dict[str, List[str]]]
+            If separate_channels=False: List of base64-encoded image strings
+            If separate_channels=True: Dict mapping channel names to lists of images
+        """
         print(f"Efficiently creating images for {len(sample_indices)} samples...")
+        if separate_channels:
+            print("  Creating separate images for each cutout channel")
+        
+        # Determine cutout types from dataset
+        cutout_types = None
+        if hasattr(data_loader.dataset, 'cutout_types'):
+            cutout_types = data_loader.dataset.cutout_types
+        elif hasattr(data_loader.dataset, 'dataset') and hasattr(data_loader.dataset.dataset, 'cutout_types'):
+            # Handle Subset wrapper
+            cutout_types = data_loader.dataset.dataset.cutout_types
+        
+        if cutout_types is None:
+            cutout_types = ['diff']  # Default assumption
+        
+        print(f"  Detected cutout types: {cutout_types}")
         
         # Create mapping for quick lookup
         indices_set = set(sample_indices)
         index_to_position = {idx: pos for pos, idx in enumerate(sample_indices)}
-        images = [''] * len(sample_indices) # Pre-allocate
+        
+        # Initialize storage
+        if separate_channels and len(cutout_types) > 1:
+            # Create separate lists for each channel
+            images_by_channel = {f'image_{ct}': [''] * len(sample_indices) for ct in cutout_types}
+        else:
+            # Single list (backward compatible)
+            images = [''] * len(sample_indices)
         
         current_idx = 0
         processed_count = 0
@@ -903,19 +980,35 @@ class UMAPInterpreter:
                     else:
                         img_array = batch_images[i]
                     
-                    # Convert to embeddable format with RdYlGn colormap (preserves negatives)
-                    embeddable_img = embeddable_image(img_array, cmap='gray')
                     position = index_to_position[global_idx]
-                    images[position] = embeddable_img
+                    
+                    if separate_channels and len(cutout_types) > 1 and img_array.shape[0] == len(cutout_types):
+                        # Create separate images for each channel
+                        # img_array is [C, H, W]
+                        for ch_idx, cutout_type in enumerate(cutout_types):
+                            channel_data = img_array[ch_idx, :, :]  # Extract [H, W]
+                            embeddable_img = embeddable_image(channel_data, cmap='gray')
+                            images_by_channel[f'image_{cutout_type}'][position] = embeddable_img
+                    else:
+                        # Use first channel only (backward compatible)
+                        embeddable_img = embeddable_image(img_array, cmap='gray')
+                        images[position] = embeddable_img
+                    
                     processed_count += 1
                     
                     # Early exit if we've processed all needed images
                     if processed_count >= len(sample_indices):
-                        return images
+                        if separate_channels and len(cutout_types) > 1:
+                            return images_by_channel
+                        else:
+                            return images
             
             current_idx += batch_size
         
-        return images
+        if separate_channels and len(cutout_types) > 1:
+            return images_by_channel
+        else:
+            return images
 
     def save_umap(self, path: str):
         """Save the fitted UMAP reducer to disk."""

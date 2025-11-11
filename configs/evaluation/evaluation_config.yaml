@@ -44,7 +44,7 @@ interpretability:
     n_neighbors: 15
     min_dist: 0.1
     n_components: 2
-    random_state: 42
+    random_state: 41
     optimize_params: false  # Set to true to optimize UMAP parameters
   # High-dimensional clustering parameters performed before UMAP -- WARNING very long
   clustering:

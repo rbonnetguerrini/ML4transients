@@ -24,7 +24,7 @@ sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')
 
 from ML4transients.data_access import DatasetLoader
 from ML4transients.evaluation.metrics import EvaluationMetrics, load_inference_metrics
-from ML4transients.evaluation.visualizations import create_evaluation_dashboard, create_interpretability_dashboard, create_combined_dashboard
+from ML4transients.evaluation.visualizations import create_combined_dashboard
 from ML4transients.evaluation.interpretability import UMAPInterpreter
 from ML4transients.training.pytorch_dataset import PytorchDataset
 from ML4transients.utils import load_config
@@ -59,6 +59,8 @@ def parse_args():
                        help="Path to load an existing UMAP fit for interpretability")
     parser.add_argument("--umap-save-path", type=str, default=None,
                        help="Path to save the fitted UMAP after interpretability analysis")
+    parser.add_argument("--show-all-cutouts", action="store_true",
+                       help="Show all cutout types (diff, coadd, etc.) in UMAP hover tooltips (default: show only first channel)")
     
     return parser.parse_args()
 
@@ -942,7 +944,8 @@ def main():
         title=f"Model Evaluation - {model_name}",
         probabilities=probabilities,  # Pass pre-computed probabilities
         uncertainties=uncertainties,   # Pass pre-computed uncertainties
-        snr_threshold=args.snr_threshold  # Pass SNR threshold
+        snr_threshold=args.snr_threshold,  # Pass SNR threshold
+        show_all_cutouts=args.show_all_cutouts  # Pass cutout display preference
     )
     print(f"Combined dashboard created in {time.time() - step_start:.2f}s")
     

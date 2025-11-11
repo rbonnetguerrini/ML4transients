@@ -294,6 +294,80 @@ class UMAPVisualizer:
             'False Negative': '#b3b6b7'   
         }
     
+    def _build_tooltip_html(self, df: pd.DataFrame, extra_fields: Dict[str, str] = None) -> str:
+        """Build HTML tooltip that adapts to available image columns.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with data (used to detect available columns)
+        extra_fields : Dict[str, str], optional
+            Extra fields to include in tooltip {field_name: display_label}
+            
+        Returns
+        -------
+        str
+            HTML tooltip string
+        """
+        # Detect available image columns (e.g., 'image', 'image_diff', 'image_coadd')
+        image_columns = [col for col in df.columns if col.startswith('image')]
+        
+        # Start tooltip HTML
+        tooltip_html = "<div>"
+        
+        # Add images section
+        if len(image_columns) > 0:
+            tooltip_html += "<div>"
+            for img_col in sorted(image_columns):
+                # Extract cutout type name from column (e.g., 'image_diff' -> 'Diff')
+                if img_col == 'image':
+                    label = "Cutout"
+                else:
+                    cutout_type = img_col.replace('image_', '').capitalize()
+                    label = cutout_type
+                
+                tooltip_html += f"""
+                    <div style='display: inline-block; margin: 2px;'>
+                        <div style='text-align: center; font-size: 10px; color: #666;'>{label}</div>
+                        <img src='@{img_col}' height="60" width="60" style='border: 1px solid #444;'></img>
+                    </div>
+                """
+            tooltip_html += "</div>"
+        
+        # Add classification info
+        tooltip_html += """
+            <div style='margin-top: 5px;'>
+                <span style='font-size: 14px; color: #224499'>Class type:</span>
+                <span style='font-size: 14px'>@class_type</span><br>
+                <span style='font-size: 14px; color: #224499'>True label:</span>
+                <span style='font-size: 14px'>@true_label</span><br>
+                <span style='font-size: 14px; color: #224499'>Prediction:</span>
+                <span style='font-size: 14px'>@prediction</span><br>
+        """
+        
+        # Add extra fields if provided
+        if extra_fields:
+            for field_name, display_label in extra_fields.items():
+                if field_name in df.columns:
+                    # Format numbers nicely
+                    if df[field_name].dtype in [np.float32, np.float64]:
+                        tooltip_html += f"""
+                <span style='font-size: 14px; color: #224499'>{display_label}:</span>
+                <span style='font-size: 14px'>@{field_name}{{0.000}}</span><br>
+                        """
+                    else:
+                        tooltip_html += f"""
+                <span style='font-size: 14px; color: #224499'>{display_label}:</span>
+                <span style='font-size: 14px'>@{field_name}</span><br>
+                        """
+        
+        tooltip_html += """
+            </div>
+        </div>
+        """
+        
+        return tooltip_html
+    
     def _add_classification_scatter(self, p, df, color_field=None, color_mapper=None, 
                                    size=8, alpha=0.7, legend_field=None):
         """Helper method to add scatter points with consistent TP/FP/TN/FN symbols."""
@@ -759,23 +833,8 @@ class UMAPVisualizer:
                      size=8, alpha=0.7, 
                      legend_label="False Negative")
         
-        # Create hover tooltip
-        tooltip_html = """
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Prediction:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-            </div>
-        </div>
-        """
+        # Create hover tooltip using helper function that adapts to available image columns
+        tooltip_html = self._build_tooltip_html(df)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
@@ -856,7 +915,8 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
 def create_interpretability_dashboard(interpreter, data_loader, predictions: np.ndarray = None, 
                                     labels: np.ndarray = None, output_path: Path = None,
                                     additional_features: Dict = None, config: Dict = None,
-                                    probabilities: np.ndarray = None, uncertainties: np.ndarray = None) -> Tuple[TabPanel, str]:
+                                    probabilities: np.ndarray = None, uncertainties: np.ndarray = None,
+                                    show_all_cutouts: bool = False) -> Tuple[TabPanel, str]:
     """Create UMAP-based interpretability dashboard tab.
     
     Parameters
@@ -865,10 +925,10 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         Initialized UMAP interpreter
     data_loader : DataLoader
         Data loader for feature extraction and image embedding
-    predictions : np.ndarray
-        Model predictions
-    labels : np.ndarray
-        True labels
+    predictions : np.ndarray, optional
+        Model predictions (if None, will be computed from data_loader via inference)
+    labels : np.ndarray, optional
+        True labels (if None, will be extracted from data_loader)
     output_path : Path, optional
         Path to save the HTML dashboard file (only used when called standalone)
     additional_features : Dict, optional
@@ -878,7 +938,10 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
     probabilities : np.ndarray, optional
         Pre-computed prediction probabilities 
     uncertainties : np.ndarray, optional
-        Pre-computed prediction uncertainties 
+        Pre-computed prediction uncertainties
+    show_all_cutouts : bool, optional
+        If True, show all cutout types (diff, coadd, etc.) in hover tooltip.
+        If False, show only the first channel (default, backward compatible).
         
     Returns
     -------
@@ -981,7 +1044,8 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         sampled_predictions, sampled_labels, data_loader,
         additional_features=additional_features,
         probabilities=sampled_probabilities,  # Use sampled values
-        uncertainties=sampled_uncertainties   # Use sampled values
+        uncertainties=sampled_uncertainties,   # Use sampled values
+        separate_channel_images=show_all_cutouts  # Create separate image columns if requested
     )
     print(f"Dataframe creation completed in {time.time() - start_time:.2f}s")
     
@@ -1083,7 +1147,7 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
                             output_path: Path = None, additional_features: Dict = None, 
                             config: Dict = None, title: str = "Model Evaluation Dashboard",
                             probabilities: np.ndarray = None, uncertainties: np.ndarray = None,
-                            snr_threshold: float = 5.0) -> str:
+                            snr_threshold: float = 5.0, show_all_cutouts: bool = False) -> str:
     """Create combined dashboard with both evaluation metrics and interpretability in tabs.
     
     Parameters
@@ -1112,6 +1176,8 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
         Pre-computed prediction uncertainties (avoids recomputation)
     snr_threshold : float
         SNR threshold to separate low and high SNR samples (default: 5.0)
+    show_all_cutouts : bool
+        If True, show all cutout types (diff, coadd, etc.) in hover tooltips (default: False)
         
     Returns
     -------
@@ -1133,7 +1199,8 @@ def create_combined_dashboard(metrics: EvaluationMetrics,
                 interpreter, data_loader, predictions, labels,
                 additional_features=additional_features, config=config,
                 probabilities=probabilities,  # Pass pre-computed values
-                uncertainties=uncertainties   # Pass pre-computed values
+                uncertainties=uncertainties,   # Pass pre-computed values
+                show_all_cutouts=show_all_cutouts  # Pass cutout display preference
             )
             tabs.append(interp_tab)
         except Exception as e:
