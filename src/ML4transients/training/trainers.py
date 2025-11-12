@@ -804,8 +804,8 @@ class StochasticCoTeachingTrainer(BaseTrainer):
     
     def save_checkpoint(self, epoch, suffix):
         output_dir = self.config.get('output_dir')
-        torch.save(self.model1.state_dict(), f"{output_dir}/stocot_model1_{suffix}.pth")
-        torch.save(self.model2.state_dict(), f"{output_dir}/stocot_model2_{suffix}.pth")
+        torch.save(self.model1.state_dict(), f"{output_dir}/model1_{suffix}.pth")
+        torch.save(self.model2.state_dict(), f"{output_dir}/model2_{suffix}.pth")
 
 
 def get_trainer(trainer_type, config):
