@@ -142,7 +142,7 @@ class UMAPInterpreter:
                 self.trainer.models[i].load_state_dict(state_dict)
                 self.trainer.models[i].to(self.device)
                 self.trainer.models[i].eval()
-        elif trainer_type == "coteaching":
+        elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
             print("Loading co-teaching model...")
             state_dict1 = torch.load(self.model_path / "model1_best.pth", map_location=self.device)
             state_dict2 = torch.load(self.model_path / "model2_best.pth", map_location=self.device)

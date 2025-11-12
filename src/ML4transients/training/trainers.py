@@ -584,12 +584,238 @@ class EnsembleTrainer(BaseTrainer):
             torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
 
 
+class StochasticCoTeachingTrainer(BaseTrainer):
+    """Stochastic co-teaching trainer with two networks
+    
+    Based on: Jansen et al. (2023) - Stochastic co-teaching for training neural 
+    networks with unknown levels of label noise.
+    https://www.nature.com/articles/s41598-023-43864-7
+    """
+    
+    def setup_training(self):
+        # Two models
+        self.model1 = CustomCNN(**self.config['model_params']).to(self.device)
+        self.model2 = CustomCNN(**self.config['model_params']).to(self.device)
+        
+        # Optimizers
+        self.optimizer1 = torch.optim.Adam(
+            self.model1.parameters(), 
+            lr=self.config['learning_rate'],
+            weight_decay=self.config.get('weight_decay', 0)
+        )
+        self.optimizer2 = torch.optim.Adam(
+            self.model2.parameters(), 
+            lr=self.config['learning_rate'],
+            weight_decay=self.config.get('weight_decay', 0)
+        )
+        
+        # Loss function with stochastic co-teaching
+        self.loss_fn = get_loss_function(
+            'stochastic_coteaching',
+            alpha=self.config.get('alpha', 32),
+            beta=self.config.get('beta', 4),
+            max_iters=self.config['epochs'],
+            tp_gradual=self.config.get('num_gradual', 10),
+            delay=self.config.get('delay', 0),
+            exponent=self.config.get('exponent', 1),
+            clip=self.config.get('clip', (0.01, 0.99)),
+            seed=self.config.get('seed', 808)
+        )
+        
+        # Learning rate schedule (optional)
+        self.setup_lr_schedule()
+    
+    def setup_lr_schedule(self):
+        """Setup learning rate schedule"""
+        epochs = self.config['epochs']
+        lr = self.config['learning_rate']
+        epoch_decay_start = self.config.get('epoch_decay_start', 80)
+        
+        # Learning rate schedule
+        self.alpha_plan = [lr] * epochs
+        self.beta1_plan = [0.9] * epochs
+        
+        for i in range(epoch_decay_start, epochs):
+            self.alpha_plan[i] = float(epochs - i) / (epochs - epoch_decay_start) * lr
+            self.beta1_plan[i] = 0.1
+    
+    def adjust_learning_rate(self, optimizer, epoch):
+        """Adjust learning rate"""
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = self.alpha_plan[epoch]
+            param_group['betas'] = (self.beta1_plan[epoch], 0.999)
+    
+    def train_one_epoch(self, epoch, train_loader):
+        self.model1.train()
+        self.model2.train()
+        self.adjust_learning_rate(self.optimizer1, epoch)
+        self.adjust_learning_rate(self.optimizer2, epoch)
+        
+        total_correct1, total_correct2 = 0, 0
+        total_samples = 0
+        total_loss1, total_loss2 = 0.0, 0.0
+        total_reject1, total_reject2 = 0.0, 0.0
+        batches_rejected = 0
+        
+        for batch_idx, (images, labels, _) in enumerate(train_loader):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
+                break
+                
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            # Forward pass
+            logits1 = self.model1(images)
+            logits2 = self.model2(images)
+            
+            # Calculate accuracy before loss
+            total_correct1 += (torch.sigmoid(logits1.squeeze()) > 0.5).eq(labels).sum().item()
+            total_correct2 += (torch.sigmoid(logits2.squeeze()) > 0.5).eq(labels).sum().item()
+            total_samples += len(labels)
+            
+            # Stochastic co-teaching loss
+            try:
+                loss_1, loss_2 = self.loss_fn(logits1, logits2, labels)
+            except RuntimeError as e:
+                # Handle case where >90% samples are rejected
+                batches_rejected += 1
+                if batches_rejected > len(train_loader) * 0.1:  # If >10% batches rejected, raise error
+                    raise RuntimeError(f"Too many batches rejected in epoch {epoch}: {batches_rejected}")
+                continue
+            
+            total_loss1 += loss_1.item()
+            total_loss2 += loss_2.item()
+            
+            # Track rejection rates
+            frac_reject_1, frac_reject_2 = self.loss_fn.current_fraction_rejected()
+            total_reject1 += frac_reject_1
+            total_reject2 += frac_reject_2
+            
+            # Backward pass
+            self.optimizer1.zero_grad()
+            loss_1.backward()
+            self.optimizer1.step()
+            
+            self.optimizer2.zero_grad()
+            loss_2.backward()
+            self.optimizer2.step()
+            
+            # Log batch metrics to TensorBoard
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                self.writer.add_scalar('Batch/Loss1', loss_1.item(), fractional_epoch)
+                self.writer.add_scalar('Batch/Loss2', loss_2.item(), fractional_epoch)
+                self.writer.add_scalar('Batch/Reject1', frac_reject_1, fractional_epoch)
+                self.writer.add_scalar('Batch/Reject2', frac_reject_2, fractional_epoch)
+        
+        # Step the loss function (increments internal iteration counter)
+        self.loss_fn.step()
+        
+        # Calculate average metrics
+        num_batches = min(len(train_loader), self.config.get('num_iter_per_epoch', float('inf'))) - batches_rejected
+        
+        metrics = {
+            'accuracy1': total_correct1 / total_samples,
+            'accuracy2': total_correct2 / total_samples,
+            'loss1': total_loss1 / num_batches,
+            'loss2': total_loss2 / num_batches,
+            'reject_rate1': total_reject1 / num_batches,
+            'reject_rate2': total_reject2 / num_batches,
+        }
+        
+        if batches_rejected > 0:
+            metrics['batches_rejected'] = batches_rejected
+            print(f"Warning: {batches_rejected} batches rejected in epoch {epoch}")
+        
+        return metrics
+    
+    def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
+        
+        self.model1.eval()
+        self.model2.eval()
+        
+        all_preds1 = []
+        all_preds2 = []
+        all_labels = []
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for images, labels, _ in test_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                
+                logits1 = self.model1(images)
+                logits2 = self.model2(images)
+                
+                # Standard loss for evaluation (no sample selection)
+                loss1 = F.binary_cross_entropy_with_logits(logits1.squeeze(), labels.float())
+                loss2 = F.binary_cross_entropy_with_logits(logits2.squeeze(), labels.float())
+                total_loss += 0.5 * (loss1.item() + loss2.item())
+                
+                preds1 = torch.sigmoid(logits1.squeeze())
+                preds2 = torch.sigmoid(logits2.squeeze())
+                all_preds1.append(preds1)
+                all_preds2.append(preds2)
+                all_labels.append(labels)
+        
+        # Concatenate all predictions and labels
+        all_preds1 = torch.cat(all_preds1)
+        all_preds2 = torch.cat(all_preds2)
+        all_labels = torch.cat(all_labels)
+        
+        # Ensemble prediction (average of both models)
+        ensemble_preds = (all_preds1 + all_preds2) / 2
+        
+        # Compute metrics for ensemble
+        metrics = self.compute_confusion_metrics(ensemble_preds, all_labels)
+        
+        # Also compute individual model metrics
+        metrics1 = self.compute_confusion_metrics(all_preds1, all_labels)
+        metrics2 = self.compute_confusion_metrics(all_preds2, all_labels)
+        
+        return {
+            'accuracy': metrics['accuracy'],
+            'fnr': metrics['fnr'],
+            'loss': total_loss / len(test_loader),
+            'accuracy1': metrics1['accuracy'],
+            'accuracy2': metrics2['accuracy'],
+            'fnr1': metrics1['fnr'],
+            'fnr2': metrics2['fnr']
+        }
+    
+    def log_tensorboard(self, epoch, train_metrics, test_metrics, val_metrics=None):
+        """Extended TensorBoard logging with rejection rates"""
+        # Call parent method
+        super().log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
+        
+        # Log stochastic co-teaching specific metrics
+        if self.writer:
+            # Log rejection rates
+            if 'reject_rate1' in train_metrics:
+                self.writer.add_scalar('Train/Reject_Rate1', train_metrics['reject_rate1'], epoch)
+                self.writer.add_scalar('Train/Reject_Rate2', train_metrics['reject_rate2'], epoch)
+            
+            # Log probabilities histograms
+            if self.loss_fn.probas1 is not None and self.loss_fn.probas2 is not None:
+                self.writer.add_histogram('Probabilities/Training_1', 
+                                         self.loss_fn.probas1.cpu().numpy(), epoch)
+                self.writer.add_histogram('Probabilities/Training_2', 
+                                         self.loss_fn.probas2.cpu().numpy(), epoch)
+    
+    def save_checkpoint(self, epoch, suffix):
+        output_dir = self.config.get('output_dir')
+        torch.save(self.model1.state_dict(), f"{output_dir}/stocot_model1_{suffix}.pth")
+        torch.save(self.model2.state_dict(), f"{output_dir}/stocot_model2_{suffix}.pth")
+
+
 def get_trainer(trainer_type, config):
     """Factory function to get trainer"""
     if trainer_type == "standard":
         return StandardTrainer(config)
     elif trainer_type == "coteaching":
         return CoTeachingTrainer(config)
+    elif trainer_type == "stochastic_coteaching":
+        return StochasticCoTeachingTrainer(config)
     elif trainer_type == "ensemble":
         return EnsembleTrainer(config)
     else:

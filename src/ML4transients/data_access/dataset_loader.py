@@ -607,7 +607,7 @@ class DatasetLoader:
                     trainer.models[i].load_state_dict(state_dict)
                     trainer.models[i].to(device)
                     trainer.models[i].eval()
-            elif trainer_type == "coteaching":
+            elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
                 # Load both models for co-teaching
                 state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
                 state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
@@ -617,6 +617,7 @@ class DatasetLoader:
                 trainer.model2.to(device)
                 trainer.model1.eval()
                 trainer.model2.eval()
+            
             else:
                 # Standard single model
                 state_dict = torch.load(f"{weights_path}/model_best.pth", map_location=device)
