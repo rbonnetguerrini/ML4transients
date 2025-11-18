@@ -46,6 +46,12 @@ SLURM_JOB_ID=$(sbatch --array=$ARRAY_RANGE --parsable \
         source /cvmfs/sw.lsst.eu/linux-x86_64/lsst_distrib/w_2024_30/loadLSST.bash
         setup lsst_distrib
         
+        # Change to project directory
+        cd /sps/lsst/users/rbonnetguerrini/ML4transients
+        
+        # Add src to Python path
+        export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:\$PYTHONPATH
+        
         # Get band from array index
         BANDS=(${BANDS[*]})
         BAND=\${BANDS[\$SLURM_ARRAY_TASK_ID]}

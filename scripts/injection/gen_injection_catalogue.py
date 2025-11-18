@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from ML4transients.injection.injection import (
     process_all_ccds, 
     InjectionConfig, 
-    CatalogProcessor
 )
 
 # LSST imports
@@ -201,6 +200,9 @@ def main():
             print("\nDry run complete. No processing performed.")
             return 0
         
+        # Create injection configuration
+        injection_config = create_injection_config(config)
+        
         # Create output directory
         output_dir = Path(config['output']['output_dir'])
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -209,9 +211,6 @@ def main():
         filename = generate_output_filename(config)
         
         print(f"\nOutput filename: {filename}")
-        
-        # Create injection configuration
-        injection_config = create_injection_config(config)
         
         # Process all CCDs
         print(f"\nStarting catalog generation...")

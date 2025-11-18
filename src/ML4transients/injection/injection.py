@@ -926,9 +926,11 @@ def process_all_ccds(datasetRefs: List[Any], butler: Any, band: str,
             if dec_col != 'dec':
                 detecs_df = detecs_df.rename(columns={dec_col: 'dec'})
             
-            # Filter for extended sources (galaxies) and sample efficiently
+            # Filter for extended sources (galaxies) and sample based on galaxy_fraction
             filtered_detecs = detecs_df[detecs_df['extendedness'] == 1]
-            nbr_fake = max(config.min_injections, len(filtered_detecs) // 20)
+            
+            # Calculate number of galaxies to keep based on galaxy_fraction
+            nbr_fake = max(config.min_injections, int(len(filtered_detecs) * config.galaxy_fraction))
             
             if config.max_injections:
                 nbr_fake = min(nbr_fake, config.max_injections)
@@ -1027,8 +1029,15 @@ def process_all_ccds(datasetRefs: List[Any], butler: Any, band: str,
         
         # Save to CSV if requested
         if csv and save_filename:
-            output_path = f'saved/{save_filename}.csv' if save_filename else 'saved/injection_catalog.csv'
+            # Use save_filename as-is (it should be the full path from config)
+            output_path = f'{save_filename}.csv'
             try:
+                # Create directory if it doesn't exist
+                import os
+                output_dir = os.path.dirname(output_path)
+                if output_dir:
+                    os.makedirs(output_dir, exist_ok=True)
+                
                 result.to_csv(output_path, index=False)
                 print(f"Saved catalog to: {output_path}")
             except Exception as e:

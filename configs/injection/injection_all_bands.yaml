@@ -1,9 +1,10 @@
 butler:
-  repo: "/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/" #/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/  #/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+   #/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/  #/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
+  repo: "/sps/lsst/users/rbonnetguerrini/pipelines/rc2_subset/SMALL_HSC/"
   collections: [u/rbonnetguerrini/step8] #run/ssp_ud_cosmos/step5
 
 injection:
-  galaxy_fraction: 0.08        # Use 8% of available galaxies
+  galaxy_fraction: 0.093859       
   hostless_fraction: 0.10      # 10% of injections are hostless
   min_injections: 1            # Minimum injections per CCD
   max_injections: null         # No maximum limit (null = None)
@@ -18,7 +19,7 @@ data_selection:
 output:
   save_csv: true
   output_dir: "catalogs/rc2_subset"
-  filename_prefix: "injection_catalog"
+  filename_prefix: "saved/injection_catalogs/67177inj/67177inj"
 
 mag_distribution:
   file: "/sps/lsst/users/rbonnetguerrini/ML4transients/saved/mag_distrib.json"
