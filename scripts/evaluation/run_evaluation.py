@@ -791,10 +791,10 @@ def main():
     snr_values = extract_snr_values(dataset_loader, source_ids)
     print(f"SNR extraction completed in {time.time() - step_start:.2f}s")
     
-    # Create metrics evaluation with probabilities and SNR if available
+    # Create metrics evaluation with probabilities, SNR, and uncertainties if available
     print("Computing evaluation metrics...")
     step_start = time.time()
-    metrics = EvaluationMetrics(predictions, labels, probabilities, snr_values)
+    metrics = EvaluationMetrics(predictions, labels, probabilities, snr_values, uncertainties)
     print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
     # Print enhanced summary

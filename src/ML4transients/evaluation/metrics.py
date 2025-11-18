@@ -22,7 +22,8 @@ class EvaluationMetrics:
 
     def __init__(self, predictions: np.ndarray, labels: np.ndarray,
                  probabilities: Optional[np.ndarray] = None,
-                 snr_values: Optional[np.ndarray] = None):
+                 snr_values: Optional[np.ndarray] = None,
+                 uncertainties: Optional[np.ndarray] = None):
         """
         Parameters
         ----------
@@ -34,12 +35,16 @@ class EvaluationMetrics:
             Probabilistic scores (same length). Required for ROC/PR.
         snr_values : np.ndarray, optional
             SNR values for each sample. Required for SNR-based metrics.
+        uncertainties : np.ndarray, optional
+            Uncertainty values for each prediction (e.g., ensemble std, model disagreement).
+            Useful for UQ analysis, particularly with ensemble/coteaching models.
         """
         # Store inputs
         self.predictions = predictions
         self.labels = labels
         self.probabilities = probabilities
         self.snr_values = snr_values
+        self.uncertainties = uncertainties
 
         # Internal caches to avoid repeated expensive computations
         self._roc_cache: Optional[Tuple[np.ndarray, np.ndarray, float]] = None

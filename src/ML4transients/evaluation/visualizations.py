@@ -192,8 +192,73 @@ class BokehEvaluationPlots:
         
         return Div(text=html_content, width=300, height=200)
     
+    def create_uncertainty_metrics_div(self, metrics: EvaluationMetrics) -> Div:
+        """Create a summary div with uncertainty quantification metrics.
+        
+        Provides quantitative UQ analysis for ensemble/coteaching models.
+        
+        Parameters
+        ----------
+        metrics : EvaluationMetrics
+            Evaluation metrics object with uncertainties
+            
+        Returns
+        -------
+        Div
+            Bokeh Div element with UQ statistics
+        """
+        if not hasattr(metrics, 'uncertainties') or metrics.uncertainties is None:
+            html_content = """
+            <div style="padding: 10px; background-color: #2F2F2F; border-radius: 5px;">
+                <h3 style="color: white; margin-top: 0;">Uncertainty Quantification</h3>
+                <p style="color: white;">Not available (requires ensemble or coteaching model)</p>
+            </div>
+            """
+            return Div(text=html_content, width=400, height=200)
+        
+        uncertainties = metrics.uncertainties
+        predictions = metrics.predictions
+        labels = metrics.labels
+        
+        # Compute statistics
+        mean_uncertainty = np.mean(uncertainties)
+        std_uncertainty = np.std(uncertainties)
+        median_uncertainty = np.median(uncertainties)
+        
+        # Uncertainty for TP/FP/TN/FN
+        tp_mask = (predictions == 1) & (labels == 1)
+        fp_mask = (predictions == 1) & (labels == 0)
+        tn_mask = (predictions == 0) & (labels == 0)
+        fn_mask = (predictions == 0) & (labels == 1)
+        
+        mean_uncertainty_tp = np.mean(uncertainties[tp_mask]) if np.any(tp_mask) else 0.0
+        mean_uncertainty_fp = np.mean(uncertainties[fp_mask]) if np.any(fp_mask) else 0.0
+        mean_uncertainty_tn = np.mean(uncertainties[tn_mask]) if np.any(tn_mask) else 0.0
+        mean_uncertainty_fn = np.mean(uncertainties[fn_mask]) if np.any(fn_mask) else 0.0
+        
+        html_content = f"""
+        <div style="padding: 10px; background-color: #2F2F2F; border-radius: 5px;">
+            <h3 style="color: white; margin-top: 0;">Uncertainty Quantification</h3>
+            <table style="color: white; width: 100%; font-size: 12px;">
+                <tr><td colspan="2"><b>Overall Statistics:</b></td></tr>
+                <tr><td>Mean:</td><td>{mean_uncertainty:.4f}</td></tr>
+                <tr><td>Median:</td><td>{median_uncertainty:.4f}</td></tr>
+                <tr><td>Std Dev:</td><td>{std_uncertainty:.4f}</td></tr>
+                <tr><td colspan="2" style="padding-top: 8px;"><b>By Class Type:</b></td></tr>
+                <tr><td>True Positive:</td><td>{mean_uncertainty_tp:.4f}</td></tr>
+                <tr><td>False Positive:</td><td>{mean_uncertainty_fp:.4f}</td></tr>
+                <tr><td>True Negative:</td><td>{mean_uncertainty_tn:.4f}</td></tr>
+                <tr><td>False Negative:</td><td>{mean_uncertainty_fn:.4f}</td></tr>
+            </table>
+        </div>
+        """
+        
+        return Div(text=html_content, width=400, height=300)
+    
     def create_snr_metrics_divs(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Tuple[Div, Div]:
         """Create separate metric boxes for low and high SNR samples.
+        
+        Includes uncertainty metrics if available (for ensemble/coteaching models).
         
         Parameters
         ----------
@@ -215,12 +280,26 @@ class BokehEvaluationPlots:
             
         snr_metrics = metrics.get_snr_based_metrics(snr_threshold)
         
+        # Check if uncertainty data is available
+        has_uncertainty = (hasattr(metrics, 'uncertainties') and 
+                          metrics.uncertainties is not None and 
+                          len(metrics.uncertainties) > 0)
+        
+        # Compute uncertainty by SNR if available
+        if has_uncertainty:
+            abs_snr = np.abs(metrics.snr_values)
+            low_snr_mask = abs_snr < snr_threshold
+            high_snr_mask = abs_snr >= snr_threshold
+            
+            mean_uncertainty_low = np.mean(metrics.uncertainties[low_snr_mask]) if np.any(low_snr_mask) else 0.0
+            mean_uncertainty_high = np.mean(metrics.uncertainties[high_snr_mask]) if np.any(high_snr_mask) else 0.0
+        
         # Low SNR metrics div
         low_snr = snr_metrics['low_snr']
         low_html = f"""
         <div style="padding: 10px; background-color: #3B2F2F; border-radius: 5px; border-left: 4px solid #FF6B6B;">
             <h3 style="color: white; margin-top: 0;">Low SNR Performance (|SNR| < {snr_threshold})</h3>
-            <table style="color: white; width: 100%;">
+            <table style="color: white; width: 100%; font-size: 11px;">
                 <tr><td>Samples:</td><td>{int(low_snr['n_samples'])}</td></tr>
                 <tr><td>Accuracy:</td><td>{low_snr['accuracy']:.3f}</td></tr>
                 <tr><td>Precision:</td><td>{low_snr['precision']:.3f}</td></tr>
@@ -235,6 +314,13 @@ class BokehEvaluationPlots:
                 <tr><td>PR AUC:</td><td>{low_snr['pr_auc']:.3f}</td></tr>
             """
         
+        # Add uncertainty metrics if available
+        if has_uncertainty:
+            low_html += f"""
+                <tr><td colspan="2" style="padding-top: 8px;"><b>Uncertainty:</b></td></tr>
+                <tr><td>Mean UQ:</td><td>{mean_uncertainty_low:.4f}</td></tr>
+            """
+        
         low_html += """
             </table>
         </div>
@@ -245,7 +331,7 @@ class BokehEvaluationPlots:
         high_html = f"""
         <div style="padding: 10px; background-color: #2F3B2F; border-radius: 5px; border-left: 4px solid #4ECDC4;">
             <h3 style="color: white; margin-top: 0;">High SNR Performance (|SNR| ≥ {snr_threshold})</h3>
-            <table style="color: white; width: 100%;">
+            <table style="color: white; width: 100%; font-size: 11px;">
                 <tr><td>Samples:</td><td>{int(high_snr['n_samples'])}</td></tr>
                 <tr><td>Accuracy:</td><td>{high_snr['accuracy']:.3f}</td></tr>
                 <tr><td>Precision:</td><td>{high_snr['precision']:.3f}</td></tr>
@@ -260,13 +346,22 @@ class BokehEvaluationPlots:
                 <tr><td>PR AUC:</td><td>{high_snr['pr_auc']:.3f}</td></tr>
             """
         
+        # Add uncertainty metrics if available
+        if has_uncertainty:
+            high_html += f"""
+                <tr><td>Mean UQ:</td><td>{mean_uncertainty_high:.4f}</td></tr>
+            """
+        
         high_html += """
             </table>
         </div>
         """
         
-        low_snr_div = Div(text=low_html, width=300, height=250)
-        high_snr_div = Div(text=high_html, width=300, height=250)
+        # Adjust height if uncertainty is included
+        div_height = 300 if has_uncertainty else 250
+        
+        low_snr_div = Div(text=low_html, width=300, height=div_height)
+        high_snr_div = Div(text=high_html, width=300, height=div_height)
         
         return low_snr_div, high_snr_div
 
@@ -843,6 +938,91 @@ class UMAPVisualizer:
         p.legend.location = "top_right"
         
         return p
+    
+    def plot_uncertainty_vs_snr_scatter(self, df: pd.DataFrame, 
+                                        title: str = "Uncertainty vs SNR") -> figure:
+        """Plot scatter of uncertainty vs SNR with TP/FP/TN/FN symbols.
+        
+        This plot helps identify if model uncertainty correlates with signal quality (SNR).
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with 'snr', 'prediction_uncertainty' (or proxy), and classification data
+        title : str
+            Title for the plot
+            
+        Returns
+        -------
+        figure
+            Bokeh figure with uncertainty vs SNR scatter plot
+        """
+        # Check if SNR data is available
+        if 'snr' not in df.columns:
+            p = figure(title=f"{title} (SNR data not available)", 
+                      width=self.width, height=self.height,
+                      tools=['pan', 'wheel_zoom', 'reset', 'save'])
+            p.text([self.width/2], [self.height/2], text=["SNR data not available"],
+                   text_align="center", text_baseline="middle", text_font_size="16pt")
+            return p
+        
+        # Determine what uncertainty measure to use
+        if 'prediction_uncertainty' in df.columns:
+            uncertainty_col = 'prediction_uncertainty'
+            uncertainty_title = "Model Uncertainty"
+            plot_title = f"{title} (Ensemble/CoTeaching)"
+        elif 'prediction_probability' in df.columns:
+            # Create proxy uncertainty from probability
+            df = df.copy()
+            df['uncertainty_proxy'] = np.abs(df['prediction_probability'] - 0.5)
+            uncertainty_col = 'uncertainty_proxy'
+            uncertainty_title = "Distance from Decision Boundary"
+            plot_title = f"{title} (Confidence Proxy)"
+        else:
+            p = figure(title=f"{title} (No uncertainty data)", 
+                      width=self.width, height=self.height,
+                      tools=['pan', 'wheel_zoom', 'reset', 'save'])
+            p.text([self.width/2], [self.height/2], text=["Uncertainty data not available"],
+                   text_align="center", text_baseline="middle", text_font_size="16pt")
+            return p
+        
+        # Cap SNR at 15 for better visualization
+        df = df.copy()
+        df['snr_capped'] = np.minimum(df['snr'], 15.0)
+        
+        # Create figure with capped x-axis
+        p = figure(title=plot_title,
+                  x_axis_label="Signal-to-Noise Ratio (capped at 15)",
+                  y_axis_label=uncertainty_title,
+                  width=self.width, height=self.height,
+                  x_range=(0, 15),
+                  tools=['pan', 'wheel_zoom', 'reset', 'save', 'box_select'])
+        
+        # Plot each class type separately with different symbols and colors
+        for class_type in ['True Positive', 'True Negative', 'False Positive', 'False Negative']:
+            class_data = df[df['class_type'] == class_type]
+            if len(class_data) > 0:
+                source = ColumnDataSource(class_data)
+                p.scatter('snr_capped', uncertainty_col, source=source,
+                         color=self.class_colors[class_type],
+                         marker=self.class_symbols[class_type],
+                         alpha=0.6, size=8,
+                         legend_label=class_type)
+        
+        # Add hover tool
+        hover = HoverTool(tooltips=[
+            ("SNR (actual)", "@snr{0.00}"),
+            ("Uncertainty", f"@{uncertainty_col}{{0.000}}"),
+            ("Class", "@class_type"),
+            ("Prediction", "@prediction"),
+            ("True Label", "@true_label")
+        ])
+        p.add_tools(hover)
+        
+        p.legend.click_policy = "hide"
+        p.legend.location = "top_right"
+        
+        return p
 
 def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = None,
                               title: str = "Model Evaluation Dashboard", 
@@ -873,6 +1053,9 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     # Create SNR-based metric divs if SNR data is available
     low_snr_div, high_snr_div = plots.create_snr_metrics_divs(metrics, snr_threshold)
     
+    # Create UQ metrics div if uncertainty data is available
+    uq_div = plots.create_uncertainty_metrics_div(metrics)
+    
     # Create distribution plot
     pred_dist_plot = plots.plot_prediction_distribution(
         metrics.predictions, 
@@ -884,7 +1067,7 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     plots_layout = [
         row(confusion_plot, metrics_div),
         row(low_snr_div, high_snr_div),
-        row(pred_dist_plot)
+        row(pred_dist_plot, uq_div)
     ]
     
     # Add ROC and PR curves if probabilities are available
@@ -1077,6 +1260,14 @@ def create_interpretability_dashboard(interpreter, data_loader, predictions: np.
         plots_list.append(snr_plot)
     except Exception as e:
         print(f"Warning: Could not create SNR plot: {e}")
+    
+    # UQ vs SNR scatter plot (if both SNR and uncertainty data available)
+    try:
+        if 'snr' in df.columns and ('prediction_uncertainty' in df.columns or 'prediction_probability' in df.columns):
+            uq_snr_scatter = visualizer.plot_uncertainty_vs_snr_scatter(df, title="Uncertainty vs SNR")
+            plots_list.append(uq_snr_scatter)
+    except Exception as e:
+        print(f"Warning: Could not create UQ vs SNR scatter plot: {e}")
     
     # Clustering plot if available
     if 'high_dim_cluster' in df.columns:
