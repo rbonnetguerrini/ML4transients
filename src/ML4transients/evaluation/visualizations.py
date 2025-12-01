@@ -559,25 +559,9 @@ class UMAPVisualizer:
         color_bar = ColorBar(color_mapper=color_mapper, width=8, location=(0, 0))
         p.add_layout(color_bar, 'right')
         
-        # Create hover tooltip
-        tooltip_html = f"""
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>{feature_column}:</span>
-                <span style='font-size: 14px'>@{feature_column}</span><br>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Prediction:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-            </div>
-        </div>
-        """
+        # Create hover tooltip using adaptive builder
+        extra_fields = {feature_column: feature_column}
+        tooltip_html = self._build_tooltip_html(df_clean, extra_fields=extra_fields)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
@@ -616,25 +600,9 @@ class UMAPVisualizer:
             color_mapper=cluster_color_mapper
         )
         
-        # Create hover tooltip
-        tooltip_html = f"""
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>Cluster:</span>
-                <span style='font-size: 14px'>@{cluster_column}</span><br>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Prediction:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-            </div>
-        </div>
-        """
+        # Create hover tooltip using adaptive builder
+        extra_fields = {cluster_column: 'Cluster'}
+        tooltip_html = self._build_tooltip_html(df, extra_fields=extra_fields)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
@@ -700,32 +668,16 @@ class UMAPVisualizer:
                            title=uncertainty_title)
         p.add_layout(color_bar, 'right')
         
-        # Combined hover tooltip
-        tooltip_html = f"""
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>Correct:</span>
-                <span style='font-size: 14px'>@correct</span><br>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-                <span style='font-size: 14px; color: #224499'>{uncertainty_title}:</span>
-                <span style='font-size: 14px'>@{uncertainty_col}{{0.000}}</span><br>
-        """
-        
+        # Build extra fields for tooltip
+        extra_fields = {
+            'correct': 'Correct',
+            uncertainty_col: uncertainty_title
+        }
         if 'prediction_probability' in df.columns:
-            tooltip_html += """
-                <span style='font-size: 14px; color: #224499'>Probability:</span>
-                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
-            """
+            extra_fields['prediction_probability'] = 'Probability'
         
-        tooltip_html += """
-            </div>
-        </div>
-        """
+        # Create hover tooltip using adaptive builder
+        tooltip_html = self._build_tooltip_html(df, extra_fields=extra_fields)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
@@ -743,7 +695,7 @@ class UMAPVisualizer:
         # Determine what uncertainty measure to use
         if 'prediction_uncertainty' in df.columns:
             uncertainty_col = 'prediction_uncertainty'
-            uncertainty_title = "Ensemble Model Disagreement (std dev of the outputs)"
+            uncertainty_title = "std dev of the outputs"
             title = "UMAP: Ensemble Model Disagreement (std dev of the outputs)"
         elif 'prediction_probability' in df.columns:
             # For standard models, use distance from decision boundary as uncertainty proxy
@@ -780,34 +732,13 @@ class UMAPVisualizer:
                            title=uncertainty_title)
         p.add_layout(color_bar, 'right')
         
-        # Create hover tooltip
-        tooltip_html = f"""
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>{uncertainty_title}:</span>
-                <span style='font-size: 14px'>@{uncertainty_col}{{0.000}}</span><br>
-                <span style='font-size: 14px; color: #224499'>Class type:</span>
-                <span style='font-size: 14px'>@class_type</span><br>
-        """
-        
+        # Build extra fields for tooltip
+        extra_fields = {uncertainty_col: uncertainty_title}
         if 'prediction_probability' in df.columns:
-            tooltip_html += """
-                <span style='font-size: 14px; color: #224499'>Probability:</span>
-                <span style='font-size: 14px'>@prediction_probability{0.000}</span><br>
-            """
+            extra_fields['prediction_probability'] = 'Probability'
         
-        tooltip_html += """
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Prediction:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-            </div>
-        </div>
-        """
+        # Create hover tooltip using adaptive builder
+        tooltip_html = self._build_tooltip_html(df_clean, extra_fields=extra_fields)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)
@@ -859,25 +790,12 @@ class UMAPVisualizer:
                            title="SNR (capped at 15)")
         p.add_layout(color_bar, 'right')
         
-        # Create hover tooltip with SNR information
-        tooltip_html = f"""
-        <div>
-            <div>
-                <img 
-                    src='@image' height="60" width="60" style='float: left; margin: 5px 5px 5px 5px'
-                    ></img>
-            <div>
-                <span style='font-size: 14px; color: #224499'>SNR:</span>
-                <span style='font-size: 14px'>@snr{{0.00}}</span><br>
-                <span style='font-size: 14px; color: #224499'>SNR (capped):</span>
-                <span style='font-size: 14px'>@snr_capped{{0.00}}</span><br>
-                <span style='font-size: 14px; color: #224499'>True label:</span>
-                <span style='font-size: 14px'>@true_label</span><br>
-                <span style='font-size: 14px; color: #224499'>Prediction:</span>
-                <span style='font-size: 14px'>@prediction</span><br>
-            </div>
-        </div>
-        """
+        # Create hover tooltip using adaptive builder
+        extra_fields = {
+            'snr': 'SNR',
+            'snr_capped': 'SNR (capped)'
+        }
+        tooltip_html = self._build_tooltip_html(df_clean, extra_fields=extra_fields)
         
         hover = HoverTool(tooltips=tooltip_html)
         p.add_tools(hover)

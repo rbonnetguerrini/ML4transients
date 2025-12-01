@@ -38,7 +38,7 @@ def get_udeep_dataset_loader():
     """Initialize DatasetLoader for the full UDEEP dataset where SNN inference was performed."""
     try:
         from ML4transients.data_access.dataset_loader import DatasetLoader
-        udeep_path = Path("/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd")
+        udeep_path = Path("/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2")
         return DatasetLoader(udeep_path)
     except ImportError as e:
         print(f"Could not import DatasetLoader: {e}")

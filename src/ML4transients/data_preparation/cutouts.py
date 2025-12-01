@@ -290,7 +290,7 @@ def save_cutouts(config: dict):
         for detector_idx, ref in enumerate(ref_ids):
             # Load difference image data
             diff_array = butler.get(f'{prefix}goodSeeingDiff_differenceExp', dataId=ref).getImage().array
-            
+
             # Load coadd (template) image data
             coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
             
@@ -322,7 +322,7 @@ def save_cutouts(config: dict):
                     continue
                 
                 # Create cutouts from coadd (template) image
-                coadd_cutout = Cutout2D(coadd_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)
+                coadd_cutout = Cutout2D(coadd_array, (dia_src['x'][i]+20, dia_src['y'][i]+20), cutout_size)
                 
                 # Create cutouts from science (calexp) image
                 science_cutout = Cutout2D(science_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)

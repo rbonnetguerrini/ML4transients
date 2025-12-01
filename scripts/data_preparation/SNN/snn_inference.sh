@@ -6,7 +6,7 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2/lightcurves"
 CSV_DIR="${INPUT_DIR}/csv"
 
 echo "=== Running CSV conversion ==="

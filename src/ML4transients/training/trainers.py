@@ -458,132 +458,6 @@ class CoTeachingTrainer(BaseTrainer):
         torch.save(self.model1.state_dict(), f"{self.config.get('output_dir')}/model1_{suffix}.pth")
         torch.save(self.model2.state_dict(), f"{self.config.get('output_dir')}/model2_{suffix}.pth")
 
-
-class EnsembleTrainer(BaseTrainer):
-    """Ensemble trainer with multiple models"""
-    
-    def setup_training(self):
-        self.num_models = self.config.get('num_models', 3)
-        
-        # Multiple models
-        self.models = []
-        self.optimizers = []
-        
-        for i in range(self.num_models):
-            model = CustomCNN(**self.config['model_params']).to(self.device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=self.config['learning_rate'])
-            self.models.append(model)
-            self.optimizers.append(optimizer)
-        
-        # Loss function
-        self.loss_fn = get_loss_function('standard')
-        
-        # Learning rate schedule
-        self.setup_lr_schedule()
-    
-    def setup_lr_schedule(self):
-        """Setup learning rate schedule"""
-        self.alpha_plan = [self.config['learning_rate']] * self.config['epochs']
-        epoch_decay_start = self.config.get('epoch_decay_start', 80)
-        
-        for i in range(epoch_decay_start, self.config['epochs']):
-            self.alpha_plan[i] = (
-                float(self.config['epochs'] - i) / 
-                (self.config['epochs'] - epoch_decay_start) * 
-                self.config['learning_rate']
-            )
-    
-    def adjust_learning_rate(self, epoch):
-        """Adjust learning rate for all optimizers"""
-        for optimizer in self.optimizers:
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = self.alpha_plan[epoch]
-    
-    def train_one_epoch(self, epoch, train_loader):
-        for model in self.models:
-            model.train()
-        self.adjust_learning_rate(epoch)
-        
-        model_accuracies = [0] * self.num_models
-        model_losses = [0.0] * self.num_models
-        total_samples = 0
-        for batch_idx, (images, labels, _) in enumerate(train_loader):
-            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
-                break
-                
-            images, labels = images.to(self.device), labels.to(self.device)
-            
-            for i, (model, optimizer) in enumerate(zip(self.models, self.optimizers)):
-                optimizer.zero_grad()
-                outputs = model(images)
-                loss = self.loss_fn(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                
-                model_accuracies[i] += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
-                model_losses[i] += loss.item()
-            
-            total_samples += len(labels)
-            # Average accuracy and loss across models
-            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
-                fractional_epoch = epoch + (batch_idx / len(train_loader))
-                avg_loss = sum(loss / (batch_idx + 1) for loss in model_losses) / self.num_models
-                self.writer.add_scalar('Batch/Average_Loss', avg_loss, fractional_epoch)
-        
-        # Average accuracy and loss across models
-        avg_accuracy = sum(acc / total_samples for acc in model_accuracies) / self.num_models
-        avg_loss = sum(loss / len(train_loader) for loss in model_losses) / self.num_models
-        return {
-            'accuracy': avg_accuracy,
-            'loss': avg_loss
-        }
-    
-    def evaluate(self, test_loader):
-        if test_loader is None:
-            return {}
-        for model in self.models:
-            model.eval()
-        
-        all_ensemble_preds = []
-        all_labels = []
-        total_loss = 0.0
-        
-        with torch.no_grad():
-            for images, labels, _ in test_loader:
-                images, labels = images.to(self.device), labels.to(self.device)
-                
-                # Get predictions from all models
-                batch_preds = []
-                batch_losses = []
-                for model in self.models:
-                    outputs = model(images)
-                    loss = self.loss_fn(outputs, labels)
-                    batch_losses.append(loss.item())
-                    preds = torch.sigmoid(outputs.squeeze())
-                    batch_preds.append(preds)
-                
-                # Ensemble prediction (average of all models)
-                ensemble_preds = torch.stack(batch_preds).mean(dim=0)
-                all_ensemble_preds.append(ensemble_preds)
-                all_labels.append(labels)
-                total_loss += np.mean(batch_losses)
-        
-        # Concatenate all predictions and labels
-        all_ensemble_preds = torch.cat(all_ensemble_preds)
-        all_labels = torch.cat(all_labels)
-        
-        # Compute metrics
-        metrics = self.compute_confusion_metrics(all_ensemble_preds, all_labels)
-        metrics['loss'] = total_loss / len(test_loader)
-        
-        return metrics
-    
-    def save_checkpoint(self, epoch, suffix):
-        output_dir = self.config.get('output_dir')
-        for i, model in enumerate(self.models):
-            torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
-
-
 class StochasticCoTeachingTrainer(BaseTrainer):
     """Stochastic co-teaching trainer with two networks
     
@@ -808,6 +682,466 @@ class StochasticCoTeachingTrainer(BaseTrainer):
         torch.save(self.model2.state_dict(), f"{output_dir}/model2_{suffix}.pth")
 
 
+class EnsembleTrainer(BaseTrainer):
+    """Ensemble trainer with multiple models"""
+    
+    def setup_training(self):
+        self.num_models = self.config.get('num_models', 3)
+        
+        # Multiple models
+        self.models = []
+        self.optimizers = []
+        
+        for i in range(self.num_models):
+            model = CustomCNN(**self.config['model_params']).to(self.device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=self.config['learning_rate'])
+            self.models.append(model)
+            self.optimizers.append(optimizer)
+        
+        # Loss function
+        self.loss_fn = get_loss_function('standard')
+        
+        # Learning rate schedule
+        self.setup_lr_schedule()
+    
+    def setup_lr_schedule(self):
+        """Setup learning rate schedule"""
+        self.alpha_plan = [self.config['learning_rate']] * self.config['epochs']
+        epoch_decay_start = self.config.get('epoch_decay_start', 80)
+        
+        for i in range(epoch_decay_start, self.config['epochs']):
+            self.alpha_plan[i] = (
+                float(self.config['epochs'] - i) / 
+                (self.config['epochs'] - epoch_decay_start) * 
+                self.config['learning_rate']
+            )
+    
+    def adjust_learning_rate(self, epoch):
+        """Adjust learning rate for all optimizers"""
+        for optimizer in self.optimizers:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = self.alpha_plan[epoch]
+    
+    def train_one_epoch(self, epoch, train_loader):
+        for model in self.models:
+            model.train()
+        self.adjust_learning_rate(epoch)
+        
+        model_accuracies = [0] * self.num_models
+        model_losses = [0.0] * self.num_models
+        total_samples = 0
+        for batch_idx, (images, labels, _) in enumerate(train_loader):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
+                break
+                
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            for i, (model, optimizer) in enumerate(zip(self.models, self.optimizers)):
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = self.loss_fn(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                
+                model_accuracies[i] += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
+                model_losses[i] += loss.item()
+            
+            total_samples += len(labels)
+            # Average accuracy and loss across models
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                avg_loss = sum(loss / (batch_idx + 1) for loss in model_losses) / self.num_models
+                self.writer.add_scalar('Batch/Average_Loss', avg_loss, fractional_epoch)
+        
+        # Average accuracy and loss across models
+        avg_accuracy = sum(acc / total_samples for acc in model_accuracies) / self.num_models
+        avg_loss = sum(loss / len(train_loader) for loss in model_losses) / self.num_models
+        return {
+            'accuracy': avg_accuracy,
+            'loss': avg_loss
+        }
+    
+    def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
+        for model in self.models:
+            model.eval()
+        
+        all_ensemble_preds = []
+        all_labels = []
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for images, labels, _ in test_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                
+                # Get predictions from all models
+                batch_preds = []
+                batch_losses = []
+                for model in self.models:
+                    outputs = model(images)
+                    loss = self.loss_fn(outputs, labels)
+                    batch_losses.append(loss.item())
+                    preds = torch.sigmoid(outputs.squeeze())
+                    batch_preds.append(preds)
+                
+                # Ensemble prediction (average of all models)
+                ensemble_preds = torch.stack(batch_preds).mean(dim=0)
+                all_ensemble_preds.append(ensemble_preds)
+                all_labels.append(labels)
+                total_loss += np.mean(batch_losses)
+        
+        # Concatenate all predictions and labels
+        all_ensemble_preds = torch.cat(all_ensemble_preds)
+        all_labels = torch.cat(all_labels)
+        
+        # Compute metrics
+        metrics = self.compute_confusion_metrics(all_ensemble_preds, all_labels)
+        metrics['loss'] = total_loss / len(test_loader)
+        
+        return metrics
+    
+    def save_checkpoint(self, epoch, suffix):
+        output_dir = self.config.get('output_dir')
+        for i, model in enumerate(self.models):
+            torch.save(model.state_dict(), f"{self.config.get('output_dir')}/ensemble_model_{i}_{suffix}.pth")
+
+
+
+
+class RepulsiveEnsembleTrainer(BaseTrainer):
+    """Repulsive ensemble trainer that encourages diversity among ensemble members
+    
+    This trainer implements diversity regularization by adding a repulsion term
+    that penalizes models for making similar predictions. This encourages the
+    ensemble members to specialize on different parts of the input space and
+    make complementary errors, leading to better overall ensemble performance.
+    
+    Args in config:
+        num_models: Number of models in the ensemble (default: 3)
+        repulsion_strength: Weight of the repulsion loss (default: 0.1)
+        repulsion_type: Type of repulsion ('prediction', 'feature', 'both') (default: 'prediction')
+        feature_layer: Which layer to use for feature repulsion (default: -2)
+        temperature: Temperature for softening predictions (default: 1.0)
+    """
+    
+    def setup_training(self):
+        self.num_models = self.config.get('num_models', 3)
+        self.repulsion_strength = self.config.get('repulsion_strength', 0.1)
+        self.repulsion_type = self.config.get('repulsion_type', 'prediction')
+        self.feature_layer = self.config.get('feature_layer', -2)
+        self.temperature = self.config.get('temperature', 1.0)
+        
+        # Multiple models
+        self.models = []
+        self.optimizers = []
+        
+        for i in range(self.num_models):
+            model = CustomCNN(**self.config['model_params']).to(self.device)
+            optimizer = torch.optim.Adam(
+                model.parameters(), 
+                lr=self.config['learning_rate'],
+                weight_decay=self.config.get('weight_decay', 0)
+            )
+            self.models.append(model)
+            self.optimizers.append(optimizer)
+        
+        # Loss function
+        self.loss_fn = get_loss_function('standard')
+        
+        # Learning rate schedule
+        self.setup_lr_schedule()
+        
+        # Track diversity metrics
+        self.diversity_history = []
+    
+    def setup_lr_schedule(self):
+        """Setup learning rate schedule"""
+        self.alpha_plan = [self.config['learning_rate']] * self.config['epochs']
+        epoch_decay_start = self.config.get('epoch_decay_start', 80)
+        
+        for i in range(epoch_decay_start, self.config['epochs']):
+            self.alpha_plan[i] = (
+                float(self.config['epochs'] - i) / 
+                (self.config['epochs'] - epoch_decay_start) * 
+                self.config['learning_rate']
+            )
+    
+    def adjust_learning_rate(self, epoch):
+        """Adjust learning rate for all optimizers"""
+        for optimizer in self.optimizers:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = self.alpha_plan[epoch]
+    
+    def compute_prediction_repulsion(self, predictions):
+        """Compute repulsion loss based on prediction similarity
+        
+        Encourages models to make different predictions by penalizing
+        the correlation between their outputs.
+        
+        Args:
+            predictions: List of prediction tensors from each model
+            
+        Returns:
+            Repulsion loss (lower when predictions are more diverse)
+        """
+        # Stack predictions: shape (num_models, batch_size)
+        preds_stack = torch.stack([torch.sigmoid(p.squeeze()) / self.temperature 
+                                   for p in predictions])
+        
+        # Compute pairwise correlations between models
+        # Center the predictions
+        preds_centered = preds_stack - preds_stack.mean(dim=1, keepdim=True)
+        
+        # Compute correlation matrix
+        correlations = []
+        for i in range(self.num_models):
+            for j in range(i + 1, self.num_models):
+                # Pearson correlation coefficient
+                pred_i = preds_centered[i]
+                pred_j = preds_centered[j]
+                
+                numerator = (pred_i * pred_j).mean()
+                denominator = (pred_i.std() * pred_j.std()) + 1e-8
+                corr = numerator / denominator
+                
+                correlations.append(corr.abs())  # Penalize both positive and negative correlation
+        
+        # Average absolute correlation (we want to minimize this)
+        repulsion_loss = torch.stack(correlations).mean()
+        
+        return repulsion_loss
+    
+    def compute_feature_repulsion(self, features_list):
+        """Compute repulsion loss based on feature similarity
+        
+        Encourages models to learn different representations by penalizing
+        similarity in their intermediate feature representations.
+        
+        Args:
+            features_list: List of feature tensors from each model
+            
+        Returns:
+            Repulsion loss (lower when features are more diverse)
+        """
+        # Compute pairwise cosine similarities between feature representations
+        similarities = []
+        
+        for i in range(self.num_models):
+            for j in range(i + 1, self.num_models):
+                # Flatten features if needed
+                feat_i = features_list[i].flatten(start_dim=1)
+                feat_j = features_list[j].flatten(start_dim=1)
+                
+                # Normalize
+                feat_i_norm = F.normalize(feat_i, p=2, dim=1)
+                feat_j_norm = F.normalize(feat_j, p=2, dim=1)
+                
+                # Cosine similarity (batch-wise)
+                similarity = (feat_i_norm * feat_j_norm).sum(dim=1).mean()
+                similarities.append(similarity.abs())
+        
+        # Average absolute similarity (we want to minimize this)
+        repulsion_loss = torch.stack(similarities).mean()
+        
+        return repulsion_loss
+    
+    def train_one_epoch(self, epoch, train_loader):
+        for model in self.models:
+            model.train()
+        self.adjust_learning_rate(epoch)
+        
+        model_accuracies = [0] * self.num_models
+        model_losses = [0.0] * self.num_models
+        total_repulsion_loss = 0.0
+        total_samples = 0
+        
+        for batch_idx, (images, labels, _) in enumerate(train_loader):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
+                break
+                
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            # Update each model separately to avoid gradient issues
+            # First, collect predictions for repulsion computation
+            with torch.no_grad():
+                all_preds_detached = []
+                for model in self.models:
+                    outputs = model(images)
+                    all_preds_detached.append(outputs.detach())
+                
+                # Compute repulsion on detached predictions
+                repulsion_loss_value = 0.0
+                if self.repulsion_type in ['prediction', 'both']:
+                    repulsion_loss_value += self.compute_prediction_repulsion(all_preds_detached).item()
+                
+                total_repulsion_loss += repulsion_loss_value
+            
+            # Now update each model independently
+            for i, (model, optimizer) in enumerate(zip(self.models, self.optimizers)):
+                optimizer.zero_grad()
+                
+                # Forward pass
+                outputs = model(images)
+                
+                # Standard classification loss
+                classification_loss = self.loss_fn(outputs, labels)
+                
+                # Compute repulsion for this model against others
+                with torch.no_grad():
+                    other_preds = [all_preds_detached[j] for j in range(self.num_models) if j != i]
+                
+                # Compute repulsion between this model and others
+                repulsion_loss = 0.0
+                if self.repulsion_type in ['prediction', 'both'] and len(other_preds) > 0:
+                    # Compute correlation with other models
+                    pred_i = torch.sigmoid(outputs.squeeze()) / self.temperature
+                    pred_i_centered = pred_i - pred_i.mean()
+                    
+                    for other_pred in other_preds:
+                        pred_j = torch.sigmoid(other_pred.squeeze()) / self.temperature
+                        pred_j_centered = pred_j - pred_j.mean()
+                        
+                        numerator = (pred_i_centered * pred_j_centered).mean()
+                        denominator = (pred_i_centered.std() * pred_j_centered.std()) + 1e-8
+                        corr = (numerator / denominator).abs()
+                        repulsion_loss += corr
+                    
+                    repulsion_loss = repulsion_loss / len(other_preds)
+                
+                # Combined loss: classification + repulsion
+                total_loss = classification_loss + self.repulsion_strength * repulsion_loss
+                
+                total_loss.backward()
+                optimizer.step()
+                
+                model_accuracies[i] += (torch.sigmoid(outputs.squeeze()) > 0.5).eq(labels).sum().item()
+                model_losses[i] += classification_loss.item()
+            
+            total_samples += len(labels)
+            
+            # Logging
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                avg_loss = sum(loss / (batch_idx + 1) for loss in model_losses) / self.num_models
+                avg_repulsion = total_repulsion_loss / (batch_idx + 1)
+                self.writer.add_scalar('Batch/Average_Loss', avg_loss, fractional_epoch)
+                self.writer.add_scalar('Batch/Repulsion_Loss', avg_repulsion, fractional_epoch)
+        
+        # Average metrics across models
+        avg_accuracy = sum(acc / total_samples for acc in model_accuracies) / self.num_models
+        avg_loss = sum(loss / len(train_loader) for loss in model_losses) / self.num_models
+        avg_repulsion = total_repulsion_loss / len(train_loader)
+        
+        # Track diversity
+        self.diversity_history.append(avg_repulsion)
+        
+        return {
+            'accuracy': avg_accuracy,
+            'loss': avg_loss,
+            'repulsion_loss': avg_repulsion
+        }
+    
+    def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
+            
+        for model in self.models:
+            model.eval()
+        
+        all_ensemble_preds = []
+        all_individual_preds = [[] for _ in range(self.num_models)]
+        all_labels = []
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for images, labels, _ in test_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                
+                # Get predictions from all models
+                batch_preds = []
+                batch_losses = []
+                for i, model in enumerate(self.models):
+                    outputs = model(images)
+                    loss = self.loss_fn(outputs, labels)
+                    batch_losses.append(loss.item())
+                    preds = torch.sigmoid(outputs.squeeze())
+                    batch_preds.append(preds)
+                    all_individual_preds[i].append(preds)
+                
+                # Ensemble prediction (average of all models)
+                ensemble_preds = torch.stack(batch_preds).mean(dim=0)
+                all_ensemble_preds.append(ensemble_preds)
+                all_labels.append(labels)
+                total_loss += np.mean(batch_losses)
+        
+        # Concatenate all predictions and labels
+        all_ensemble_preds = torch.cat(all_ensemble_preds)
+        all_labels = torch.cat(all_labels)
+        
+        # Compute ensemble metrics
+        metrics = self.compute_confusion_metrics(all_ensemble_preds, all_labels)
+        metrics['loss'] = total_loss / len(test_loader)
+        
+        # Compute diversity metrics
+        all_individual_preds_concat = [torch.cat(preds) for preds in all_individual_preds]
+        diversity_metric = self._compute_diversity_metric(all_individual_preds_concat)
+        metrics['diversity'] = diversity_metric
+        
+        # Compute individual model accuracies for reference
+        individual_accs = []
+        for preds in all_individual_preds_concat:
+            ind_metrics = self.compute_confusion_metrics(preds, all_labels)
+            individual_accs.append(ind_metrics['accuracy'])
+        
+        metrics['individual_acc_mean'] = np.mean(individual_accs)
+        metrics['individual_acc_std'] = np.std(individual_accs)
+        
+        return metrics
+    
+    def _compute_diversity_metric(self, predictions_list):
+        """Compute average pairwise disagreement rate between models"""
+        disagreements = []
+        
+        for i in range(self.num_models):
+            for j in range(i + 1, self.num_models):
+                pred_i = (predictions_list[i] > 0.5).float()
+                pred_j = (predictions_list[j] > 0.5).float()
+                
+                # Disagreement rate
+                disagreement = (pred_i != pred_j).float().mean().item()
+                disagreements.append(disagreement)
+        
+        return np.mean(disagreements)
+    
+    def log_tensorboard(self, epoch, train_metrics, test_metrics, val_metrics=None):
+        """Extended logging with repulsion-specific metrics"""
+        super().log_tensorboard(epoch, train_metrics, test_metrics, val_metrics)
+        
+        if self.writer:
+            # Log repulsion loss
+            if 'repulsion_loss' in train_metrics:
+                self.writer.add_scalar('Train/Repulsion_Loss', train_metrics['repulsion_loss'], epoch)
+            
+            # Log diversity metrics
+            if 'diversity' in test_metrics:
+                self.writer.add_scalar('Test/Diversity', test_metrics['diversity'], epoch)
+            
+            # Log individual model statistics
+            if 'individual_acc_mean' in test_metrics:
+                self.writer.add_scalar('Test/Individual_Acc_Mean', test_metrics['individual_acc_mean'], epoch)
+                self.writer.add_scalar('Test/Individual_Acc_Std', test_metrics['individual_acc_std'], epoch)
+    
+    def save_checkpoint(self, epoch, suffix):
+        output_dir = self.config.get('output_dir')
+        for i, model in enumerate(self.models):
+            torch.save(model.state_dict(), f"{output_dir}/repulsive_ensemble_model_{i}_{suffix}.pth")
+        
+        # Save diversity history
+        diversity_path = f"{output_dir}/diversity_history_{suffix}.npy"
+        np.save(diversity_path, np.array(self.diversity_history))
+
+
 def get_trainer(trainer_type, config):
     """Factory function to get trainer"""
     if trainer_type == "standard":
@@ -818,5 +1152,7 @@ def get_trainer(trainer_type, config):
         return StochasticCoTeachingTrainer(config)
     elif trainer_type == "ensemble":
         return EnsembleTrainer(config)
+    elif trainer_type == "repulsive_ensemble":
+        return RepulsiveEnsembleTrainer(config)
     else:
         raise ValueError(f"Unknown trainer type: {trainer_type}")

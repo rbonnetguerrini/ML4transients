@@ -7,13 +7,13 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_SNN
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2
 lightcurves:
   patches: []
   cache_size: 5
 skip_global_index: true
 skip_lightcurve_index: true
 run_info:
-  status: running
+  status: completed
   started: '2025-07-24T14:01:00'
-  finished: '2025-09-17T15:05:24.599786'
+  finished: '2025-11-23T10:44:25.998790'

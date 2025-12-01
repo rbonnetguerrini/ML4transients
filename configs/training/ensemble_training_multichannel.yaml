@@ -1,0 +1,45 @@
+# Ensemble training configuration with multi-channel inputs (diff + coadd)
+data:
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2"
+  visits: null
+  test_size: 0.2
+  val_size: 0.1
+  cutout_types: ['diff', 'coadd']  # Use both diff and coadd cutouts as 2-channel input
+
+training:
+  trainer_type: "ensemble"
+  epochs: 1500
+  learning_rate: 0.002978561238134594
+  batch_size: 128                       # Optimized from Bayesian search
+  num_iter_per_epoch: 400
+  epoch_decay_start: 80
+  num_workers: 4
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_50_multichannel_v2"
+  num_models: 50                      
+  
+  use_tensorboard: true
+  tensorboard_log_dir: "runs"
+  experiment_name: "ensemble_50_multichannel_v2"
+  log_interval: 100
+  
+  early_stopping:
+    enabled: true
+    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
+    mode: "min"                         # Want to minimize FNR
+    patience: 80
+    min_delta: 0.002 
+    
+  model_params:
+    input_shape: [30, 30, 2]            # 2 channels (diff + coadd)
+    num_classes: 2
+    num_conv_blocks: 3                  # Optimized: 3 conv blocks
+    filters_1: 64                       # Optimized
+    filters_2: 96                       # Optimized
+    filters_3: 256                       # Optimized  
+    filters_4: 192                      # Optimized
+    dropout_1: 0.5
+    dropout_2: 0.5
+    dropout_3: 0.55                   
+    units: 192                          # Optimized
+    in_channels: 2                      # Explicitly set 2 input channels
+random_state: 41

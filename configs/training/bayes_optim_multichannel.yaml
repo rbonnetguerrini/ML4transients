@@ -1,0 +1,115 @@
+# Bayesian hyperparameter optimization with multi-channel inputs (diff + coadd)
+data:
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2"
+  visits: null
+  test_size: 0.2
+  val_size: 0.1
+  cutout_types: ['diff', 'coadd']  # Use both diff and coadd as 2-channel input
+
+training:
+  trainer_type: "standard"  # Can also use "ensemble" or "coteaching"
+  epochs: 300  # Max epochs per trial
+  learning_rate: 0.001
+  batch_size: 128
+  epoch_decay_start: 80
+  num_workers: 4
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/bayes_optim_multichannel_v2"
+  
+  use_tensorboard: true
+  tensorboard_log_dir: "runs"
+  experiment_name: "bayes_optim_multichannel_v2"
+  log_interval: 50
+    
+  bayes_search:
+    enabled: true
+    monitor: "fnr"  # Metric to optimize: 'fnr', 'loss', or 'accuracy'
+    direction: minimize  # Minimize FNR (False Negative Rate)
+    n_trials: 30  # Number of trials to run
+    max_epochs: 300  # Max epochs per trial
+    prune: true  # Enable pruning of unpromising trials
+    
+    # Parameters to optimize
+    params:
+      batch_size:
+        type: int
+        low: 64
+        high: 256
+        step: 64
+      
+      learning_rate:
+        type: float
+        low: 0.0001
+        high: 0.01
+        log: true  # Log scale for learning rate
+      
+      model_params.num_conv_blocks:
+        type: int
+        low: 2
+        high: 4
+        step: 1
+      
+      model_params.filters_1:
+        type: int
+        low: 16
+        high: 64
+        step: 16
+      
+      model_params.filters_2:
+        type: int
+        low: 32
+        high: 128
+        step: 32
+      
+      model_params.filters_3:
+        type: int
+        low: 64
+        high: 256
+        step: 64
+      
+      model_params.filters_4:
+        type: int
+        low: 64
+        high: 256
+        step: 64
+
+
+      model_params.dropout_1:
+        type: float
+        low: 0.1
+        high: 0.5
+        step: 0.05
+      
+      model_params.dropout_2:
+        type: float
+        low: 0.1
+        high: 0.5
+        step: 0.05
+      
+      model_params.dropout_3:
+        type: float
+        low: 0.2
+        high: 0.6
+        step: 0.05
+
+      model_params.units:
+        type: int
+        low: 64
+        high: 512
+        step: 64
+    
+  # Base model parameters (will be overridden by Bayesian optimization)
+  model_params:
+    input_shape: [30, 30, 2]  # 2 channels (diff + coadd)
+    num_classes: 2
+    num_conv_blocks: 3  # Starting point
+    filters_1: 32
+    filters_2: 64
+    filters_3: 128
+    filters_4: 256
+    dropout_1: 0.25
+    dropout_2: 0.25
+    dropout_3: 0.5
+    units: 128
+    in_channels: 2  # Explicitly set 2 input channels
+
+random_state: 42

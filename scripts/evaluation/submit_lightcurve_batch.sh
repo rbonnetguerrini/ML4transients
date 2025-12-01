@@ -1,9 +1,9 @@
 #!/bin/bash
 conda activate env_ML
 # Configuration - Edit these parameters directly in the script
-DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_SNN"
-WEIGHTS_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/training/coteaching_optimized"
-RUN_NAME="coadd_SNN_transient"
+DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_SNN_v2"
+WEIGHTS_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_50_multichannel_v2"
+RUN_NAME="coadd_50_transient"
 OUTPUT_PATH="../../saved/lc/$RUN_NAME"
 
 # List of diaObjectIds to process - Edit this list

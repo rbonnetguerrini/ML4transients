@@ -9,10 +9,10 @@ injection: false
 lightcurves:
   cache_size: 5
   patches: []
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2
 repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
 run_info:
-  finished: '2025-10-28T15:38:39.886583'
+  finished: '2025-11-21T15:16:25.471453'
   started: '2025-07-24T14:01:00'
   status: running
 skip_global_index: true

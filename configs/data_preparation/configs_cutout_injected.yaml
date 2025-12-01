@@ -7,7 +7,7 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2
 skip_global_index: true
 skip_lightcurve_index: true
 run_info:
