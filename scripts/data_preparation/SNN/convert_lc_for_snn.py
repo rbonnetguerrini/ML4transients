@@ -4,14 +4,16 @@ import pandas as pd
 import argparse
 import numpy as np
 
-def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered_ids=False):
+def convert_single(input_path, output_path, stats=None):
     """Convert a single HDF5 lightcurve file to a cleaned CSV.
+    
+    NOTE: SNR, time window, and quality filtering is now performed earlier in the pipeline
+    by filter_snr_and_quality.py. This function only handles format conversion and normalization.
 
     Args:
-        input_path (str): Path to the input HDF5 file.
+        input_path (str): Path to the input HDF5 file (already filtered).
         output_path (str): Path to save the output CSV file.
-        min_obs (int): Minimum number of observations in the time window to keep a lightcurve.
-        stats (dict): Dictionary to update with discarded/kept lightcurve counts.
+        stats (dict): Dictionary to update with conversion counts.
 
     Returns:
         None
@@ -37,82 +39,18 @@ def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered
     # Sort and reset index
     des_phot = des_phot.sort_values(by=["SNID", "MJD"]).reset_index(drop=True)
 
-    # Remove rows with NaN flux values
+    # Remove rows with NaN flux values (minimal - most filtering already done)
     initial_size = len(des_phot)
+    initial_objects = des_phot['SNID'].nunique()
     des_phot = des_phot.dropna(subset=['FLUXCAL', 'FLUXCALERR']).reset_index(drop=True)
-    print(f"  Removed {initial_size - len(des_phot)} rows with NaN flux or flux error values")
-
-    # --- Filter out sources with SNR < 5 before time window filtering ---
-    # Calculate SNR (Signal-to-Noise Ratio)
-    des_phot['SNR'] = np.abs(des_phot['FLUXCAL']) / des_phot['FLUXCALERR']
+    if initial_size > len(des_phot):
+        print(f"  Removed {initial_size - len(des_phot)} rows with NaN flux or flux error values")
     
-    # Count objects before SNR filtering
-    before_snr_filter = len(des_phot)
-    objects_before_snr = des_phot['SNID'].nunique()
-    
-    # Filter out sources with SNR < 5
-    des_phot = des_phot[des_phot['SNR'] >= 5.0].reset_index(drop=True)
-    after_snr_filter = len(des_phot)
-    objects_after_snr = des_phot['SNID'].nunique()
-    
-    print(f"  SNR >= 5.0 filter: removed {before_snr_filter - after_snr_filter} sources")
-    print(f"  Objects before/after SNR filter: {objects_before_snr}/{objects_after_snr} (discarded {objects_before_snr - objects_after_snr} objects)")
-
-    # --- Apply time-window cut around maximum brightness ---
-    # For each SNID, find MJD of maximum FLUXCAL (compatible with older pandas)
-    max_mjd = des_phot.loc[des_phot.groupby('SNID')['FLUXCAL'].idxmax(), ['SNID', 'MJD']]
-    max_mjd = max_mjd.rename(columns={'MJD': 'MJD_max'})
-    des_phot = des_phot.merge(max_mjd, on='SNID', how='left')
-    # Calculate time from max for all observations
-    des_phot['dt_max'] = des_phot['MJD'] - des_phot['MJD_max']
-    
-    # Keep only lightcurves where ALL sources are within [-30, 100] days 
-    # Check which lightcurves have all observations within the window
-    lc_in_window = des_phot.groupby('SNID')['dt_max'].apply(
-        lambda x: ((x >= -30) & (x <= 100)).all()
-    )
-    valid_snids_window = lc_in_window[lc_in_window].index
-    discarded_snids_window = lc_in_window[~lc_in_window].index
-    
-    before_window_cut = des_phot['SNID'].nunique()
-    des_phot = des_phot[des_phot['SNID'].isin(valid_snids_window)].reset_index(drop=True)
-    print(f"  Applied window restriction: discarded {len(discarded_snids_window)} lightcurves with sources outside [-30, +100] days")
-    print(f"  Kept {len(valid_snids_window)} lightcurves where ALL sources are within window")
-    
-    # Drop helper columns but keep SNR for further filtering
-    des_phot = des_phot.drop(columns=['MJD_max', 'dt_max'])
-
-    # --- Discard lightcurves with fewer than min_obs observations with SNR > 3 ---
-    # Create a mask for sources with SNR > 3
-    high_snr_mask = des_phot['SNR'] > 3.0
-    
-    # Count observations with SNR > 3 for each SNID
-    snid_counts_high_snr = des_phot[high_snr_mask]['SNID'].value_counts()
-    
-    # Get SNIDs that have at least min_obs observations with SNR > 3
-    valid_snids = snid_counts_high_snr[snid_counts_high_snr >= min_obs].index
-    discarded_snids = des_phot['SNID'].unique()
-    discarded_snids = discarded_snids[~np.isin(discarded_snids, valid_snids)]
-    
-    n_discarded = len(discarded_snids)
-    n_kept = len(valid_snids)
-    
-    print(f"  High SNR observation count (SNR > 3): {snid_counts_high_snr.sum()} total observations")
-    print(f"  Discarded {n_discarded} lightcurves with fewer than {min_obs} observations with SNR > 3")
-    print(f"  Final kept: {n_kept} lightcurves after all cuts")
+    n_objects = des_phot['SNID'].nunique()
     
     if stats is not None:
-        # Track each type of filtering separately
-        stats['snr_filtered'] += (objects_before_snr - objects_after_snr)
-        stats['window_filtered'] += len(discarded_snids_window)
-        stats['min_obs_filtered'] += n_discarded
-        stats['kept'] += n_kept
-    
-    # Keep only valid lightcurves (but keep all their sources, even those with SNR <= 3)
-    des_phot = des_phot[des_phot['SNID'].isin(valid_snids)].reset_index(drop=True)
-    
-    # Drop the SNR column as it's no longer needed
-    des_phot = des_phot.drop(columns=['SNR'])
+        stats['objects_converted'] += n_objects
+        stats['sources_converted'] += len(des_phot)
 
     # Sort again for neatness
     des_phot = des_phot.sort_values(by=["SNID", "MJD"]).reset_index(drop=True)
@@ -175,15 +113,7 @@ def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered
     df_processed["HOSTGAL_SPECZ_ERR"] = 0.0
     df_processed["MWEBV"] = 0.01
     
-    # VALIDATION: Check if normalization caused issues
-    final_snid_counts = df_processed['SNID'].value_counts()
-    problematic_snids = final_snid_counts[final_snid_counts < min_obs]
-    if len(problematic_snids) > 0:
-        print(f"  WARNING: After normalization, {len(problematic_snids)} lightcurves have < {min_obs} points!")
-        print(f"  Removing these problematic lightcurves...")
-        df_processed = df_processed[~df_processed['SNID'].isin(problematic_snids.index)]
-    
-    print(f"Processed: {df_processed.shape[0]} observations, {df_processed['SNID'].nunique()} objects")
+    print(f"Converted: {df_processed.shape[0]} observations, {df_processed['SNID'].nunique()} objects")
 
     # Save to CSV only if there are any lightcurves left
     if not df_processed.empty:
@@ -191,13 +121,21 @@ def convert_single(input_path, output_path, min_obs=3, stats=None, save_filtered
         df_processed.to_csv(output_path, index=False, float_format='%.6f')
         print(f"  Saved {len(df_processed)} observations for {df_processed['SNID'].nunique()} objects")
     else:
-        print(f"  No valid lightcurves left after cuts, skipping save.\n")
+        print(f"  No valid lightcurves left after conversion, skipping save.\n")
 
-def convert_all_patches(input_dir, output_dir, min_obs=10):
+
+def convert_all_patches(input_dir, output_dir):
     """Convert all .h5 files in a directory to CSVs.
+    
+    NOTE: Input files should already be filtered by filter_snr_and_quality.py
 
     Args:
-        input_dir (str): Directory containing input .h5 files.
+        input_dir (str): Directory containing input .h5 files (already filtered).
+        output_dir (str): Directory to save output CSV files.
+
+    Returns:
+        dict: Conversion statistics
+    
         output_dir (str): Directory to save output CSV files.
         min_obs (int): Minimum number of observations in the time window to keep a lightcurve.
 
@@ -208,41 +146,54 @@ def convert_all_patches(input_dir, output_dir, min_obs=10):
     
     h5_files = glob.glob(os.path.join(input_dir, "*.h5"))
     # Filter out index files that don't contain lightcurve data
-    h5_files = [f for f in h5_files if not any(name in os.path.basename(f) for name in ['index', 'diasource_patch_index', 'lightcurve_index'])]
+    h5_files = [f for f in h5_files if not any(name in os.path.basename(f) for name in ['index', 'diasource_patch_index', 'lightcurve_index', 'metadata'])]
     
     print(f"Found {len(h5_files)} lightcurve .h5 files in {input_dir}")
     
     if not h5_files:
         print("No valid HDF5 lightcurve files found.")
-        return
+        return {}
 
     stats = {
-        'snr_filtered': 0,        # Objects discarded due to SNR < 5
-        'window_filtered': 0,     # Objects discarded due to time window restrictions
-        'min_obs_filtered': 0,    # Objects discarded due to insufficient high SNR observations
-        'kept': 0                 # Objects that passed all filters
+        'objects_converted': 0,
+        'sources_converted': 0
     }
+    
     for h5_file in h5_files:
         base_name = os.path.splitext(os.path.basename(h5_file))[0]
         csv_file = os.path.join(output_dir, f"{base_name}.csv")
-        convert_single(h5_file, csv_file, min_obs=min_obs, stats=stats)
-    print(f"\nSummary after all cuts:")
-    total_discarded = stats['snr_filtered'] + stats['window_filtered'] + stats['min_obs_filtered']
-    print(f"  Total lightcurves processed: {total_discarded + stats['kept']}")
-    print(f"  └─ Discarded due to SNR < 5.0: {stats['snr_filtered']}")
-    print(f"  └─ Discarded due to time window restrictions: {stats['window_filtered']}")
-    print(f"  └─ Discarded due to insufficient high SNR obs (< {min_obs} with SNR > 3): {stats['min_obs_filtered']}")
-    print(f"  └─ Total discarded: {total_discarded}")
-    print(f"  └─ Final kept: {stats['kept']}")
-    print(f"  └─ Filtered rate: {stats['kept']/(total_discarded + stats['kept'])*100:.3f}%")
+        convert_single(h5_file, csv_file, stats=stats)
+    
+    # Print summary
+    print(f"\n=== Conversion Summary ===")
+    print(f"  Files processed: {len(h5_files)}")
+    print(f"  Objects converted: {stats['objects_converted']}")
+    print(f"  Sources converted: {stats['sources_converted']}")
+    
+    # Save summary to JSON
+    import json
+    from datetime import datetime
+    summary_file = os.path.join(output_dir, "conversion_summary.json")
+    summary = {
+        'timestamp': datetime.now().isoformat(),
+        'input_dir': input_dir,
+        'output_dir': output_dir,
+        'files_processed': len(h5_files),
+        'objects_converted': stats['objects_converted'],
+        'sources_converted': stats['sources_converted']
+    }
+    with open(summary_file, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nConversion summary saved to: {summary_file}")
+    
+    return stats
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert HDF5 lightcurves to CSVs.")
-    parser.add_argument("input_dir", help="Path to folder containing .h5 files")
+    parser.add_argument("input_dir", help="Path to folder containing .h5 files (already filtered)")
     parser.add_argument("output_dir", help="Path to folder where CSVs will be saved")
-    parser.add_argument("--min_obs", type=int, default=10, help="Minimum number of observations in window to keep a lightcurve (default: 10)")
     args = parser.parse_args()
-    convert_all_patches(args.input_dir, args.output_dir, min_obs=args.min_obs)
+    convert_all_patches(args.input_dir, args.output_dir)
 
 
