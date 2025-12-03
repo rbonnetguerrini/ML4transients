@@ -28,6 +28,7 @@ def main():
     parser.add_argument('--config', type=str, help='Optional path to config file (overrides other args)')
     parser.add_argument('--force', action='store_true', help='Force re-run inference even if results exist')
     parser.add_argument('--save-summary', action='store_true', help='Save inference summary to file')
+    parser.add_argument('--visits', type=str, help='Comma-separated list of visit numbers to process')
     
     args = parser.parse_args()
     
@@ -57,49 +58,45 @@ def main():
     # Load dataset
     dataset_loader = DatasetLoader(dataset_path)
     
-    # Run inference
-    print("Running inference...")
-    if args.force:
-        inference_results = dataset_loader.run_inference_all_visits(weights_path, force=True)
-    else:
-        inference_results = dataset_loader.check_or_run_inference(weights_path)
-    
-    if inference_results:
-        print("Inference completed successfully!")
+    # Filter visits if specified
+    if args.visits:
+        visit_list = [int(v.strip()) for v in args.visits.split(',')]
+        print(f"Processing specific visits: {visit_list}")
         
-        # Handle results - could be dict with metrics or other structure
-        if isinstance(inference_results, dict):
-            if 'accuracy' in inference_results:
-                print(f"Accuracy: {inference_results['accuracy']}")
-            if 'y_pred' in inference_results:
-                print(f"Predictions shape: {inference_results['y_pred'].shape}")
-            
-            # Save results summary if requested
-            if save_summary:
-                summary_path = Path(weights_path) / 'inference_summary.txt'
-                with open(summary_path, 'w') as f:
-                    if 'accuracy' in inference_results:
-                        f.write(f"Accuracy: {inference_results['accuracy']}\n")
-                    if 'y_pred' in inference_results:
-                        f.write(f"Predictions shape: {inference_results['y_pred'].shape}\n")
-                    if 'confusion_matrix' in inference_results:
-                        f.write(f"Confusion matrix:\n{inference_results['confusion_matrix']}\n")
-                print(f"Summary saved to: {summary_path}")
-        else:
-            # Handle other return types if needed
-            print(f"Inference results type: {type(inference_results)}")
-            if hasattr(inference_results, 'metrics'):
-                print(f"Accuracy: {inference_results.metrics['accuracy']}")
-                print(f"Predictions shape: {inference_results.predictions.shape}")
+        # Pre-load the trainer once for all visits
+        print("Loading model (will be cached for all visits)...")
+        trainer = dataset_loader._get_or_load_trainer(weights_path)
+        
+        # Process each visit
+        for visit in visit_list:
+            if visit not in dataset_loader.visits:
+                print(f"Warning: Visit {visit} not found in dataset, skipping")
+                continue
                 
-                if save_summary:
-                    summary_path = Path(weights_path) / 'inference_summary.txt'
-                    with open(summary_path, 'w') as f:
-                        f.write(f"Accuracy: {inference_results.metrics['accuracy']}\n")
-                        f.write(f"Predictions shape: {inference_results.predictions.shape}\n")
-                    print(f"Summary saved to: {summary_path}")
+            print(f"\nProcessing visit {visit}...")
+            inference_loader = dataset_loader.get_inference_loader(visit, weights_path=weights_path)
+            
+            if not args.force and inference_loader.has_inference_results():
+                print(f"  Inference results already exist for visit {visit}, skipping")
+                continue
+            
+            inference_loader.run_inference(dataset_loader, trainer=trainer, force=args.force)
+            print(f"  Completed inference for visit {visit}")
+        
+        print("\nAll specified visits processed!")
+        
     else:
-        print("Inference failed or no results available.")
+        # Run inference on all visits
+        print("Running inference on all visits...")
+        if args.force:
+            inference_results = dataset_loader.run_inference_all_visits(weights_path, force=True)
+        else:
+            inference_results = dataset_loader.check_or_run_inference(weights_path)
+        
+        if inference_results:
+            print("Inference completed successfully!")
+        else:
+            print("Inference failed or no results available.")
 
 if __name__ == "__main__":
     main()

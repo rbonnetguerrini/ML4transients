@@ -767,9 +767,6 @@ def create_catalog(dict_data: Dict[str, Any], host_data: bool = False) -> Table:
     Returns:
         Table: Astropy Table ready for LSST injection pipeline
         
-    Example:
-        >>> data = {'ra': [150.0, 151.0], 'dec': [2.0, 2.1], 'mag': [22.0, 21.5]}
-        >>> catalog = create_catalog(data)
     """
     # Base columns required for injection
     base_data = {
