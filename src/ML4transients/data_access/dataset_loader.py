@@ -607,6 +607,16 @@ class DatasetLoader:
                     trainer.models[i].load_state_dict(state_dict)
                     trainer.models[i].to(device)
                     trainer.models[i].eval()
+            elif trainer_type == "repulsive_ensemble":
+                num_models = config["training"]["num_models"]
+                print(f"Ensemble model, loading {num_models} models.")
+                for i in range(num_models):
+                    model_path = f"{weights_path}/repulsive_ensemble_model_{i}_best.pth"
+                    print(f"Loading model {i} from {model_path}")
+                    state_dict = torch.load(model_path, map_location=device)
+                    trainer.models[i].load_state_dict(state_dict)
+                    trainer.models[i].to(device)
+                    trainer.models[i].eval()
             elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
                 # Load both models for co-teaching
                 state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)

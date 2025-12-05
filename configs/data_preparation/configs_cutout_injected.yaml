@@ -1,5 +1,5 @@
 repo: /sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml
-collection: u/rbonnetguerrini/injected_step6
+collection: u/rbonnetguerrini/injected_step4_89570
 injection: true
 cutout:
   size: 30
@@ -7,7 +7,7 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570
 skip_global_index: true
 skip_lightcurve_index: true
 run_info:

@@ -295,7 +295,7 @@ def save_cutouts(config: dict):
             coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
             
             # Load science (calexp) image data
-            science_array = butler.get('calexp', dataId=ref).getImage().array
+            science_array = butler.get(f'{prefix}calexp', dataId=ref).getImage().array
             
             # Load source catalog (astronomical detections)
             dia_src = butler.get(f'{prefix}goodSeeingDiff_diaSrcTable', dataId=ref)

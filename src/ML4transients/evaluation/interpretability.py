@@ -142,6 +142,16 @@ class UMAPInterpreter:
                 self.trainer.models[i].load_state_dict(state_dict)
                 self.trainer.models[i].to(self.device)
                 self.trainer.models[i].eval()
+        elif trainer_type == "repulsive_ensemble":
+            num_models = config["training"]["num_models"]
+            print(f"Loading ensemble model with {num_models} models...")
+            for i in range(num_models):
+                model_path = self.model_path / f"repulsive_ensemble_model_{i}_best.pth"
+                state_dict = torch.load(model_path, map_location=self.device)
+                self.trainer.models[i].load_state_dict(state_dict)
+                self.trainer.models[i].to(self.device)
+                self.trainer.models[i].eval()
+
         elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
             print("Loading co-teaching model...")
             state_dict1 = torch.load(self.model_path / "model1_best.pth", map_location=self.device)
