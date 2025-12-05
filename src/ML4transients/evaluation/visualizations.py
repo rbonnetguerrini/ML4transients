@@ -192,15 +192,18 @@ class BokehEvaluationPlots:
         
         return Div(text=html_content, width=300, height=200)
     
-    def create_uncertainty_metrics_div(self, metrics: EvaluationMetrics) -> Div:
+    def create_uncertainty_metrics_div(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Div:
         """Create a summary div with uncertainty quantification metrics.
         
-        Provides quantitative UQ analysis for ensemble/coteaching models.
+        Provides quantitative UQ analysis for ensemble/coteaching models including
+        breakdown by confusion matrix categories and SNR-UQ correlation.
         
         Parameters
         ----------
         metrics : EvaluationMetrics
             Evaluation metrics object with uncertainties
+        snr_threshold : float
+            SNR threshold to separate low and high SNR samples (default: 5.0)
             
         Returns
         -------
@@ -216,44 +219,53 @@ class BokehEvaluationPlots:
             """
             return Div(text=html_content, width=400, height=200)
         
-        uncertainties = metrics.uncertainties
-        predictions = metrics.predictions
-        labels = metrics.labels
+        # Get extended UQ summary
+        uq_summary = metrics.get_extended_uq_summary(snr_threshold)
         
-        # Compute statistics
-        mean_uncertainty = np.mean(uncertainties)
-        std_uncertainty = np.std(uncertainties)
-        median_uncertainty = np.median(uncertainties)
-        
-        # Uncertainty for TP/FP/TN/FN
-        tp_mask = (predictions == 1) & (labels == 1)
-        fp_mask = (predictions == 1) & (labels == 0)
-        tn_mask = (predictions == 0) & (labels == 0)
-        fn_mask = (predictions == 0) & (labels == 1)
-        
-        mean_uncertainty_tp = np.mean(uncertainties[tp_mask]) if np.any(tp_mask) else 0.0
-        mean_uncertainty_fp = np.mean(uncertainties[fp_mask]) if np.any(fp_mask) else 0.0
-        mean_uncertainty_tn = np.mean(uncertainties[tn_mask]) if np.any(tn_mask) else 0.0
-        mean_uncertainty_fn = np.mean(uncertainties[fn_mask]) if np.any(fn_mask) else 0.0
-        
+        # Start HTML content
         html_content = f"""
         <div style="padding: 10px; background-color: #2F2F2F; border-radius: 5px;">
             <h3 style="color: white; margin-top: 0;">Uncertainty Quantification</h3>
-            <table style="color: white; width: 100%; font-size: 12px;">
+            <table style="color: white; width: 100%; font-size: 11px;">
                 <tr><td colspan="2"><b>Overall Statistics:</b></td></tr>
-                <tr><td>Mean:</td><td>{mean_uncertainty:.4f}</td></tr>
-                <tr><td>Median:</td><td>{median_uncertainty:.4f}</td></tr>
-                <tr><td>Std Dev:</td><td>{std_uncertainty:.4f}</td></tr>
-                <tr><td colspan="2" style="padding-top: 8px;"><b>By Class Type:</b></td></tr>
-                <tr><td>True Positive:</td><td>{mean_uncertainty_tp:.4f}</td></tr>
-                <tr><td>False Positive:</td><td>{mean_uncertainty_fp:.4f}</td></tr>
-                <tr><td>True Negative:</td><td>{mean_uncertainty_tn:.4f}</td></tr>
-                <tr><td>False Negative:</td><td>{mean_uncertainty_fn:.4f}</td></tr>
+                <tr><td>Mean:</td><td>{uq_summary['overall']['mean']:.4f}</td></tr>
+                <tr><td>Median:</td><td>{uq_summary['overall']['median']:.4f}</td></tr>
+                <tr><td>Std Dev:</td><td>{uq_summary['overall']['std']:.4f}</td></tr>
+                <tr><td colspan="2" style="padding-top: 8px;"><b>All Samples (By Type):</b></td></tr>
+        """
+        
+        # Add confusion category stats
+        for cat in ['TP', 'TN', 'FP', 'FN']:
+            if cat in uq_summary['by_confusion_category']:
+                stats = uq_summary['by_confusion_category'][cat]
+                html_content += f"""<tr><td>{cat}:</td><td>{stats['mean']:.4f} (n={stats['count']})</td></tr>\n        """
+        
+        # Add overall SNR-UQ correlation if available
+        if 'snr_uq_correlation' in uq_summary:
+            corr = uq_summary['snr_uq_correlation']
+            corr_val = corr['correlation']
+            p_val = corr['p_value']
+            
+            html_content += f"""
+                <tr><td colspan="2" style="padding-top: 8px;"><b>SNR-UQ Correlation (Overall):</b></td></tr>
+                <tr><td>Spearman ρ:</td><td>{corr_val:.4f} (p={p_val:.4e})</td></tr>
+            """
+            
+            # Add per-category correlations
+            if 'snr_uq_correlation_by_category' in uq_summary:
+                html_content += """<tr><td colspan="2" style="padding-top: 4px; font-size: 10px;"><em>By category:</em></td></tr>\n        """
+                for cat in ['TP', 'TN', 'FP', 'FN']:
+                    if cat in uq_summary['snr_uq_correlation_by_category']:
+                        cat_corr = uq_summary['snr_uq_correlation_by_category'][cat]
+                        if not np.isnan(cat_corr['correlation']):
+                            html_content += f"""<tr><td style="padding-left: 10px; font-size: 10px;">{cat}:</td><td style="font-size: 10px;">ρ={cat_corr['correlation']:.3f} (n={cat_corr['n_samples']})</td></tr>\n        """
+                    
+        html_content += """
             </table>
         </div>
         """
         
-        return Div(text=html_content, width=400, height=300)
+        return Div(text=html_content, width=400, height=400)
     
     def create_snr_metrics_divs(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Tuple[Div, Div]:
         """Create separate metric boxes for low and high SNR samples.
@@ -285,15 +297,6 @@ class BokehEvaluationPlots:
                           metrics.uncertainties is not None and 
                           len(metrics.uncertainties) > 0)
         
-        # Compute uncertainty by SNR if available
-        if has_uncertainty:
-            abs_snr = np.abs(metrics.snr_values)
-            low_snr_mask = abs_snr < snr_threshold
-            high_snr_mask = abs_snr >= snr_threshold
-            
-            mean_uncertainty_low = np.mean(metrics.uncertainties[low_snr_mask]) if np.any(low_snr_mask) else 0.0
-            mean_uncertainty_high = np.mean(metrics.uncertainties[high_snr_mask]) if np.any(high_snr_mask) else 0.0
-        
         # Low SNR metrics div
         low_snr = snr_metrics['low_snr']
         low_html = f"""
@@ -316,10 +319,21 @@ class BokehEvaluationPlots:
         
         # Add uncertainty metrics if available
         if has_uncertainty:
-            low_html += f"""
+            uq_summary = metrics.get_extended_uq_summary(snr_threshold)
+            if 'by_snr' in uq_summary and 'low_snr' in uq_summary['by_snr']:
+                low_uq = uq_summary['by_snr']['low_snr']
+                low_html += f"""
                 <tr><td colspan="2" style="padding-top: 8px;"><b>Uncertainty:</b></td></tr>
-                <tr><td>Mean UQ:</td><td>{mean_uncertainty_low:.4f}</td></tr>
-            """
+                <tr><td>Mean UQ:</td><td>{low_uq['mean']:.4f} (±{low_uq['std']:.4f})</td></tr>
+                """
+                if 'by_confusion' in low_uq:
+                    low_html += """<tr><td colspan="2" style="font-size: 10px; padding-top: 4px;"><em>By category:</em></td></tr>"""
+                    for cat in ['TP', 'FP', 'TN', 'FN']:
+                        if cat in low_uq['by_confusion'] and low_uq['by_confusion'][cat]['count'] > 0:
+                            cat_stats = low_uq['by_confusion'][cat]
+                            low_html += f"""
+                <tr><td style="padding-left: 10px; font-size: 10px;">{cat}:</td><td style="font-size: 10px;">{cat_stats['mean']:.4f} (n={cat_stats['count']})</td></tr>
+                """
         
         low_html += """
             </table>
@@ -348,9 +362,21 @@ class BokehEvaluationPlots:
         
         # Add uncertainty metrics if available
         if has_uncertainty:
-            high_html += f"""
-                <tr><td>Mean UQ:</td><td>{mean_uncertainty_high:.4f}</td></tr>
-            """
+            uq_summary = metrics.get_extended_uq_summary(snr_threshold)
+            if 'by_snr' in uq_summary and 'high_snr' in uq_summary['by_snr']:
+                high_uq = uq_summary['by_snr']['high_snr']
+                high_html += f"""
+                <tr><td colspan="2" style="padding-top: 8px;"><b>Uncertainty:</b></td></tr>
+                <tr><td>Mean UQ:</td><td>{high_uq['mean']:.4f} (±{high_uq['std']:.4f})</td></tr>
+                """
+                if 'by_confusion' in high_uq:
+                    high_html += """<tr><td colspan="2" style="font-size: 10px; padding-top: 4px;"><em>By category:</em></td></tr>"""
+                    for cat in ['TP', 'FP', 'TN', 'FN']:
+                        if cat in high_uq['by_confusion'] and high_uq['by_confusion'][cat]['count'] > 0:
+                            cat_stats = high_uq['by_confusion'][cat]
+                            high_html += f"""
+                <tr><td style="padding-left: 10px; font-size: 10px;">{cat}:</td><td style="font-size: 10px;">{cat_stats['mean']:.4f} (n={cat_stats['count']})</td></tr>
+                """
         
         high_html += """
             </table>

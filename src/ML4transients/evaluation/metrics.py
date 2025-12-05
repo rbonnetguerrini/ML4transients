@@ -5,6 +5,7 @@ from sklearn.metrics import (
     confusion_matrix, roc_curve, auc, precision_recall_curve,
     average_precision_score
 )
+from scipy.stats import spearmanr
 from typing import Dict, Tuple, Optional
 import h5py
 from pathlib import Path
@@ -191,6 +192,317 @@ class EvaluationMetrics:
             'specificity': 0.0,
             'n_samples': 0
         }
+    
+    def get_uncertainty_by_confusion_categories(self, snr_threshold: float = 5.0) -> Dict[str, Dict[str, float]]:
+        """Compute uncertainty statistics by confusion matrix categories (TP/FP/TN/FN).
+        
+        Provides breakdown for:
+        - All samples
+        - Low SNR samples (|SNR| < threshold)
+        - High SNR samples (|SNR| >= threshold)
+        
+        Parameters
+        ----------
+        snr_threshold : float
+            SNR threshold to separate low and high SNR samples (default: 5.0)
+            
+        Returns
+        -------
+        Dict[str, Dict[str, float]]
+            Nested dictionary with structure:
+            {
+                'all': {'tp': ..., 'fp': ..., 'tn': ..., 'fn': ..., 'mean': ...},
+                'low_snr': {...},
+                'high_snr': {...}
+            }
+            Each inner dict contains mean uncertainty for each category.
+        """
+        if self.uncertainties is None:
+            raise ValueError("Uncertainties needed for UQ analysis")
+        
+        results = {}
+        
+        # Create confusion matrix masks
+        tp_mask = (self.predictions == 1) & (self.labels == 1)
+        fp_mask = (self.predictions == 1) & (self.labels == 0)
+        tn_mask = (self.predictions == 0) & (self.labels == 0)
+        fn_mask = (self.predictions == 0) & (self.labels == 1)
+        
+        # Compute for all samples
+        results['all'] = {
+            'tp': np.mean(self.uncertainties[tp_mask]) if np.any(tp_mask) else np.nan,
+            'fp': np.mean(self.uncertainties[fp_mask]) if np.any(fp_mask) else np.nan,
+            'tn': np.mean(self.uncertainties[tn_mask]) if np.any(tn_mask) else np.nan,
+            'fn': np.mean(self.uncertainties[fn_mask]) if np.any(fn_mask) else np.nan,
+            'mean': np.mean(self.uncertainties),
+            'n_tp': np.sum(tp_mask),
+            'n_fp': np.sum(fp_mask),
+            'n_tn': np.sum(tn_mask),
+            'n_fn': np.sum(fn_mask)
+        }
+        
+        # Compute for low and high SNR if available
+        if self.snr_values is not None:
+            abs_snr = np.abs(self.snr_values)
+            low_snr_mask = abs_snr < snr_threshold
+            high_snr_mask = abs_snr >= snr_threshold
+            
+            # Low SNR
+            results['low_snr'] = {
+                'tp': np.mean(self.uncertainties[tp_mask & low_snr_mask]) if np.any(tp_mask & low_snr_mask) else np.nan,
+                'fp': np.mean(self.uncertainties[fp_mask & low_snr_mask]) if np.any(fp_mask & low_snr_mask) else np.nan,
+                'tn': np.mean(self.uncertainties[tn_mask & low_snr_mask]) if np.any(tn_mask & low_snr_mask) else np.nan,
+                'fn': np.mean(self.uncertainties[fn_mask & low_snr_mask]) if np.any(fn_mask & low_snr_mask) else np.nan,
+                'mean': np.mean(self.uncertainties[low_snr_mask]) if np.any(low_snr_mask) else np.nan,
+                'n_tp': np.sum(tp_mask & low_snr_mask),
+                'n_fp': np.sum(fp_mask & low_snr_mask),
+                'n_tn': np.sum(tn_mask & low_snr_mask),
+                'n_fn': np.sum(fn_mask & low_snr_mask)
+            }
+            
+            # High SNR
+            results['high_snr'] = {
+                'tp': np.mean(self.uncertainties[tp_mask & high_snr_mask]) if np.any(tp_mask & high_snr_mask) else np.nan,
+                'fp': np.mean(self.uncertainties[fp_mask & high_snr_mask]) if np.any(fp_mask & high_snr_mask) else np.nan,
+                'tn': np.mean(self.uncertainties[tn_mask & high_snr_mask]) if np.any(tn_mask & high_snr_mask) else np.nan,
+                'fn': np.mean(self.uncertainties[fn_mask & high_snr_mask]) if np.any(fn_mask & high_snr_mask) else np.nan,
+                'mean': np.mean(self.uncertainties[high_snr_mask]) if np.any(high_snr_mask) else np.nan,
+                'n_tp': np.sum(tp_mask & high_snr_mask),
+                'n_fp': np.sum(fp_mask & high_snr_mask),
+                'n_tn': np.sum(tn_mask & high_snr_mask),
+                'n_fn': np.sum(fn_mask & high_snr_mask)
+            }
+        else:
+            # If no SNR data, return empty dicts
+            results['low_snr'] = {
+                'tp': np.nan, 'fp': np.nan, 'tn': np.nan, 'fn': np.nan,
+                'mean': np.nan, 'n_tp': 0, 'n_fp': 0, 'n_tn': 0, 'n_fn': 0
+            }
+            results['high_snr'] = {
+                'tp': np.nan, 'fp': np.nan, 'tn': np.nan, 'fn': np.nan,
+                'mean': np.nan, 'n_tp': 0, 'n_fp': 0, 'n_tn': 0, 'n_fn': 0
+            }
+        
+        return results
+    
+    def get_snr_uncertainty_correlation(self) -> Dict[str, float]:
+        """Compute Spearman correlation between SNR and uncertainty.
+        
+        Useful for understanding if model uncertainty increases with lower SNR.
+        
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary with:
+            - 'correlation': Spearman correlation coefficient
+            - 'p_value': Statistical significance p-value
+            - 'n_samples': Number of samples used
+            
+        Notes
+        -----
+        Uses absolute SNR values for correlation.
+        Positive correlation means higher SNR -> higher uncertainty (unexpected).
+        Negative correlation means lower SNR -> higher uncertainty (expected).
+        """
+        if self.uncertainties is None:
+            raise ValueError("Uncertainties needed for correlation analysis")
+        if self.snr_values is None:
+            raise ValueError("SNR values needed for correlation analysis")
+        
+        # Use absolute SNR for correlation
+        abs_snr = np.abs(self.snr_values)
+        
+        # Remove any NaN or infinite values
+        valid_mask = np.isfinite(abs_snr) & np.isfinite(self.uncertainties)
+        valid_snr = abs_snr[valid_mask]
+        valid_uncertainty = self.uncertainties[valid_mask]
+        
+        if len(valid_snr) < 3:
+            return {
+                'correlation': np.nan,
+                'p_value': np.nan,
+                'n_samples': len(valid_snr)
+            }
+        
+        # Compute Spearman correlation
+        correlation, p_value = spearmanr(valid_snr, valid_uncertainty)
+        
+        return {
+            'correlation': correlation,
+            'p_value': p_value,
+            'n_samples': len(valid_snr)
+        }
+    
+    def get_snr_uncertainty_correlation_by_confusion(self) -> Dict[str, Dict[str, float]]:
+        """Compute Spearman correlation between SNR and uncertainty for each confusion category.
+        
+        Returns
+        -------
+        Dict[str, Dict[str, float]]
+            Dictionary with correlation stats for each category (TP, TN, FP, FN):
+            - 'correlation': Spearman correlation coefficient
+            - 'p_value': Statistical significance p-value  
+            - 'n_samples': Number of samples used
+        """
+        if self.uncertainties is None or self.snr_values is None:
+            return {}
+        
+        abs_snr = np.abs(self.snr_values)
+        
+        # Create confusion category masks
+        tp_mask = (self.predictions == 1) & (self.labels == 1)
+        tn_mask = (self.predictions == 0) & (self.labels == 0)
+        fp_mask = (self.predictions == 1) & (self.labels == 0)
+        fn_mask = (self.predictions == 0) & (self.labels == 1)
+        
+        results = {}
+        
+        for cat_name, mask in [('TP', tp_mask), ('TN', tn_mask), ('FP', fp_mask), ('FN', fn_mask)]:
+            # Filter valid values for this category
+            cat_snr = abs_snr[mask]
+            cat_uncertainty = self.uncertainties[mask]
+            
+            valid_mask = np.isfinite(cat_snr) & np.isfinite(cat_uncertainty)
+            valid_snr = cat_snr[valid_mask]
+            valid_uncertainty = cat_uncertainty[valid_mask]
+            
+            if len(valid_snr) >= 3:  # Need at least 3 points for correlation
+                correlation, p_value = spearmanr(valid_snr, valid_uncertainty)
+                results[cat_name] = {
+                    'correlation': correlation,
+                    'p_value': p_value,
+                    'n_samples': len(valid_snr)
+                }
+            else:
+                results[cat_name] = {
+                    'correlation': np.nan,
+                    'p_value': np.nan,
+                    'n_samples': len(valid_snr)
+                }
+        
+        return results
+    
+    def get_extended_uq_summary(self, snr_threshold: float = 5.0) -> Dict:
+        """Get comprehensive UQ summary including confusion categories and correlation.
+        
+        Parameters
+        ----------
+        snr_threshold : float
+            SNR threshold for low/high separation
+            
+        Returns
+        -------
+        Dict
+            Complete UQ analysis including:
+            - 'overall': Overall UQ statistics (mean, std, median)
+            - 'by_correctness': UQ for correct vs incorrect predictions
+            - 'by_confusion_category': UQ for TP, TN, FP, FN
+            - 'by_snr': UQ breakdown by low/high SNR (if SNR available)
+            - 'snr_uq_correlation': Overall SNR-UQ correlation (if SNR available)
+            - 'snr_uq_correlation_by_category': Per-category SNR-UQ correlation (if SNR available)
+        """
+        if self.uncertainties is None:
+            return {'available': False}
+        
+        summary = {'available': True}
+        
+        # Overall statistics
+        summary['overall'] = {
+            'mean': float(np.mean(self.uncertainties)),
+            'std': float(np.std(self.uncertainties)),
+            'median': float(np.median(self.uncertainties))
+        }
+        
+        # By correctness
+        correct_mask = self.predictions == self.labels
+        incorrect_mask = ~correct_mask
+        
+        summary['by_correctness'] = {}
+        if np.any(correct_mask):
+            summary['by_correctness']['correct'] = {
+                'mean': float(np.mean(self.uncertainties[correct_mask])),
+                'std': float(np.std(self.uncertainties[correct_mask])),
+                'count': int(np.sum(correct_mask))
+            }
+        if np.any(incorrect_mask):
+            summary['by_correctness']['incorrect'] = {
+                'mean': float(np.mean(self.uncertainties[incorrect_mask])),
+                'std': float(np.std(self.uncertainties[incorrect_mask])),
+                'count': int(np.sum(incorrect_mask))
+            }
+        
+        # By confusion category (all samples)
+        tp_mask = (self.predictions == 1) & (self.labels == 1)
+        tn_mask = (self.predictions == 0) & (self.labels == 0)
+        fp_mask = (self.predictions == 1) & (self.labels == 0)
+        fn_mask = (self.predictions == 0) & (self.labels == 1)
+        
+        summary['by_confusion_category'] = {}
+        for cat_name, mask in [('TP', tp_mask), ('TN', tn_mask), ('FP', fp_mask), ('FN', fn_mask)]:
+            if np.any(mask):
+                summary['by_confusion_category'][cat_name] = {
+                    'mean': float(np.mean(self.uncertainties[mask])),
+                    'std': float(np.std(self.uncertainties[mask])),
+                    'median': float(np.median(self.uncertainties[mask])),
+                    'count': int(np.sum(mask))
+                }
+        
+        # SNR-based analysis if available
+        if self.snr_values is not None:
+            # Get overall SNR-UQ correlation
+            summary['snr_uq_correlation'] = self.get_snr_uncertainty_correlation()
+            
+            # Get correlation by confusion category
+            summary['snr_uq_correlation_by_category'] = self.get_snr_uncertainty_correlation_by_confusion()
+            
+            # Get SNR-based breakdown with confusion categories
+            abs_snr = np.abs(self.snr_values)
+            low_snr_mask = abs_snr < snr_threshold
+            high_snr_mask = abs_snr >= snr_threshold
+            
+            summary['by_snr'] = {}
+            
+            # Low SNR
+            if np.any(low_snr_mask):
+                summary['by_snr']['low_snr'] = {
+                    'mean': float(np.mean(self.uncertainties[low_snr_mask])),
+                    'std': float(np.std(self.uncertainties[low_snr_mask])),
+                    'median': float(np.median(self.uncertainties[low_snr_mask])),
+                    'count': int(np.sum(low_snr_mask)),
+                    'by_confusion': {}
+                }
+                
+                # Low SNR by confusion category
+                for cat_name, cat_mask in [('TP', tp_mask), ('TN', tn_mask), ('FP', fp_mask), ('FN', fn_mask)]:
+                    combined_mask = low_snr_mask & cat_mask
+                    if np.any(combined_mask):
+                        summary['by_snr']['low_snr']['by_confusion'][cat_name] = {
+                            'mean': float(np.mean(self.uncertainties[combined_mask])),
+                            'std': float(np.std(self.uncertainties[combined_mask])),
+                            'count': int(np.sum(combined_mask))
+                        }
+            
+            # High SNR
+            if np.any(high_snr_mask):
+                summary['by_snr']['high_snr'] = {
+                    'mean': float(np.mean(self.uncertainties[high_snr_mask])),
+                    'std': float(np.std(self.uncertainties[high_snr_mask])),
+                    'median': float(np.median(self.uncertainties[high_snr_mask])),
+                    'count': int(np.sum(high_snr_mask)),
+                    'by_confusion': {}
+                }
+                
+                # High SNR by confusion category
+                for cat_name, cat_mask in [('TP', tp_mask), ('TN', tn_mask), ('FP', fp_mask), ('FN', fn_mask)]:
+                    combined_mask = high_snr_mask & cat_mask
+                    if np.any(combined_mask):
+                        summary['by_snr']['high_snr']['by_confusion'][cat_name] = {
+                            'mean': float(np.mean(self.uncertainties[combined_mask])),
+                            'std': float(np.std(self.uncertainties[combined_mask])),
+                            'count': int(np.sum(combined_mask))
+                        }
+        
+        return summary
 
 def load_inference_metrics(inference_file: Path) -> EvaluationMetrics:
     """Load HDF5 file and build EvaluationMetrics (probabilities and SNR optional).
