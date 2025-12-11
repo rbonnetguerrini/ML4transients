@@ -190,11 +190,11 @@ python -m tensorboard.main --logdir=runs --port=6006 --host=localhost
 ## Perform Inference: 
 
 ```sh
-python scripts/evaluation/run_inference.py \
---dataset-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm       --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_optimized
-
+./scripts/evaluation/submit_inference_batch.sh     --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570     --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570     --visits-per-job 10
 ```
+Allows to run the inference with different as different jobs.
 More details in `notebooks/inference_example.ipynb`
+
 
 # EVALUATION
 ## Cutout evaluation: 
