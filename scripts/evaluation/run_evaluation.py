@@ -254,9 +254,15 @@ class FilteredInferenceLoader:
         return self._filtered_ids
 
 def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str = None,
-                            visits: list = None, model_hash: str = None) -> dict:
+                            visits: list = None, model_hash: str = None, 
+                            auto_run_inference: bool = False) -> dict:
     """Collect (or discover) inference loaders for requested visits.
 
+    Parameters
+    ----------
+    auto_run_inference : bool
+        If True, automatically return None to trigger inference instead of prompting user
+    
     Notes
     -----
     If some visits are missing, user is prompted (unless non-interactive usage).

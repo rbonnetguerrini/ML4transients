@@ -9,6 +9,78 @@ import numpy as np
 import pandas as pd
 from supernnova.validation.validate_onthefly import classify_lcs, get_settings
 
+def merge_same_night_observations(df):
+    """Merge and average observations from the same night for each lightcurve.
+    
+    This is crucial when using DES-trained models on HSC data, as DES data is 
+    nightly-averaged while HSC has multiple visits per night.
+    
+    Args:
+        df (pd.DataFrame): DataFrame with columns [SNID, MJD, FLT, FLUXCAL, FLUXCALERR, ...]
+        
+    Returns:
+        pd.DataFrame: DataFrame with nightly-averaged observations
+    """
+    print(f"  Pre-nightly averaging: {len(df)} observations")
+    
+    # Define the night as the integer part of MJD
+    df['night'] = np.floor(df['MJD']).astype(int)
+    
+    # Group by SNID, night, and filter
+    grouped = df.groupby(['SNID', 'night', 'FLT'])
+    
+    # For flux: weighted average by inverse variance
+    # When used in agg(), the function receives a Series, not a DataFrame
+    def weighted_avg_flux(flux_series):
+        # Get the corresponding flux errors from the original df
+        fluxes = flux_series.values
+        # Access flux errors using the same indices
+        flux_errs = df.loc[flux_series.index, 'FLUXCALERR'].values
+        
+        # Avoid division by zero
+        weights = np.where(flux_errs > 0, 1.0 / (flux_errs ** 2), 0.0)
+        
+        if weights.sum() == 0:
+            # If all weights are zero, use simple average
+            return fluxes.mean()
+        else:
+            return np.average(fluxes, weights=weights)
+    
+    def weighted_avg_flux_err(flux_err_series):
+        flux_errs = flux_err_series.values
+        
+        # Propagate uncertainties: 1/sigma^2 = sum(1/sigma_i^2)
+        weights = np.where(flux_errs > 0, 1.0 / (flux_errs ** 2), 0.0)
+        
+        if weights.sum() == 0:
+            # If all weights are zero, use simple average
+            return flux_errs.mean()
+        else:
+            return 1.0 / np.sqrt(weights.sum())
+    
+    # Aggregate: average MJD within the night, weighted average for flux
+    agg_dict = {
+        'MJD': 'mean',  # Average MJD within the night
+        'FLUXCAL': weighted_avg_flux,
+        'FLUXCALERR': weighted_avg_flux_err,
+    }
+    
+    # Include other columns if they exist (e.g., redshift info)
+    for col in df.columns:
+        if col not in ['SNID', 'MJD', 'FLT', 'FLUXCAL', 'FLUXCALERR', 'night']:
+            # For other columns, take the first value (should be constant per SNID)
+            if col not in agg_dict:
+                agg_dict[col] = 'first'
+    
+    df_nightly = grouped.agg(agg_dict).reset_index()
+    
+    # Drop the temporary 'night' column
+    df_nightly = df_nightly.drop(columns=['night'])
+    
+    print(f"  Post-nightly averaging: {len(df_nightly)} observations ({len(df) - len(df_nightly)} merged)")
+    
+    return df_nightly
+
 def reformat_to_df(pred_probs, ids=None):
     """Convert SuperNNova prediction output to a DataFrame.
 
@@ -87,9 +159,19 @@ def run_inference(csv_dir, output_dir):
         df['SNID'] = df['SNID'].astype(str)
         print(f"  SNID dtype: {df['SNID'].dtype} (strings preserve precision)")
         
-        # The n_sources_at_filtering column is already in the CSV
-        # We'll use this for our inference tracking
-        print(f"  Loaded {len(df)} observations for {df['SNID'].nunique()} lightcurves")
+        # Track original observation count before nightly averaging
+        original_obs_count = len(df)
+        original_lc_count = df['SNID'].nunique()
+        
+        print(f"  Loaded {original_obs_count} observations for {original_lc_count} lightcurves")
+        
+        # CRITICAL: Merge observations from the same night
+        # DES models expect nightly-averaged data, but HSC has multiple visits per night
+        print(f"  Applying nightly averaging (DES model compatibility)...")
+        df = merge_same_night_observations(df)
+        
+        # Verify we still have all lightcurves after averaging
+        assert df['SNID'].nunique() == original_lc_count, "Lost lightcurves during nightly averaging!"
 
         all_predictions = []
         for i, model_file in enumerate(model_files):

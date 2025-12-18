@@ -6,19 +6,18 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd/lightcurves"
 SNR_FILTERED_DIR="${INPUT_DIR}/snr_filtered"
 EXTENDEDNESS_FILTERED_DIR="${INPUT_DIR}/extendedness_filtered"
 REPO="/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml"
 COLLECTION="run/ssp_ud_cosmos/step5_new"
-CSV_DIR="${EXTENDEDNESS_FILTERED_DIR}/csv"
 LOG_FILE="${EXTENDEDNESS_FILTERED_DIR}/pipeline_summary.log"
 
 mkdir -p "$SNR_FILTERED_DIR"
 mkdir -p "$EXTENDEDNESS_FILTERED_DIR"
 
 # Initialize log file
-echo "=== SNN Inference Pipeline Summary ===" > "$LOG_FILE"
+echo "=== Lightcurve Filtering Pipeline Summary ===" > "$LOG_FILE"
 echo "Started: $(date)" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 
@@ -191,65 +190,6 @@ if [ $SNR_KEPT -gt 0 ]; then
 fi
 echo "" >> "$LOG_FILE"
 
-echo "=== Step 3: Running CSV conversion ==="
-echo "=== Step 3: CSV Conversion ===" >> "$LOG_FILE"
-python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/convert_lc_for_snn.py "$EXTENDEDNESS_FILTERED_DIR" "$CSV_DIR"
-if [ $? -ne 0 ]; then
-    echo "CSV conversion failed."
-    echo "ERROR: CSV conversion failed" >> "$LOG_FILE"
-    exit 1
-fi
-
-# Read conversion statistics
-CONVERSION_SUMMARY="${CSV_DIR}/conversion_summary.json"
-if [ -f "$CONVERSION_SUMMARY" ]; then
-    OBJECTS_CONVERTED=$(python -c "import json; print(json.load(open('$CONVERSION_SUMMARY'))['objects_converted'])")
-    CSV_COUNT=$(python -c "import json; print(json.load(open('$CONVERSION_SUMMARY'))['files_processed'])")
-    
-    echo "CSV files created: $CSV_COUNT" >> "$LOG_FILE"
-    echo "Objects converted: $OBJECTS_CONVERTED" >> "$LOG_FILE"
-else
-    CSV_COUNT=$(find "$CSV_DIR" -name "*.csv" 2>/dev/null | wc -l)
-    echo "CSV files created: $CSV_COUNT" >> "$LOG_FILE"
-fi
-echo "" >> "$LOG_FILE"
-
-# --- Step 4: SuperNNova inference in snn_env ---
-echo "=== Step 4: Running SuperNNova inference ==="
-echo "=== Step 4: SuperNNova Inference ===" >> "$LOG_FILE"
-conda activate snn_env
-INFER_OUT="${CSV_DIR}/snn_results"
-mkdir -p "$INFER_OUT"
-python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/infer_snn.py "$CSV_DIR" "$INFER_OUT"
-if [ $? -ne 0 ]; then
-    echo "Inference failed."
-    echo "ERROR: SNN inference failed" >> "$LOG_FILE"
-    exit 1
-fi
-
-# Count inference result files
-INFER_COUNT=$(find "$INFER_OUT" -name "*.csv" 2>/dev/null | wc -l)
-echo "Inference result files: $INFER_COUNT" >> "$LOG_FILE"
-echo "" >> "$LOG_FILE"
-
-conda deactivate
-
-# --- Step 5: Save inference results to HDF5 with validation (LSST env) ---
-echo "=== Step 5: Saving inference results to HDF5 with validation ==="
-echo "=== Step 5: Save Results to HDF5 ===" >> "$LOG_FILE"
-source /cvmfs/sw.lsst.eu/linux-x86_64/lsst_distrib/w_2024_30/loadLSST.bash
-setup lsst_distrib
-export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
-
-python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/save_inference_snn.py "$INFER_OUT" "$INPUT_DIR" --csv_dir "$CSV_DIR"
-
-if [ $? -eq 0 ]; then
-    echo "Results saved successfully" >> "$LOG_FILE"
-else
-    echo "ERROR: Failed to save results" >> "$LOG_FILE"
-fi
-echo "" >> "$LOG_FILE"
-
 # Write completion summary
 echo "=== Pipeline Completion ===" >> "$LOG_FILE"
 echo "Completed: $(date)" >> "$LOG_FILE"
@@ -281,13 +221,16 @@ echo "    └─ Min observations: $MINOBS_DISCARDED" >> "$LOG_FILE"
 echo "    └─ Negative flux: $NEGFLUX_DISCARDED" >> "$LOG_FILE"
 echo "    └─ Point source hosts: $POINT_HOST_REJECTED" >> "$LOG_FILE"
 echo "    └─ Low flux ratio: $FLUX_RATIO_REJECTED" >> "$LOG_FILE"
-echo "  Final objects for SNN inference: $EXTENDEDNESS_KEPT" >> "$LOG_FILE"
+echo "  Final filtered objects: $EXTENDEDNESS_KEPT" >> "$LOG_FILE"
 if [ $TOTAL_OBJECTS -gt 0 ]; then
     OVERALL_KEEP_PCT=$(python -c "print(f'{100.0 * $EXTENDEDNESS_KEPT / $TOTAL_OBJECTS:.2f}')")
     echo "  Overall keep rate: ${OVERALL_KEEP_PCT}%" >> "$LOG_FILE"
 fi
+echo "" >> "$LOG_FILE"
+echo "Filtered lightcurves saved in: $EXTENDEDNESS_FILTERED_DIR" >> "$LOG_FILE"
 
 echo "=== Pipeline complete ==="
 echo ""
 echo "Pipeline summary saved to: $LOG_FILE"
+echo "Filtered lightcurves saved in: $EXTENDEDNESS_FILTERED_DIR"
 cat "$LOG_FILE"

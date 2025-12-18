@@ -68,8 +68,8 @@ Examples:
     parser.add_argument('--catalog_name', help='Name for catalog (default: use filename)')
     parser.add_argument('--ra_column', default='ra', help='RA column name in catalog (default: ra)')
     parser.add_argument('--dec_column', default='dec', help='Dec column name in catalog (default: dec)')
-    parser.add_argument('--tolerance', type=float, default=1.0, 
-                       help='Matching tolerance in arcsec (default: 1.0)')
+    parser.add_argument('--tolerance', type=float, default=0.3, 
+                       help='Matching tolerance in arcsec (default: 0.4)')
     
     return parser.parse_args()
 
