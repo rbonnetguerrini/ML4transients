@@ -14,12 +14,81 @@ class StandardLoss:
 
 
 class CoTeachingLoss:
-    """Co-teaching loss for binary classification"""
+    """Original Co-teaching loss for binary classification
+    
+    Uses a single forget rate for all samples regardless of class.
+    Based on: Han et al. (2018) - Co-teaching: Robust training of deep neural 
+    networks with extremely noisy labels.
+    
+    Args:
+        forget_rate: Fraction of samples to reject (default: 0.2)
+    """
+    
+    def __init__(self, forget_rate=0.2):
+        self.forget_rate = forget_rate
+        self.name = "coteaching"
+    
+    def __call__(self, y_1, y_2, t, epoch_forget_rate=None, **kwargs):
+        """Compute co-teaching loss
+        
+        Args:
+            y_1: Predictions from network 1
+            y_2: Predictions from network 2
+            t: Ground truth labels
+            epoch_forget_rate: Optional forget rate for this epoch (overrides default)
+            
+        Returns:
+            Tuple of (loss_1, loss_2)
+        """
+        forget_rate = epoch_forget_rate if epoch_forget_rate is not None else self.forget_rate
+        return self._loss_coteaching_binary(y_1, y_2, t, forget_rate)
+    
+    def _loss_coteaching_binary(self, y_1, y_2, t, forget_rate):
+        """Original co-teaching with single forget rate"""
+        t = t.float()
+        
+        # Compute per-sample losses
+        loss_1 = F.binary_cross_entropy_with_logits(y_1.squeeze(), t, reduction='none')
+        loss_2 = F.binary_cross_entropy_with_logits(y_2.squeeze(), t, reduction='none')
+        
+        # Calculate number of samples to keep
+        remember_rate = 1 - forget_rate
+        num_remember = int(remember_rate * len(t))
+        
+        # Sort samples by loss (ascending)
+        ind_1_sorted = torch.argsort(loss_1.data)
+        ind_2_sorted = torch.argsort(loss_2.data)
+        
+        # Keep samples with smallest losses
+        ind_1_update = ind_1_sorted[:num_remember]
+        ind_2_update = ind_2_sorted[:num_remember]
+        
+        # Network 1 trained on samples selected by Network 2
+        loss_1_update = F.binary_cross_entropy_with_logits(
+            y_1[ind_2_update].squeeze(), t[ind_2_update], reduction='none')
+        
+        # Network 2 trained on samples selected by Network 1
+        loss_2_update = F.binary_cross_entropy_with_logits(
+            y_2[ind_1_update].squeeze(), t[ind_1_update], reduction='none')
+        
+        return torch.mean(loss_1_update), torch.mean(loss_2_update)
+
+
+class CoTeachingAsymLoss:
+    """Asymmetric Co-teaching loss for binary classification
+    
+    Uses different forget rates for different classes to handle class imbalance
+    or class-specific label noise.
+    
+    Args:
+        forget_rate_0: Forget rate for class 0 (default: 0.015)
+        forget_rate_1: Forget rate for class 1 (default: 0.005)
+    """
     
     def __init__(self, forget_rate_0=0.015, forget_rate_1=0.005):
         self.forget_rate_0 = forget_rate_0
         self.forget_rate_1 = forget_rate_1
-        self.name = "coteaching"
+        self.name = "coteaching_asym"
     
     def __call__(self, y_1, y_2, t, epoch_forget_rates=None, **kwargs):
         if epoch_forget_rates is not None:

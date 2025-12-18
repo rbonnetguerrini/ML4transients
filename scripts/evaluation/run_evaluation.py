@@ -312,7 +312,22 @@ def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str =
                 print("Cannot run inference without weights_path")
             return None
         else:
-            # Give user choice to continue with partial results
+            # Automatic mode for batch/SLURM jobs
+            if auto_run_inference:
+                if weights_path:
+                    print(f"Auto mode: Will run inference for {len(missing_visits)} missing visits")
+                    return None  # Signal to run inference
+                else:
+                    print(f"Auto mode: Continuing with {len(results)} available visits (no weights to run inference)")
+                    return results
+            
+            # Check if we're in a non-interactive environment (no TTY)
+            import sys
+            if not sys.stdin.isatty():
+                print(f"Non-interactive mode detected: Continuing with {len(results)} available visits")
+                return results
+            
+            # Interactive mode - give user choice to continue with partial results
             print(f"\nOptions:")
             print(f"  - Continue evaluation with {len(results)} visits that have results")
             if weights_path:
@@ -685,12 +700,60 @@ def main():
         return
     
     # Load configuration
-    print("Loading configuration...")
+    print("Loading configuration...", flush=True)
     step_start = time.time()
     config = load_evaluation_config(Path(args.config))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Configuration loaded in {time.time() - step_start:.2f}s")
+    
+    # Print detailed configuration
+    print(f"\nConfiguration loaded in {time.time() - step_start:.2f}s", flush=True)
+    print("\n" + "="*70, flush=True)
+    print("EVALUATION CONFIGURATION", flush=True)
+    print("="*70, flush=True)
+    print(f"Config file: {args.config}", flush=True)
+    print(f"Data path: {args.data_path}", flush=True)
+    print(f"Output directory: {output_dir}", flush=True)
+    
+    if args.weights_path:
+        print(f"Model weights: {args.weights_path}", flush=True)
+    if args.model_hash:
+        print(f"Model hash: {args.model_hash}", flush=True)
+    
+    if args.visits:
+        print(f"Specific visits: {args.visits}", flush=True)
+    else:
+        print("Visits: All available", flush=True)
+    
+    print(f"Run inference: {args.run_inference}", flush=True)
+    print(f"Interpretability: {args.interpretability}", flush=True)
+    
+    if args.interpretability:
+        print(f"  - Optimize UMAP: {args.optimize_umap}", flush=True)
+        print(f"  - Enable clustering: {args.enable_clustering}", flush=True)
+        print(f"  - Show all cutouts: {args.show_all_cutouts}", flush=True)
+        if args.umap_load_path:
+            print(f"  - UMAP load path: {args.umap_load_path}", flush=True)
+        if args.umap_save_path:
+            print(f"  - UMAP save path: {args.umap_save_path}", flush=True)
+    
+    print(f"SNR threshold: {args.snr_threshold}", flush=True)
+    
+    if args.object_ids_file:
+        print(f"Object IDs file: {args.object_ids_file}", flush=True)
+    
+    # Print config file contents if available
+    if config:
+        print("\nConfig file settings:", flush=True)
+        for key, value in config.items():
+            if isinstance(value, dict):
+                print(f"  {key}:", flush=True)
+                for subkey, subvalue in value.items():
+                    print(f"    {subkey}: {subvalue}", flush=True)
+            else:
+                print(f"  {key}: {value}", flush=True)
+    
+    print("="*70 + "\n", flush=True)
     
     print("Loading dataset...")
     step_start = time.time()
@@ -707,6 +770,14 @@ def main():
     
     if object_ids:
         print(f"Evaluation will be filtered to {len(object_ids)} specified diaObjectIds")
+        if args.run_inference:
+            print("\n" + "="*70)
+            print("WARNING: --run-inference with --object-ids-file is inefficient!")
+            print("Inference will run on ALL samples first, then filter to your objects.")
+            print("For large datasets, it's better to:")
+            print("  1. Run inference once WITHOUT --object-ids-file (inference cached)")
+            print("  2. Then run evaluation WITH --object-ids-file (no --run-inference)")
+            print("="*70 + "\n")
     else:
         print("Evaluation will include all available data")
     
@@ -726,7 +797,8 @@ def main():
         dataset_loader, 
         weights_path=args.weights_path, 
         visits=visits_to_eval, 
-        model_hash=args.model_hash
+        model_hash=args.model_hash,
+        auto_run_inference=args.run_inference  # Pass the flag for non-interactive mode
     )
     print(f"Inference results collection completed in {time.time() - step_start:.2f}s")
     
@@ -748,7 +820,8 @@ def main():
                     dataset_loader, 
                     weights_path=args.weights_path, 
                     visits=visits_to_eval, 
-                    model_hash=args.model_hash
+                    model_hash=args.model_hash,
+                    auto_run_inference=False  # No need to prompt again after running inference
                 )
                 print(f"Re-collection completed in {time.time() - step_start:.2f}s")
         else:
@@ -979,20 +1052,163 @@ def main():
     print("Saving evaluation results...")
     step_start = time.time()
     results_file = output_dir / "evaluation_results.yaml"
+    
+    # Get comprehensive confusion matrix statistics
+    cm_stats = metrics.get_confusion_matrix_stats()
+    
+    # Build comprehensive evaluation data dictionary
     eval_data = {
         'visits_evaluated': visits_to_eval,
-        'total_samples': metrics.get_confusion_matrix_stats()['total_samples'],
+        'total_samples': cm_stats['total_samples'],
+        
+        # Basic metrics (accuracy, precision, recall, F1, specificity)
         'metrics': summary,
-        'confusion_matrix': metrics.confusion_mat.tolist()
+        
+        # Confusion matrix 
+        'confusion_matrix': {
+            'matrix': metrics.confusion_mat.tolist(),
+            'true_positive': int(cm_stats['true_positive']),
+            'true_negative': int(cm_stats['true_negative']),
+            'false_positive': int(cm_stats['false_positive']),
+            'false_negative': int(cm_stats['false_negative']),
+            'true_positive_rate': float(cm_stats['true_positive_rate']),
+            'true_negative_rate': float(cm_stats['true_negative_rate']),
+            'false_positive_rate': float(cm_stats['false_positive_rate']),
+            'false_negative_rate': float(cm_stats['false_negative_rate']),
+            'positive_predictive_value': float(cm_stats['positive_predictive_value']),
+            'negative_predictive_value': float(cm_stats['negative_predictive_value'])
+        }
     }
     
+    # Add SNR-based metrics if available (use metrics.snr_values since local var was deleted)
+    if metrics.snr_values is not None:
+        try:
+            snr_metrics = metrics.get_snr_based_metrics(snr_threshold=args.snr_threshold)
+            eval_data['snr_based_metrics'] = {
+                'threshold': args.snr_threshold,
+                'low_snr': {
+                    'n_samples': int(snr_metrics['low_snr']['n_samples']),
+                    'accuracy': float(snr_metrics['low_snr']['accuracy']),
+                    'precision': float(snr_metrics['low_snr']['precision']),
+                    'recall': float(snr_metrics['low_snr']['recall']),
+                    'f1_score': float(snr_metrics['low_snr']['f1_score']),
+                    'specificity': float(snr_metrics['low_snr']['specificity'])
+                },
+                'high_snr': {
+                    'n_samples': int(snr_metrics['high_snr']['n_samples']),
+                    'accuracy': float(snr_metrics['high_snr']['accuracy']),
+                    'precision': float(snr_metrics['high_snr']['precision']),
+                    'recall': float(snr_metrics['high_snr']['recall']),
+                    'f1_score': float(snr_metrics['high_snr']['f1_score']),
+                    'specificity': float(snr_metrics['high_snr']['specificity'])
+                }
+            }
+            
+            # Add ROC AUC and PR AUC for SNR-based metrics if probabilities available
+            if 'roc_auc' in snr_metrics['low_snr']:
+                eval_data['snr_based_metrics']['low_snr']['roc_auc'] = float(snr_metrics['low_snr']['roc_auc'])
+                eval_data['snr_based_metrics']['low_snr']['pr_auc'] = float(snr_metrics['low_snr']['pr_auc'])
+            if 'roc_auc' in snr_metrics['high_snr']:
+                eval_data['snr_based_metrics']['high_snr']['roc_auc'] = float(snr_metrics['high_snr']['roc_auc'])
+                eval_data['snr_based_metrics']['high_snr']['pr_auc'] = float(snr_metrics['high_snr']['pr_auc'])
+        except Exception as e:
+            print(f"Warning: Could not compute SNR-based metrics: {e}")
+    
+    # Add uncertainty quantification metrics if available (use metrics.uncertainties since local var was deleted)
+    if metrics.uncertainties is not None:
+        try:
+            uq_summary = metrics.get_extended_uq_summary(snr_threshold=args.snr_threshold)
+            eval_data['uncertainty_quantification'] = {
+                'overall': {
+                    'mean': float(uq_summary['overall']['mean']),
+                    'std': float(uq_summary['overall']['std']),
+                    'median': float(uq_summary['overall']['median'])
+                },
+                'by_correctness': {},
+                'by_confusion_category': {}
+            }
+            
+            # Add correctness-based UQ
+            if 'correct' in uq_summary['by_correctness']:
+                eval_data['uncertainty_quantification']['by_correctness']['correct'] = {
+                    'mean': float(uq_summary['by_correctness']['correct']['mean']),
+                    'std': float(uq_summary['by_correctness']['correct']['std']),
+                    'median': float(uq_summary['by_correctness']['correct']['median'])
+                }
+            if 'incorrect' in uq_summary['by_correctness']:
+                eval_data['uncertainty_quantification']['by_correctness']['incorrect'] = {
+                    'mean': float(uq_summary['by_correctness']['incorrect']['mean']),
+                    'std': float(uq_summary['by_correctness']['incorrect']['std']),
+                    'median': float(uq_summary['by_correctness']['incorrect']['median'])
+                }
+            
+            # Add confusion category UQ
+            for category in ['TP', 'TN', 'FP', 'FN']:
+                if category in uq_summary['by_confusion_category']:
+                    eval_data['uncertainty_quantification']['by_confusion_category'][category] = {
+                        'mean': float(uq_summary['by_confusion_category'][category]['mean']),
+                        'std': float(uq_summary['by_confusion_category'][category]['std']),
+                        'median': float(uq_summary['by_confusion_category'][category]['median'])
+                    }
+            
+            # Add SNR-UQ correlation if available
+            if 'snr_uq_correlation' in uq_summary:
+                correlation_data = uq_summary['snr_uq_correlation']
+                eval_data['uncertainty_quantification']['snr_correlation'] = {
+                    'correlation': float(correlation_data['correlation']),
+                    'p_value': float(correlation_data['p_value']),
+                    'n_samples': int(correlation_data['n_samples'])
+                }
+                
+                # Add per-category correlations
+                if 'snr_uq_correlation_by_category' in uq_summary:
+                    eval_data['uncertainty_quantification']['snr_correlation_by_category'] = {}
+                    for category, corr_data in uq_summary['snr_uq_correlation_by_category'].items():
+                        if corr_data['n_samples'] >= 3:  # Only include if we have enough samples
+                            eval_data['uncertainty_quantification']['snr_correlation_by_category'][category] = {
+                                'correlation': float(corr_data['correlation']),
+                                'p_value': float(corr_data['p_value']),
+                                'n_samples': int(corr_data['n_samples'])
+                            }
+            
+            # Add SNR-based UQ breakdown if available
+            if 'by_snr' in uq_summary:
+                eval_data['uncertainty_quantification']['by_snr'] = {
+                    'threshold': args.snr_threshold,
+                    'low_snr': {},
+                    'high_snr': {}
+                }
+                
+                for snr_cat in ['low_snr', 'high_snr']:
+                    if snr_cat in uq_summary['by_snr']:
+                        for conf_cat in ['TP', 'TN', 'FP', 'FN']:
+                            if conf_cat in uq_summary['by_snr'][snr_cat]:
+                                cat_data = uq_summary['by_snr'][snr_cat][conf_cat]
+                                if cat_data['n_samples'] > 0:
+                                    eval_data['uncertainty_quantification']['by_snr'][snr_cat][conf_cat] = {
+                                        'mean': float(cat_data['mean']),
+                                        'std': float(cat_data['std']),
+                                        'median': float(cat_data['median']),
+                                        'n_samples': int(cat_data['n_samples'])
+                                    }
+        except Exception as e:
+            print(f"Warning: Could not compute UQ metrics: {e}")
+    
+    # Add model information
     if args.weights_path:
         eval_data['model_path'] = args.weights_path
     if args.model_hash:
         eval_data['model_hash'] = args.model_hash
     
+    # Add object ID filtering info if used
+    if object_ids:
+        eval_data['filtering'] = {
+            'filtered_by_object_ids': True,
+            'n_objects': len(object_ids)
+        }
+    
     with open(results_file, 'w') as f:
-        yaml.dump(eval_data, f)
+        yaml.dump(eval_data, f, default_flow_style=False, sort_keys=False)
     print(f"Results saved in {time.time() - step_start:.2f}s")
     
     # Final timing summary

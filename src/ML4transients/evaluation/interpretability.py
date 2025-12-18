@@ -13,6 +13,7 @@ import hdbscan
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import joblib
+import gc
 
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config

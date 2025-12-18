@@ -4,7 +4,7 @@ import torch
 from bokeh.plotting import figure, save, output_file
 from bokeh.models import (
     HoverTool, ColumnDataSource, ColorBar, LinearColorMapper,
-    Title, Div, CustomJS, Tabs, TabPanel, CategoricalColorMapper
+    Title, Div, CustomJS, Tabs, TabPanel, CategoricalColorMapper, Spacer
 )
 from bokeh.layouts import column, row, gridplot
 from bokeh.palettes import Spectral11, Category10, Viridis256
@@ -265,7 +265,7 @@ class BokehEvaluationPlots:
         </div>
         """
         
-        return Div(text=html_content, width=400, height=400)
+        return Div(text=html_content, width=400, height=350)
     
     def create_snr_metrics_divs(self, metrics: EvaluationMetrics, snr_threshold: float = 5.0) -> Tuple[Div, Div]:
         """Create separate metric boxes for low and high SNR samples.
@@ -1010,8 +1010,10 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
     
     plots_layout = [
         row(confusion_plot, metrics_div),
-        row(low_snr_div, high_snr_div),
-        row(pred_dist_plot, uq_div)
+        Spacer(height=20),  # Add spacing between rows
+        row(pred_dist_plot, uq_div),
+        Spacer(height=20),  # Add spacing between rows
+        row(low_snr_div, high_snr_div)
     ]
     
     # Add ROC and PR curves if probabilities are available
@@ -1019,6 +1021,7 @@ def create_evaluation_dashboard(metrics: EvaluationMetrics, output_path: Path = 
         try:
             roc_plot = plots.plot_roc_curve(metrics, title="ROC Curve")
             pr_plot = plots.plot_precision_recall_curve(metrics, title="Precision-Recall Curve")
+            plots_layout.append(Spacer(height=20))  # Add spacing
             plots_layout.append(row(roc_plot, pr_plot))
         except Exception as e:
             print(f"Warning: Could not create ROC/PR curves: {e}")

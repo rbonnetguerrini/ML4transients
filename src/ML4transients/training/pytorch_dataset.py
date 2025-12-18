@@ -40,7 +40,7 @@ class PytorchDataset(Dataset):
         visits = kwargs.get('visits', loader.visits)
         available_visits = [v for v in visits if v in loader.visits] if visits else loader.visits
         
-        print("Building sample index...")
+        print("Building sample index...", flush=True)
         for visit in available_visits:
             if visit in loader.cutouts and visit in loader.features:
                 labels_df = loader.features[visit].labels
@@ -57,7 +57,7 @@ class PytorchDataset(Dataset):
         if len(labels) == 0:
             raise ValueError("No samples found. Check your data.")
         
-        print(f"Creating splits from {len(sample_index)} samples...")
+        print(f"Creating splits from {len(sample_index)} samples...", flush=True)
         
         # Create splits
         trainval_idx, test_idx = train_test_split(
@@ -341,13 +341,21 @@ class PytorchDataset(Dataset):
         selected_labels = all_labels[indices]
         
         # Load only required cutouts
-        print(f"Loading {len(selected_samples)} cutouts with types {self.cutout_types}...")
+        print(f"Loading {len(selected_samples)} cutouts with types {self.cutout_types}...", flush=True)
         all_cutouts = []
         all_labels_kept = []
         all_ids = []
         skipped = 0
         
+        # Progress tracking
+        total_samples = len(selected_samples)
+        report_interval = max(1000, total_samples // 10)  # Report every 10% or 1000 samples
+        
         for i, (visit, dia_id) in enumerate(selected_samples):
+            # Periodic progress update
+            if (i + 1) % report_interval == 0 or (i + 1) == total_samples:
+                print(f"  Progress: {i+1}/{total_samples} ({100*(i+1)/total_samples:.1f}%)", flush=True)
+            
             cutout = self._load_and_stack_cutouts(visit, dia_id)
             if cutout is None:
                 # Skip samples with missing cutout types

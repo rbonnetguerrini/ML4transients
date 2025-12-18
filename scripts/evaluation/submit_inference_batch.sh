@@ -1,10 +1,10 @@
 #!/bin/bash
 #./scripts/evaluation/submit_inference_batch.sh     --data-path /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_v2     --weights-path /sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_50_multichannel_v2     --visits-per-job 10
-DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2"
-WEIGHTS_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/training/coadd_coteaching_optimized"
+DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570"
+WEIGHTS_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570"
 VISITS_PER_JOB=10  # Number of visits each job should process
 NUM_JOBS=""  # Number of parallel jobs to submit (if empty, will create enough to cover all visits)
-FORCE_RERUN=false  # Set to true to force re-running inference on visits with existing results
+FORCE_RERUN=true  # Set to true to force re-running inference on visits with existing results
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
