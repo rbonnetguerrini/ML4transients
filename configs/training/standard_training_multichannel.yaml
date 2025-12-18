@@ -1,6 +1,6 @@
 # Standard training configuration with multi-channel inputs (diff + coadd)
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r035"
   visits: null
   test_size: 0.2
   val_size: 0.1
@@ -8,37 +8,35 @@ data:
 
 training:
   trainer_type: "standard"
-  epochs: 200
-  learning_rate: 0.001
+  epochs: 1500
+  learning_rate: 0.00016239636313582185
   batch_size: 128
+  num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/standard_multichannel"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/standard_multichannel_89570_r035"
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "standard_multichannel"
+  experiment_name: "standard_multichannel_89570_r035"
   log_interval: 50
   
   early_stopping:
     enabled: true
-    monitor: "accuracy"
-    mode: "max"
-    patience: 50
+    monitor: "fnr"                     
+    mode: "min"                         
+    patience: 80
     min_delta: 0.001
+    start_epoch: 70 
     
   model_params:
-    input_shape: [30, 30, 2]            # 2 channels (diff + coadd)
+    input_shape: [30, 30, 2]            
     num_classes: 2
-    num_conv_blocks: 3
-    filters_1: 32
-    filters_2: 64
-    filters_3: 128
-    filters_4: 256
-    dropout_1: 0.25
-    dropout_2: 0.25
-    dropout_3: 0.5
-    units: 128
-    in_channels: 2                      # Explicitly set 2 input channels
+    num_conv_blocks: 3                  
+    base_filters: 64                   
+    base_dropout: 0.25                   
+    units: 64                          
+    in_channels: 2    
+        # Explicitly set 2 input channels
 
 random_state: 42

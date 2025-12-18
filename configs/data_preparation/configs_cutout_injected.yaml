@@ -1,13 +1,14 @@
 repo: /sps/lsst/users/bsanchez/hsc_processing/pgrc2subset_2/butler.yaml
 collection: u/rbonnetguerrini/injected_step4_89570
 injection: true
+noise_rate: 0.35  # Optional: fraction of former injections in real class (e.g., 0.15, 0.25, 0.35)
 cutout:
   size: 30
   coadd_science: true
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r035
 skip_global_index: true
 skip_lightcurve_index: true
 run_info:

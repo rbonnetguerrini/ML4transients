@@ -7,7 +7,7 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_filtered
 lightcurves:
   patches: []
   cache_size: 5
@@ -16,4 +16,4 @@ skip_lightcurve_index: true
 run_info:
   status: completed
   started: '2025-07-24T14:01:00'
-  finished: '2025-11-23T10:44:25.998790'
+  finished: '2025-12-11T17:45:50.022415'

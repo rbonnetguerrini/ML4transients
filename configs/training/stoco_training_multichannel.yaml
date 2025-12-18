@@ -1,22 +1,22 @@
 
 
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_norm"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570"
   visits: null
   test_size: 0.2
   val_size: 0.1
-  cutout_types: ['diff']  # Single channel input
+  cutout_types: ['diff', 'coadd'] 
 
 training:
   trainer_type: "stochastic_coteaching"
   epochs: 1500
-  learning_rate: 0.001
-  batch_size: 128
+  learning_rate: 0.003999412311999152
+  batch_size: 256
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
   weight_decay: 0
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/stochastic_coteaching_test"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_stoco_89570"
   
   # Stochastic co-teaching specific parameters
   alpha: 32                             # Beta distribution alpha 
@@ -29,7 +29,7 @@ training:
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "stochastic_coteaching_test"
+  experiment_name: "multichannel_stoco_89570"
   log_interval: 100
   
   early_stopping:
@@ -40,16 +40,12 @@ training:
     min_delta: 0.001
     
   model_params:
-    input_shape: [30, 30, 1]
+    input_shape: [30, 30, 2]            
     num_classes: 2
-    num_conv_blocks: 4
-    filters_1: 16
-    filters_2: 64
-    filters_3: 96
-    filters_4: 384
-    dropout_1: 0.25
-    dropout_2: 0.25
-    dropout_3: 0.5
-    units: 256
+    num_conv_blocks: 3                  
+    base_filters: 64                   
+    base_dropout: 0.25                   
+    units: 128                          
+    in_channels: 2    
 
 random_state: 42

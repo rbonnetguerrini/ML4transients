@@ -1,48 +1,62 @@
 # Bayesian hyperparameter optimization with multi-channel inputs (diff + coadd)
+# Using asymmetric co-teaching with class-specific forget rates
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r035"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570"
   visits: null
   test_size: 0.2
   val_size: 0.1
   cutout_types: ['diff', 'coadd']  # Use both diff and coadd as 2-channel input
 
 training:
-  trainer_type: "coteaching"  # Can also use "ensemble" or "coteaching"
+  trainer_type: "coteaching_asym"  # Asymmetric co-teaching with class-specific forget rates
   epochs: 150  # Max epochs per trial
   learning_rate: 0.00016239636313582185
   batch_size: 128
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/bayes_optim_multichannel_coteaching_89570_r035"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/bayes_optim_multichannel_coteaching_asym_89570"
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "bayes_optim_multichannel_coteaching_89570_r035"
+  experiment_name: "bayes_optim_multichannel_coteaching_asym_89570"
   log_interval: 50
-  forget_rate: 0.1         # Single forget rate for original co-teaching
-  num_gradual: 13                         
-  exponent: 1
+  
+  # Class-specific forget rates
+  forget_rate_0: 0.1  # Forget rate for class 0 (non-transients/bogus)
+  forget_rate_1: 0.1  # Forget rate for class 1 (transients/real)
+  num_gradual: 13       # Number of epochs for gradual warmup
+  exponent: 1           # Exponent for forget rate schedule
   
   bayes_search:
     enabled: true
     monitor: "loss"  # Metric to optimize: 'fnr', 'loss', or 'accuracy'
     direction: minimize  # Minimize FNR (False Negative Rate)
     prune_metric: "loss"  # Metric for pruning: 'loss' or 'accuracy' (more stable than FNR for early stopping)
-    n_trials: 25  # Number of trials to run
+    n_trials: 100  # Number of trials to run
     max_epochs: 150  # Max epochs per trial
     prune: true  # Enable pruning of unpromising trials
     hpo_train_fraction: 0.3  # Use 30% of training data during HPO (saves ~70% computation time)
     
     # Parameters to optimize
-    # Simplified strategy: geometric progression for filters (F, 2F, 4F)
-    # and scaled dropout rates (0.5*DR, 0.5*DR, DR)
+    # Class-specific forget rates allow handling of class imbalance
+    # Geometric progression for filters (F, 2F, 4F)
+    # Scaled dropout rates (0.5*DR, 0.5*DR, DR)
     params:
-      forget_rate:
+      forget_rate_0:
+        type: float
+        low: 0.01
+        high: 0.4
+        step: 0.01
+      
+      forget_rate_1:
         type: float
         low: 0.01
         high: 0.4
         step: 0.01
 
+
+  # Base model parameters (will be overridden by Bayesian optimization)
+  # Fixed architecture: 3 convolutional blocks with geometric filter progression
   model_params:
     input_shape: [30, 30, 2]  # 2 channels (diff + coadd)
     num_classes: 2
@@ -50,5 +64,5 @@ training:
     base_filters: 64  
     base_dropout: 0.25  
     units: 64
-    in_channels: 2 
+    in_channels: 2  
 random_state: 42

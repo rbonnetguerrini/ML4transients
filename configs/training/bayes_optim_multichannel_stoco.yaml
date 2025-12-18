@@ -7,29 +7,37 @@ data:
   cutout_types: ['diff', 'coadd']  # Use both diff and coadd as 2-channel input
 
 training:
-  trainer_type: "standard"  # Can also use "ensemble" or "coteaching"
+  trainer_type: "stochastic_coteaching"  # Can also use "ensemble" or "coteaching"
   epochs: 150  # Max epochs per trial
   learning_rate: 0.001
   batch_size: 128
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/bayes_optim_multichannel_89570"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/bayes_optim_multichannel_stoco_89570"
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "bayes_optim_multichannel_89570"
+  experiment_name: "bayes_optim_multichannel_stoco_89570"
   log_interval: 50
-    
+
+ # Stochastic co-teaching specific parameters
+  alpha: 32                             # Beta distribution alpha 
+  beta: 4                               # Beta distribution beta 
+  num_gradual: 10                       # Gradual warmup period (tp_gradual)
+  delay: 0                              # Delay before starting rejection 
+  exponent: 1                           # Exponent for schedule
+  clip: [0.01, 0.99]                    # Min/max clipping for random thresholds
+  seed: 42
+  
   bayes_search:
     enabled: true
-    monitor: "loss"  # Metric to optimize: 'fnr', 'loss', or 'accuracy'
+    monitor: "fnr"  # Metric to optimize: 'fnr', 'loss', or 'accuracy'
     direction: minimize  # Minimize FNR (False Negative Rate)
     prune_metric: "loss"  # Metric for pruning: 'loss' or 'accuracy' (more stable than FNR for early stopping)
     n_trials: 50  # Number of trials to run
     max_epochs: 150  # Max epochs per trial
     prune: true  # Enable pruning of unpromising trials
     hpo_train_fraction: 0.3  # Use 30% of training data during HPO
-
     
     # Parameters to optimize
     # Simplified strategy: geometric progression for filters (F, 2F, 4F)

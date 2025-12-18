@@ -1,6 +1,6 @@
 # Ensemble training configuration with multi-channel inputs (diff + coadd)
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_coadd_v2"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570"
   visits: null
   test_size: 0.2
   val_size: 0.1
@@ -9,37 +9,34 @@ data:
 training:
   trainer_type: "ensemble"
   epochs: 1500
-  learning_rate: 0.002978561238134594
+  learning_rate: 0.00016239636313582185
   batch_size: 128                       # Optimized from Bayesian search
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/ensemble_50_multichannel_v2"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570_nES"
   num_models: 50                      
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "ensemble_50_multichannel_v2"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570_nES"
+  experiment_name: "multichannel_ensemble_50_89570_nES"
   log_interval: 100
   
   early_stopping:
-    enabled: true
+    enabled: false
     monitor: "fnr"                      # Monitor False Negative Rate instead of loss
     mode: "min"                         # Want to minimize FNR
     patience: 80
-    min_delta: 0.002 
+    min_delta: 0.001 
     
   model_params:
-    input_shape: [30, 30, 2]            # 2 channels (diff + coadd)
+    input_shape: [30, 30, 2]            
     num_classes: 2
-    num_conv_blocks: 3                  # Optimized: 3 conv blocks
-    filters_1: 64                       # Optimized
-    filters_2: 96                       # Optimized
-    filters_3: 256                       # Optimized  
-    filters_4: 192                      # Optimized
-    dropout_1: 0.5
-    dropout_2: 0.5
-    dropout_3: 0.55                   
-    units: 192                          # Optimized
-    in_channels: 2                      # Explicitly set 2 input channels
+    num_conv_blocks: 3                  
+    base_filters: 64                   
+    base_dropout: 0.25                   
+    units: 64                          
+    in_channels: 2    
+
 random_state: 41

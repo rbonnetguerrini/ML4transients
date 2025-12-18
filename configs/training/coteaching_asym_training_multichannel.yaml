@@ -1,28 +1,29 @@
 # Co-teaching training configuration with optimized hyperparameters
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r015"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570"
   visits: null
   test_size: 0.2
   val_size: 0.1
   cutout_types: ['diff', 'coadd'] 
   
 training:
-  trainer_type: "coteaching"
+  trainer_type: "coteaching_asym"
   epochs: 1500
   learning_rate: 0.00016239636313582185
   batch_size: 128                      
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_coteaching_89570_r015"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_coteaching_asym_89570"
   
-  forget_rate: 0.16               
+  forget_rate_0: 0.05                 
+  forget_rate_1: 0.01                
   num_gradual: 13                       
   exponent: 1
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "multichannel_coteaching_89570_r015"
+  experiment_name: "multichannel_coteaching_asym_89570"
   log_interval: 100
   
   early_stopping:

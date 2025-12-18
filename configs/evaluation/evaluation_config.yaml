@@ -26,7 +26,7 @@ evaluation:
 # Interpretability analysis settings
 interpretability:
   enabled: true
-  max_samples: 100000  # Maximum samples for UMAP analysis
+  max_samples: 3000  # Maximum samples for UMAP analysis (reduced for memory efficiency)
   max_visualization_samples: 3000  # Max samples to show in plots (for performance)
   
   # Feature extraction settings

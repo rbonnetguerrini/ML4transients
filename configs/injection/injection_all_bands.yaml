@@ -4,7 +4,7 @@ butler:
   collections: [u/rbonnetguerrini/step8] #run/ssp_ud_cosmos/step5
 
 injection:
-  galaxy_fraction: 0.093859       
+  galaxy_fraction: 0.063     
   hostless_fraction: 0.10      # 10% of injections are hostless
   min_injections: 1            # Minimum injections per CCD
   max_injections: null         # No maximum limit (null = None)
@@ -19,7 +19,7 @@ data_selection:
 output:
   save_csv: true
   output_dir: "catalogs/rc2_subset"
-  filename_prefix: "saved/injection_catalogs/67177inj/67177inj"
+  filename_prefix: "saved/injection_catalogs/45000inj/45000inj"
 
 mag_distribution:
   file: "/sps/lsst/users/rbonnetguerrini/ML4transients/saved/mag_distrib.json"
