@@ -21,6 +21,20 @@ cd "$PROJECT_ROOT"
 export PROJECT_ROOT
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
+# Check if noise perturbation is requested and compute if needed
+if grep -q "noise_rate:" "$CONFIG_FILE"; then
+    echo ""
+    echo "Noise perturbation detected in config"
+    echo "Computing perturbation IDs before batch submission..."
+    python scripts/data_preparation/compute_noise_perturbation.py $CONFIG_FILE
+    
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to compute noise perturbation"
+        exit 1
+    fi
+    echo ""
+fi
+
 # Create batch configs
 echo "Creating batch configurations..."
 python scripts/data_preparation/create_batch_jobs.py $CONFIG_FILE $BATCH_SIZE

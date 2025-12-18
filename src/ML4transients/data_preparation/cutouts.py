@@ -14,6 +14,54 @@ import h5py
 import gc
 import sys
 
+def compute_xy(I0: int, R0: int, r: float, search_radius: int = 200) -> tuple:
+    """
+    Calculate optimal number of samples to relabel and remove for noise injection.
+    
+    Args:
+        I0 (int): Initial number of injections
+        R0 (int): Initial number of real sources
+        r (float): Desired noise rate in the REAL class (fraction of former injections)
+        search_radius (int): How far around the continuous solution to search for an integer one
+        
+    Returns:
+        tuple: (x_best, y_best, F_best, noise_best) where:
+            - x_best: number of injections to relabel as real
+            - y_best: number of real samples to remove
+            - F_best: final size of each class (both equal to F_best)
+            - noise_best: actual achieved noise rate in the real class
+    """
+    # Continuous (ideal) solution from the formulas
+    F_cont = I0 / (1 + r)
+    x_cont = r * F_cont
+
+    # Integer search around the continuous solution
+    start_x = max(0, int(round(x_cont)) - search_radius)
+    end_x   = min(I0, int(round(x_cont)) + search_radius)
+
+    best = None  # (error, x, y, F, noise)
+
+    for x in range(start_x, end_x + 1):
+        F = I0 - x               # final injections
+        if F <= 0:
+            continue
+
+        y = R0 + x - F           # from R0 + x - y = F  → y = R0 + x - F
+        if y < 0:
+            continue
+
+        noise = x / F            # fraction of former injections in real
+        error = abs(noise - r)
+
+        if best is None or error < best[0]:
+            best = (error, x, y, F, noise)
+
+    if best is None:
+        raise ValueError("No feasible integer solution found. Try another r.")
+
+    _, x_best, y_best, F_best, noise_best = best
+    return x_best, y_best, F_best, noise_best
+
 def extract_all_single_visit(visit_id: int, collection: str, repo: str, prefix: str) -> list:
     """
     Extract all visits references for a single visit from the LSST data repository.
@@ -246,6 +294,32 @@ def save_cutouts(config: dict):
     all_visits = sorted(set(ref.dataId['visit'] for ref in datasetRefs))
     visits = config.get("visits", all_visits)
     
+    # Load pre-computed noise perturbation IDs if available
+    noise_perturbation = None
+    perturbation_file = os.path.join(config['path'], 'noise_perturbation.yaml')
+    
+    if os.path.exists(perturbation_file):
+        import yaml
+        with open(perturbation_file, 'r') as f:
+            noise_perturbation = yaml.safe_load(f)
+        
+        print(f"\n{'='*70}")
+        print(f"Loaded noise perturbation plan from: {perturbation_file}")
+        print(f"  Target noise rate: {noise_perturbation['noise_rate']}")
+        print(f"  Injections to relabel: {noise_perturbation['x_relabel']}")
+        print(f"  Real samples to remove: {noise_perturbation['y_remove']}")
+        print(f"  Final class size: {noise_perturbation['F_final']}")
+        print(f"  Actual noise rate: {noise_perturbation['noise_actual']:.6f}")
+        print(f"{'='*70}\n")
+        sys.stdout.flush()
+        
+        # Convert ID lists to sets for fast lookup
+        relabel_ids_set = set(noise_perturbation['relabel_ids'])
+        remove_ids_set = set(noise_perturbation['remove_ids'])
+        
+        noise_perturbation['relabel_ids_set'] = relabel_ids_set
+        noise_perturbation['remove_ids_set'] = remove_ids_set
+    
     # Track processing statistics
     processed_visits = []
     skipped_visits = []
@@ -366,6 +440,51 @@ def save_cutouts(config: dict):
         for col in id_columns:
             if col in features_df.columns:
                 features_df[col] = features_df[col].astype(np.int64)
+
+        # Apply noise perturbation if pre-computed perturbation exists
+        if noise_perturbation is not None:
+            # Save original labels to spy_injected (ground truth)
+            features_df['spy_injected'] = features_df['is_injection'].astype(np.int8)
+            
+            # Convert is_injection to int8 for modification
+            features_df['is_injection'] = features_df['is_injection'].astype(np.int8)
+            
+            relabel_ids_set = noise_perturbation['relabel_ids_set']
+            remove_ids_set = noise_perturbation['remove_ids_set']
+            
+            # Check which sources in this visit should be relabeled
+            # Relabel injections as real in is_injection (the working label)
+            relabel_mask = features_df['diaSourceId'].isin(relabel_ids_set)
+            n_relabeled = relabel_mask.sum()
+            if n_relabeled > 0:
+                features_df.loc[relabel_mask, 'is_injection'] = np.int8(0)
+                print(f"  Relabeled {n_relabeled} injections as real (is_injection modified)")
+                sys.stdout.flush()
+            
+            # Check which sources in this visit should be removed
+            remove_mask = features_df['diaSourceId'].isin(remove_ids_set)
+            remove_indices = features_df[remove_mask].index.tolist()
+            n_removed = len(remove_indices)
+            
+            if n_removed > 0:
+                # Remove from features_df
+                features_df = features_df.drop(remove_indices)
+                
+                # Also remove corresponding cutouts and IDs
+                keep_mask = np.ones(len(all_cutouts), dtype=bool)
+                keep_mask[remove_indices] = False
+                
+                # Filter cutouts
+                all_cutouts = [cutout for i, cutout in enumerate(all_cutouts) if keep_mask[i]]
+                all_coadd_cutouts = [cutout for i, cutout in enumerate(all_coadd_cutouts) if keep_mask[i]]
+                all_science_cutouts = [cutout for i, cutout in enumerate(all_science_cutouts) if keep_mask[i]]
+                diaSourceIds = [sid for i, sid in enumerate(diaSourceIds) if keep_mask[i]]
+                
+                print(f"  Removed {n_removed} real samples")
+                sys.stdout.flush()
+            
+            # Reset index after removal
+            features_df = features_df.reset_index(drop=True)
 
         # Ensure diaSourceIds array is int64 for cutout saving
         diaSourceIds = np.array(diaSourceIds, dtype=np.int64)
