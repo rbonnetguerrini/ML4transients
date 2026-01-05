@@ -1051,6 +1051,7 @@ class DatasetLoader:
             'summary': {},
             'per_visit': {},
             'labels': {},
+            'noise': {},
             'inference': {}
         }
         
@@ -1062,6 +1063,12 @@ class DatasetLoader:
         visits_with_cutouts = 0
         visits_with_features = 0
         
+        # Noise statistics (when spy_injected is available)
+        has_noise_info = False
+        total_ground_truth_injections = 0
+        total_ground_truth_real = 0
+        total_mislabeled = 0  # Injections labeled as real
+        
         per_visit_stats = {}
         
         # Compute per-visit statistics
@@ -1072,7 +1079,11 @@ class DatasetLoader:
                 'injections': 0,
                 'real': 0,
                 'injection_pct': 0.0,
-                'real_pct': 0.0
+                'real_pct': 0.0,
+                'ground_truth_injections': 0,
+                'ground_truth_real': 0,
+                'mislabeled': 0,
+                'noise_rate': 0.0
             }
             
             # Cutout statistics
@@ -1102,6 +1113,44 @@ class DatasetLoader:
                     if visit_stat['features'] > 0:
                         visit_stat['injection_pct'] = (visit_stat['injections'] / visit_stat['features']) * 100
                         visit_stat['real_pct'] = (visit_stat['real'] / visit_stat['features']) * 100
+                
+                # Check for spy_injected (ground truth) column to compute noise statistics
+                try:
+                    if loader._check_table_format():
+                        with pd.HDFStore(loader.file_path, 'r') as store:
+                            # Check if spy_injected column exists
+                            storer = store.get_storer('features')
+                            if hasattr(storer, 'attrs') and hasattr(storer.attrs, 'data_columns'):
+                                data_cols = storer.attrs.data_columns
+                            else:
+                                # Try to get column names from a small sample
+                                sample = store.select('features', start=0, stop=1)
+                                data_cols = sample.columns.tolist()
+                            
+                            if 'spy_injected' in data_cols:
+                                has_noise_info = True
+                                spy_labels = store.select('features', columns=['spy_injected', 'is_injection'])
+                                
+                                # Ground truth counts
+                                gt_inj_count = (spy_labels['spy_injected'] == 1).sum()
+                                gt_real_count = (spy_labels['spy_injected'] == 0).sum()
+                                visit_stat['ground_truth_injections'] = int(gt_inj_count.item()) if hasattr(gt_inj_count, 'item') else int(gt_inj_count)
+                                visit_stat['ground_truth_real'] = int(gt_real_count.item()) if hasattr(gt_real_count, 'item') else int(gt_real_count)
+                                total_ground_truth_injections += visit_stat['ground_truth_injections']
+                                total_ground_truth_real += visit_stat['ground_truth_real']
+                                
+                                # Mislabeled: spy_injected=1 but is_injection=0 (injection labeled as real)
+                                mislabeled_mask = (spy_labels['spy_injected'] == 1) & (spy_labels['is_injection'] == 0)
+                                mislabeled_count = mislabeled_mask.sum()
+                                visit_stat['mislabeled'] = int(mislabeled_count.item()) if hasattr(mislabeled_count, 'item') else int(mislabeled_count)
+                                total_mislabeled += visit_stat['mislabeled']
+                                
+                                # Noise rate in the "real" class for this visit
+                                if visit_stat['real'] > 0:
+                                    visit_stat['noise_rate'] = (visit_stat['mislabeled'] / visit_stat['real']) * 100
+                except Exception as e:
+                    # If we can't read spy_injected, just continue without noise stats
+                    pass
             
             per_visit_stats[visit] = visit_stat
         
@@ -1117,7 +1166,7 @@ class DatasetLoader:
             'avg_features_per_visit': total_features / visits_with_features if visits_with_features > 0 else 0,
         }
         
-        # Label distribution
+        # Label distribution (working labels - potentially noisy)
         stats['labels'] = {
             'total_injections': total_injections,
             'total_real': total_real,
@@ -1125,6 +1174,25 @@ class DatasetLoader:
             'injection_pct': (total_injections / (total_injections + total_real) * 100) if (total_injections + total_real) > 0 else 0,
             'real_pct': (total_real / (total_injections + total_real) * 100) if (total_injections + total_real) > 0 else 0,
         }
+        
+        # Noise statistics (if spy_injected column is available)
+        if has_noise_info:
+            noise_rate_in_real = (total_mislabeled / total_real * 100) if total_real > 0 else 0
+            noise_rate_overall = (total_mislabeled / (total_injections + total_real) * 100) if (total_injections + total_real) > 0 else 0
+            
+            stats['noise'] = {
+                'has_noise_perturbation': True,
+                'ground_truth_injections': total_ground_truth_injections,
+                'ground_truth_real': total_ground_truth_real,
+                'total_mislabeled': total_mislabeled,
+                'noise_rate_in_real_class': noise_rate_in_real,
+                'noise_rate_overall': noise_rate_overall,
+                'label_agreement_rate': 100.0 - noise_rate_overall,
+            }
+        else:
+            stats['noise'] = {
+                'has_noise_perturbation': False,
+            }
         
         # Lightcurve statistics
         total_lightcurve_objects = 0
@@ -1186,10 +1254,23 @@ class DatasetLoader:
         
         labels = stats['labels']
         if labels['total_labeled'] > 0:
-            print(f"\nLabel Distribution:")
+            print(f"\nLabel Distribution (Working Labels):")
             print(f"  Total labeled sources: {labels['total_labeled']:,}")
             print(f"  Injections: {labels['total_injections']:,} ({labels['injection_pct']:.1f}%)")
             print(f"  Real sources: {labels['total_real']:,} ({labels['real_pct']:.1f}%)")
+        
+        # Noise statistics (if available)
+        noise = stats.get('noise', {})
+        if noise.get('has_noise_perturbation', False):
+            print(f"\nNoise Perturbation Statistics:")
+            print(f"  Ground Truth Distribution:")
+            print(f"    True injections: {noise['ground_truth_injections']:,}")
+            print(f"    True real sources: {noise['ground_truth_real']:,}")
+            print(f"  Label Noise:")
+            print(f"    Mislabeled samples: {noise['total_mislabeled']:,} (injections labeled as real)")
+            print(f"    Noise rate in 'real' class: {noise['noise_rate_in_real_class']:.2f}%")
+            print(f"    Overall noise rate: {noise['noise_rate_overall']:.2f}%")
+            print(f"    Label agreement rate: {noise['label_agreement_rate']:.2f}%")
         
         if summary.get('total_lightcurve_objects', 0) > 0:
             print(f"\nLightcurve Statistics:")

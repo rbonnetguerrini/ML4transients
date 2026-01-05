@@ -86,7 +86,7 @@ def extract_all_single_visit(visit_id: int, collection: str, repo: str, prefix: 
     )
     return [ref.dataId for ref in result]
 
-def batch_normalize_cutouts(batch: np.ndarray) -> np.ndarray :
+def batch_normalize_cutouts(batch: np.ndarray) -> np.ndarray:
     """
     Apply normalization process:
         1. Remove outliers by clipping them. Done by visits to enhance the speed. 
@@ -107,6 +107,55 @@ def batch_normalize_cutouts(batch: np.ndarray) -> np.ndarray :
 
     normalized = (scaled - median) / mad
     return normalized
+
+
+def minmax_normalize_cutouts(batch: np.ndarray) -> np.ndarray:
+    """
+    Apply min-max normalization per image.
+    
+    Scales each image independently to the range [0, 1] based on its
+    minimum and maximum values.
+    
+    Args:
+        batch (np.ndarray): Input batch of shape (N, H, W)
+        
+    Returns:
+        np.ndarray: Normalized batch with values in [0, 1]
+    """
+    # batch shape: (N, H, W)
+    min_vals = batch.min(axis=(1, 2), keepdims=True)
+    max_vals = batch.max(axis=(1, 2), keepdims=True)
+    
+    # Avoid division by zero for constant images
+    range_vals = max_vals - min_vals
+    range_vals[range_vals == 0] = 1
+    
+    normalized = (batch - min_vals) / range_vals
+    return normalized
+
+
+def normalize_cutouts(batch: np.ndarray, method: str = "batch") -> np.ndarray:
+    """
+    Apply normalization to cutouts using the specified method.
+    
+    Args:
+        batch (np.ndarray): Input batch of shape (N, H, W)
+        method (str): Normalization method. Options:
+            - "batch": Percentile clipping + arcsinh + z-score (default)
+            - "minmax": Min-max normalization per image to [0, 1]
+            
+    Returns:
+        np.ndarray: Normalized batch
+        
+    Raises:
+        ValueError: If unknown normalization method is specified
+    """
+    if method == "batch":
+        return batch_normalize_cutouts(batch)
+    elif method == "minmax":
+        return minmax_normalize_cutouts(batch)
+    else:
+        raise ValueError(f"Unknown normalization method: {method}. Use 'batch' or 'minmax'.")
 
 def apply_rotations(cutout: np.ndarray, angles: list) -> list:
     """
@@ -367,7 +416,10 @@ def save_cutouts(config: dict):
 
             # Load coadd (template) image data
             coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
-            
+                        
+                        
+            coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
+
             # Load science (calexp) image data
             science_array = butler.get(f'{prefix}calexp', dataId=ref).getImage().array
             
@@ -396,7 +448,7 @@ def save_cutouts(config: dict):
                     continue
                 
                 # Create cutouts from coadd (template) image
-                coadd_cutout = Cutout2D(coadd_array, (dia_src['x'][i]+20, dia_src['y'][i]+20), cutout_size)
+                coadd_cutout = Cutout2D(coadd_array, (dia_src['x'][i]+20, dia_src['y'][i]+20), cutout_size)     # !!! Magic offset: due to convolution for the coadd. Coadd is 20 pixels larger on each side in this version of the pipeline: (4176, 2048) normal CCD VS (4216, 2088) for Coadded image.
                 
                 # Create cutouts from science (calexp) image
                 science_cutout = Cutout2D(science_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)
@@ -503,16 +555,19 @@ def save_cutouts(config: dict):
         science_cutouts = np.stack(all_science_cutouts)  # Shape: (N, 30, 30)
         del all_science_cutouts  # Free memory immediately
         
+        # Get normalization method from config (default: "batch")
+        normalization_method = config.get("cutout", {}).get("normalization", "batch")
+        
         # Normalize all three types
-        print(f"Normalizing {len(cutouts)} cutouts")
+        print(f"Normalizing {len(cutouts)} cutouts using '{normalization_method}' method")
         sys.stdout.flush()
-        normalized_cutouts = batch_normalize_cutouts(cutouts)
+        normalized_cutouts = normalize_cutouts(cutouts, method=normalization_method)
         del cutouts  # Free memory after normalization
         
-        normalized_coadd_cutouts = batch_normalize_cutouts(coadd_cutouts)
+        normalized_coadd_cutouts = normalize_cutouts(coadd_cutouts, method=normalization_method)
         del coadd_cutouts  # Free memory after normalization
         
-        normalized_science_cutouts = batch_normalize_cutouts(science_cutouts)
+        normalized_science_cutouts = normalize_cutouts(science_cutouts, method=normalization_method)
         del science_cutouts  # Free memory after normalization
         
         # Save data based on configuration flags

@@ -127,6 +127,7 @@ def run_bayesian_optimization(config):
     max_epochs = bs_cfg.get('max_epochs', config['training']['epochs'])
     prune = bs_cfg.get('prune', False)
     cutout_types = config['data'].get('cutout_types', ['diff'])  # Get cutout types
+    hpo_train_fraction = bs_cfg.get('hpo_train_fraction', 1.0)  # Default: use full training set
 
     # Precompute dataset splits once
     print("Preparing datasets for Bayesian optimization...")
@@ -138,6 +139,43 @@ def run_bayesian_optimization(config):
         val_size=config['data'].get('val_size', 0.1),
         random_state=config.get('random_state', 42)
     )
+    
+    # Apply stratified subsampling to training set if requested
+    if hpo_train_fraction < 1.0:
+        original_train_size = len(splits['train'])
+        train_dataset = splits['train']
+        
+        # Get labels efficiently from split_info if available
+        if 'split_info' in splits and splits['split_info'] is not None:
+            # Access labels from the saved split_info
+            split_info = splits['split_info']
+            train_indices = split_info['train_idx']
+            all_labels = split_info['labels']
+            train_labels = all_labels[train_indices]
+            print(f"Using cached labels from split_info")
+        else:
+            # Fallback: iterate through dataset (slower)
+            print(f"Warning: No split_info found, iterating through dataset to get labels...")
+            train_labels = np.array([train_dataset[i][1] for i in range(len(train_dataset))])
+        
+        # Subsample indices with stratification
+        from sklearn.model_selection import train_test_split
+        subset_indices, _ = train_test_split(
+            np.arange(len(train_dataset)),
+            train_size=hpo_train_fraction,
+            stratify=train_labels,
+            random_state=config.get('random_state', 42)
+        )
+        
+        # Create subsampled dataset using Subset
+        from torch.utils.data import Subset
+        splits['train'] = Subset(train_dataset, subset_indices)
+        
+        print(f"Reduced training set from {original_train_size} to {len(splits['train'])} samples "
+              f"({hpo_train_fraction*100:.0f}%) for HPO")
+        print(f"Val set: {len(splits['val'])} samples (unchanged)")
+        print(f"Test set: {len(splits['test'])} samples (unchanged)")
+    
     datasets = {'train': splits['train'], 'val': splits['val'], 'test': splits['test']}
 
     def objective(trial):
@@ -150,16 +188,75 @@ def run_bayesian_optimization(config):
             val = suggest_param(trial, dotted_key, spec)
             set_nested(trial_config['training'], dotted_key, val)
 
+        # Expand base_filters into geometric progression (F, 2F, 4F) if present
+        model_params = trial_config['training'].get('model_params', {})        
+        if 'base_filters' in model_params:
+            F = model_params['base_filters']
+            model_params['filters_1'] = F
+            model_params['filters_2'] = 2 * F
+            model_params['filters_3'] = 4 * F
+            print(f"Expanded base_filters={F} to filters: ({F}, {2*F}, {4*F})")
+            # Remove base_filters so it's not passed to model __init__
+            del model_params['base_filters']
+        
+        # Expand base_dropout into scaled rates (0.5*DR, 0.5*DR, DR) if present
+        if 'base_dropout' in model_params:
+            DR = model_params['base_dropout']
+            model_params['dropout_1'] = 0.5 * DR
+            model_params['dropout_2'] = 0.5 * DR
+            model_params['dropout_3'] = DR
+            print(f"Expanded base_dropout={DR:.3f} to dropouts: ({0.5*DR:.3f}, {0.5*DR:.3f}, {DR:.3f})")
+            # Remove base_dropout so it's not passed to model __init__
+            del model_params['base_dropout']
+        
+
         batch_size = trial_config['training'].get('batch_size', config['training']['batch_size'])
         num_workers = trial_config['training'].get('num_workers', 4)
         train_loader, val_loader, test_loader = create_data_loaders_from_datasets(
             datasets, batch_size=batch_size, num_workers=num_workers
         )
 
-        trainer = get_trainer(trial_config['training']['trainer_type'], trial_config['training'])
-        best_metric = trainer.fit(train_loader, val_loader, test_loader)
+        try:
+            trainer = get_trainer(trial_config['training']['trainer_type'], trial_config['training'])
+            best_metric = trainer.fit(train_loader, val_loader, test_loader)
+        except RuntimeError as e:
+            # Handle training failures (e.g., too many rejected batches in co-teaching)
+            error_msg = str(e)
+            if 'rejected' in error_msg.lower() or 'batch' in error_msg.lower():
+                print(f"Trial {trial.number} failed due to training instability: {error_msg}")
+                # Return a very bad metric so Optuna knows this configuration is poor
+                if direction == 'minimize':
+                    return float('inf')
+                else:
+                    return float('-inf')
+            else:
+                # Re-raise unexpected errors
+                raise
 
-        # Run inference on validation set to compute FNR (if we want to optimize for it)
+        # Get pruning metric (loss or accuracy for stable early stopping)
+        prune_metric = bs_cfg.get('prune_metric', 'loss')  # Default to loss for pruning
+        if prune_metric == 'loss':
+            pruning_value = best_metric  # This is the loss from trainer.fit()
+        elif prune_metric == 'accuracy':
+            # Get accuracy from validation if available
+            if val_loader is not None:
+                val_metrics = trainer.evaluate(val_loader)
+                pruning_value = 1.0 - val_metrics.get('accuracy', 0.0)  # Convert to minimization
+            else:
+                pruning_value = best_metric
+        else:
+            pruning_value = best_metric
+        
+        # Report for pruning (use stable metric like loss/accuracy)
+        if prune:
+            epoch = trainer.best_epoch if trainer.best_epoch >= 0 else trial.number
+            trial.report(pruning_value, step=epoch)
+            print(f"Trial {trial.number} - Pruning metric ({prune_metric}): {pruning_value:.4f} at epoch {epoch}")
+            if trial.should_prune():
+                print(f"Trial {trial.number} pruned at epoch {epoch}")
+                raise optuna.TrialPruned()
+        
+        # Compute final optimization metric (can be different from pruning metric)
         monitor_metric = bs_cfg.get('monitor', 'loss')
         if monitor_metric == 'fnr' and val_loader is not None:
             print(f"Computing FNR on validation set for trial {trial.number}...")
@@ -168,21 +265,27 @@ def run_bayesian_optimization(config):
             # Extract confusion matrix and compute FNR
             tn, fp, fn, tp = val_results['confusion_matrix'].ravel()
             fnr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
-            print(f"Trial {trial.number} - Validation FNR: {fnr:.4f}")
+            print(f"Trial {trial.number} - Final FNR: {fnr:.4f}")
             metric_to_return = fnr
         else:
             metric_to_return = best_metric
 
-        # Report for pruning (uses monitored metric; assumed lower is better if minimizing loss)
-        if prune:
-            trial.report(metric_to_return, step=trainer.best_epoch if trainer.best_epoch >= 0 else trial.number)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
-
         return metric_to_return
 
-    study = optuna.create_study(direction=direction)
+    # Create pruner for early stopping of unpromising trials
+    if prune:
+        pruner = optuna.pruners.MedianPruner(
+            n_startup_trials=5,  # Don't prune the first 5 trials
+            n_warmup_steps=20,   # Wait at least 20 epochs before pruning
+            interval_steps=10    # Check every 10 epochs
+        )
+        print(f"Using MedianPruner for early stopping (startup_trials=5, warmup=20 epochs)")
+    else:
+        pruner = optuna.pruners.NopPruner()
+    
+    study = optuna.create_study(direction=direction, pruner=pruner)
     print(f"Starting Bayesian optimization for {n_trials} trials (direction={direction})")
+    print(f"Pruning: {'enabled' if prune else 'disabled'} | Monitor metric: {bs_cfg.get('monitor', 'loss')} | Prune metric: {bs_cfg.get('prune_metric', 'loss')}")
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
 
     print("Bayesian optimization completed.")
@@ -201,7 +304,8 @@ def run_bayesian_optimization(config):
 def main():
     parser = argparse.ArgumentParser(description='Train transient bogus classifier')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
-    parser.add_argument('--experiment-name', type=str, required=True, help='Name of the training')
+    parser.add_argument('--experiment-name', type=str, required=False, default=None, 
+                        help='Name of the training (optional, defaults to experiment_name in config)')
     parser.add_argument('--hpo', action='store_true', help='Run Bayesian hyperparameter optimization instead of normal training')
     
     args = parser.parse_args()
@@ -214,9 +318,15 @@ def main():
         config = load_config(args.config)
         print(f"Loaded config from: {args.config}")
         
-        # Override experiment name if specified
+        # Override experiment name if specified via command line
         if args.experiment_name:
             config['training']['experiment_name'] = args.experiment_name
+            print(f"Experiment name overridden to: {args.experiment_name}")
+        
+        # Ensure experiment_name exists in config
+        if 'experiment_name' not in config['training']:
+            config['training']['experiment_name'] = 'default_experiment'
+            print("Warning: No experiment_name in config, using 'default_experiment'")
             
         # Create output directory (facilitating inference and weight loading)
         output_dir = config['training'].get('output_dir', 'output')
@@ -251,6 +361,27 @@ def main():
         cutout_types = config['data'].get('cutout_types', ['diff'])
         in_channels = len(cutout_types)
         print(f"Using {in_channels} input channel(s): {cutout_types}")
+        
+        # Expand base_filters into geometric progression (F, 2F, 4F) if present
+        model_params = config['training'].get('model_params', {})
+        if 'base_filters' in model_params:
+            F = model_params['base_filters']
+            model_params['filters_1'] = F
+            model_params['filters_2'] = 2 * F
+            model_params['filters_3'] = 4 * F
+            print(f"Expanded base_filters={F} to filters: ({F}, {2*F}, {4*F})")
+            # Remove base_filters so it's not passed to model __init__
+            del model_params['base_filters']
+        
+        # Expand base_dropout into scaled rates (0.5*DR, 0.5*DR, DR) if present
+        if 'base_dropout' in model_params:
+            DR = model_params['base_dropout']
+            model_params['dropout_1'] = 0.5 * DR
+            model_params['dropout_2'] = 0.5 * DR
+            model_params['dropout_3'] = DR
+            print(f"Expanded base_dropout={DR:.3f} to dropouts: ({0.5*DR:.3f}, {0.5*DR:.3f}, {DR:.3f})")
+            # Remove base_dropout so it's not passed to model __init__
+            del model_params['base_dropout']
         
         # Set in_channels in model_params if not already set
         if 'in_channels' not in config['training'].get('model_params', {}):

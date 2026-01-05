@@ -335,8 +335,8 @@ class UMAPInterpreter:
         
         print(f"DataLoader has {len(data_loader.dataset)} samples in {len(data_loader)} batches")
         
-        # First pass: extract all features
-        features = []
+        # Pre-allocate feature storage to avoid list growth overhead
+        features_list = []  
         total_batches = len(data_loader)
         
         # Use the appropriate model for feature extraction
@@ -347,20 +347,26 @@ class UMAPInterpreter:
             # Extract final model outputs directly
             with torch.no_grad():
                 for batch_idx, batch in enumerate(data_loader):
-                    if batch_idx % 10 == 0:  # Progress every 10 batches
-                        print(f"Processing batch {batch_idx+1}/{total_batches}")
+                    if batch_idx % 50 == 0:  # Progress every 50 batches
+                        print(f"Processing batch {batch_idx+1}/{total_batches} ({100*batch_idx/total_batches:.1f}%)")
                     
                     images, *_ = batch
                     images = images.to(self.device)
                     
                     # Get model output
                     outputs = model(images)
-                    features.append(outputs.cpu().numpy())
+                    # Detach and move to CPU to break computation graph
+                    features_np = outputs.detach().cpu().numpy().copy()
+                    features_list.append(features_np)
                     
                     # Clear GPU memory after each batch
-                    del images, outputs
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    del images, outputs, features_np
+                    
+                    # Periodic garbage collection every 100 batches
+                    if batch_idx % 100 == 0 and batch_idx > 0:
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
         else:
             # Use hooks to extract from intermediate layers
             target_layer = self._get_layer_by_name(layer_name)
@@ -387,12 +393,19 @@ class UMAPInterpreter:
                         else:
                             feat_flat = self.hook_features.view(self.hook_features.size(0), -1)
                         
-                        features.append(feat_flat.cpu().numpy())
+                        # Immediately detach, copy to CPU and numpy to break graph
+                        features_np = feat_flat.detach().cpu().numpy().copy()
+                        features_list.append(features_np)
                         
-                        # Clear GPU memory after each batch
-                        del images, feat_flat
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
+                        # Clear GPU memory and hook features
+                        del images, feat_flat, features_np
+                        self.hook_features = None  # Clear hook cache
+                        
+                        # Periodic garbage collection every 100 batches
+                        if batch_idx % 100 == 0 and batch_idx > 0:
+                            gc.collect()
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
             finally:
                 # Always remove the hook
                 if self.hook_handle:
@@ -400,11 +413,14 @@ class UMAPInterpreter:
                     self.hook_handle = None
         
         # Check if we extracted any features
-        if len(features) == 0:
+        if len(features_list) == 0:
             raise ValueError("No features were extracted! Check that the DataLoader is working correctly.")
         
-        # Stack all features
-        all_features = np.vstack(features)
+        # Stack all features efficiently
+        print(f"Stacking {len(features_list)} batches into single array...")
+        all_features = np.vstack(features_list)
+        del features_list  # Free memory immediately
+        gc.collect()
         print(f"Total extracted features shape: {all_features.shape}")
         
         # Apply random sampling if max_samples is specified

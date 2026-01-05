@@ -10,6 +10,21 @@ class CustomCNN(nn.Module):
         """
         Convolutional Neural Network for image classification.
         
+        Geometric Filter Progression Strategy:
+        For hyperparameter optimization, filters are parameterized using a geometric 
+        progression controlled by a single base_filters parameter F:
+            - Conv Block 1: F filters
+            - Conv Block 2: 2F filters  
+            - Conv Block 3: 4F filters
+        
+        This reduces redundant architectural degrees of freedom and enforces smooth 
+        capacity scaling across the network, avoiding pathological configurations.
+        
+        Similarly, dropout rates follow a scaled progression controlled by base_dropout DR:
+            - Conv Block 1: 0.5*DR
+            - Conv Block 2: 0.5*DR
+            - Fully Connected: DR
+        
         Parameters
         ----------
         input_shape : tuple
@@ -17,11 +32,11 @@ class CustomCNN(nn.Module):
         num_classes : int
             Number of output classes
         num_conv_blocks : int
-            Number of convolutional blocks
+            Number of convolutional blocks (typically fixed to 3)
         filters_1, filters_2, filters_3, filters_4 : int
-            Number of filters for each conv block
+            Number of filters for each conv block (auto-computed from base_filters during HPO)
         dropout_1, dropout_2, dropout_3 : float
-            Dropout rates
+            Dropout rates (auto-computed from base_dropout during HPO)
         units : int
             Number of units in fully connected layer
         in_channels : int, optional

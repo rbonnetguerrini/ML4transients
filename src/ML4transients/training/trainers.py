@@ -39,6 +39,7 @@ class BaseTrainer(ABC):
         self.es_mode = es_cfg.get('mode', 'min')
         self.es_patience = es_cfg.get('patience', 100)
         self.es_min_delta = es_cfg.get('min_delta', 0.0)
+        self.es_start_epoch = es_cfg.get('start_epoch', 0)  # Epoch to start monitoring
         self.best_metric = float('-inf') if self.es_mode == 'max' else float('inf')
         self.epochs_no_improve = 0
         self.best_epoch = -1
@@ -93,7 +94,7 @@ class BaseTrainer(ABC):
             self.log_epoch(epoch, train_metrics, test_metrics, val_metrics)
 
             # Early stopping / best checkpoint
-            if current_monitored is not None:
+            if current_monitored is not None and epoch >= self.es_start_epoch:
                 if self._is_improvement(current_monitored):
                     self.best_metric = current_monitored
                     self.best_epoch = epoch
@@ -271,6 +272,8 @@ class StandardTrainer(BaseTrainer):
         total_correct = 0
         total_samples = 0
         total_loss = 0.0
+        all_predictions = []
+        all_labels = []
         with torch.no_grad():
             for images, labels, _ in test_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
@@ -280,9 +283,20 @@ class StandardTrainer(BaseTrainer):
                 preds = (torch.sigmoid(outputs.squeeze()) > 0.5).float()
                 total_correct += (preds == labels).sum().item()
                 total_samples += len(labels)
+                all_predictions.append(preds)
+                all_labels.append(labels)
+        
+        # Concatenate all predictions and labels
+        all_predictions = torch.cat(all_predictions)
+        all_labels = torch.cat(all_labels)
+        
+        # Compute confusion matrix metrics including FNR
+        confusion_metrics = self.compute_confusion_metrics(all_predictions, all_labels)
+        
         return {
             'accuracy': total_correct / total_samples,
-            'loss': total_loss / len(test_loader)
+            'loss': total_loss / len(test_loader),
+            'fnr': confusion_metrics['fnr']
         }
     
     def save_checkpoint(self, epoch, suffix):
@@ -310,8 +324,7 @@ class CoTeachingTrainer(BaseTrainer):
         # Loss function
         self.loss_fn = get_loss_function(
             'coteaching',
-            forget_rate_0=self.config.get('forget_rate_0', 0.015),
-            forget_rate_1=self.config.get('forget_rate_1', 0.005)
+            forget_rate=self.config.get('forget_rate', 0.2)
         )
         
         # Learning rate and forget rate schedules
@@ -331,17 +344,13 @@ class CoTeachingTrainer(BaseTrainer):
             self.alpha_plan[i] = float(epochs - i) / (epochs - epoch_decay_start) * lr
             self.beta1_plan[i] = 0.1
         
-        # Forget rate schedules
+        # Forget rate schedule
         num_gradual = self.config.get('num_gradual', 10)
-        forget_rate_0 = self.config.get('forget_rate_0', 0.015)
-        forget_rate_1 = self.config.get('forget_rate_1', 0.005)
+        forget_rate = self.config.get('forget_rate', 0.2)
         exponent = self.config.get('exponent', 1)
         
-        self.rate_schedule_0 = np.ones(epochs) * forget_rate_0
-        self.rate_schedule_0[:num_gradual] = np.linspace(0, forget_rate_0**exponent, num_gradual)
-        
-        self.rate_schedule_1 = np.ones(epochs) * forget_rate_1
-        self.rate_schedule_1[:num_gradual] = np.linspace(0, forget_rate_1**exponent, num_gradual)
+        self.rate_schedule = np.ones(epochs) * forget_rate
+        self.rate_schedule[:num_gradual] = np.linspace(0, forget_rate**exponent, num_gradual)
     
     def adjust_learning_rate(self, optimizer, epoch):
         """Adjust learning rate"""
@@ -375,8 +384,8 @@ class CoTeachingTrainer(BaseTrainer):
             total_samples += len(labels)
             
             # Co-teaching loss
-            epoch_forget_rates = (self.rate_schedule_0[epoch], self.rate_schedule_1[epoch])
-            loss_1, loss_2 = self.loss_fn(logits1, logits2, labels, epoch_forget_rates=epoch_forget_rates)
+            epoch_forget_rate = self.rate_schedule[epoch]
+            loss_1, loss_2 = self.loss_fn(logits1, logits2, labels, epoch_forget_rate=epoch_forget_rate)
             
             total_loss1 += loss_1.item()
             total_loss2 += loss_2.item()
@@ -457,6 +466,185 @@ class CoTeachingTrainer(BaseTrainer):
     def save_checkpoint(self, epoch, suffix):
         torch.save(self.model1.state_dict(), f"{self.config.get('output_dir')}/model1_{suffix}.pth")
         torch.save(self.model2.state_dict(), f"{self.config.get('output_dir')}/model2_{suffix}.pth")
+
+
+class CoTeachingAsymTrainer(BaseTrainer):
+    """Asymmetric co-teaching trainer with class-specific forget rates
+    
+    Uses different forget rates for different classes to handle class imbalance
+    or class-specific label noise.
+    """
+    
+    def setup_training(self):
+        # Two models
+        self.model1 = CustomCNN(**self.config['model_params']).to(self.device)
+        self.model2 = CustomCNN(**self.config['model_params']).to(self.device)
+        
+        # Optimizers
+        self.optimizer1 = torch.optim.Adam(
+            self.model1.parameters(), 
+            lr=self.config['learning_rate']
+        )
+        self.optimizer2 = torch.optim.Adam(
+            self.model2.parameters(), 
+            lr=self.config['learning_rate']
+        )
+        
+        # Loss function with asymmetric forget rates
+        self.loss_fn = get_loss_function(
+            'coteaching_asym',
+            forget_rate_0=self.config.get('forget_rate_0', 0.015),
+            forget_rate_1=self.config.get('forget_rate_1', 0.005)
+        )
+        
+        # Learning rate and forget rate schedules
+        self.setup_schedules()
+    
+    def setup_schedules(self):
+        """Setup learning rate and forget rate schedules"""
+        epochs = self.config['epochs']
+        lr = self.config['learning_rate']
+        epoch_decay_start = self.config.get('epoch_decay_start', 80)
+        
+        # Learning rate schedule
+        self.alpha_plan = [lr] * epochs
+        self.beta1_plan = [0.9] * epochs
+        
+        for i in range(epoch_decay_start, epochs):
+            self.alpha_plan[i] = float(epochs - i) / (epochs - epoch_decay_start) * lr
+            self.beta1_plan[i] = 0.1
+        
+        # Forget rate schedules (separate for each class)
+        num_gradual = self.config.get('num_gradual', 10)
+        forget_rate_0 = self.config.get('forget_rate_0', 0.015)
+        forget_rate_1 = self.config.get('forget_rate_1', 0.005)
+        exponent = self.config.get('exponent', 1)
+        
+        self.rate_schedule_0 = np.ones(epochs) * forget_rate_0
+        self.rate_schedule_0[:num_gradual] = np.linspace(0, forget_rate_0**exponent, num_gradual)
+        
+        self.rate_schedule_1 = np.ones(epochs) * forget_rate_1
+        self.rate_schedule_1[:num_gradual] = np.linspace(0, forget_rate_1**exponent, num_gradual)
+    
+    def adjust_learning_rate(self, optimizer, epoch):
+        """Adjust learning rate"""
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = self.alpha_plan[epoch]
+            param_group['betas'] = (self.beta1_plan[epoch], 0.999)
+    
+    def train_one_epoch(self, epoch, train_loader):
+        self.model1.train()
+        self.model2.train()
+        self.adjust_learning_rate(self.optimizer1, epoch)
+        self.adjust_learning_rate(self.optimizer2, epoch)
+        
+        total_correct1, total_correct2 = 0, 0
+        total_samples = 0
+        total_loss1, total_loss2 = 0.0, 0.0
+        
+        for batch_idx, (images, labels, _) in enumerate(train_loader):
+            if batch_idx >= self.config.get('num_iter_per_epoch', float('inf')):
+                break
+                
+            images, labels = images.to(self.device), labels.to(self.device)
+            
+            # Forward pass
+            logits1 = self.model1(images)
+            logits2 = self.model2(images)
+            
+            # Calculate accuracy
+            total_correct1 += (torch.sigmoid(logits1.squeeze()) > 0.5).eq(labels).sum().item()
+            total_correct2 += (torch.sigmoid(logits2.squeeze()) > 0.5).eq(labels).sum().item()
+            total_samples += len(labels)
+            
+            # Co-teaching loss with class-specific forget rates
+            epoch_forget_rates = (self.rate_schedule_0[epoch], self.rate_schedule_1[epoch])
+            loss_1, loss_2 = self.loss_fn(logits1, logits2, labels, epoch_forget_rates=epoch_forget_rates)
+            
+            total_loss1 += loss_1.item()
+            total_loss2 += loss_2.item()
+            
+            # Backward pass
+            self.optimizer1.zero_grad()
+            loss_1.backward()
+            self.optimizer1.step()
+            
+            self.optimizer2.zero_grad()
+            loss_2.backward()
+            self.optimizer2.step()
+            
+            # Log batch metrics to TensorBoard
+            if self.writer and batch_idx % self.config.get('log_interval', 100) == 0:
+                fractional_epoch = epoch + (batch_idx / len(train_loader))
+                self.writer.add_scalar('Batch/Loss1', loss_1.item(), fractional_epoch)
+                self.writer.add_scalar('Batch/Loss2', loss_2.item(), fractional_epoch)
+                self.writer.add_scalar('Batch/ForgetRate0', epoch_forget_rates[0], fractional_epoch)
+                self.writer.add_scalar('Batch/ForgetRate1', epoch_forget_rates[1], fractional_epoch)
+        
+        return {
+            'accuracy1': total_correct1 / total_samples,
+            'accuracy2': total_correct2 / total_samples,
+            'loss1': total_loss1 / len(train_loader),
+            'loss2': total_loss2 / len(train_loader),
+            'forget_rate_0': self.rate_schedule_0[epoch],
+            'forget_rate_1': self.rate_schedule_1[epoch]
+        }
+    
+    def evaluate(self, test_loader):
+        if test_loader is None:
+            return {}
+        self.model1.eval()
+        self.model2.eval()
+        
+        all_preds1 = []
+        all_preds2 = []
+        all_labels = []
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for images, labels, _ in test_loader:
+                images, labels = images.to(self.device), labels.to(self.device)
+                logits1 = self.model1(images)
+                logits2 = self.model2(images)
+                loss1 = F.binary_cross_entropy_with_logits(logits1.squeeze(), labels.float())
+                loss2 = F.binary_cross_entropy_with_logits(logits2.squeeze(), labels.float())
+                total_loss += 0.5 * (loss1.item() + loss2.item())
+                
+                preds1 = torch.sigmoid(logits1.squeeze())
+                preds2 = torch.sigmoid(logits2.squeeze())
+                all_preds1.append(preds1)
+                all_preds2.append(preds2)
+                all_labels.append(labels)
+        
+        # Concatenate all predictions and labels
+        all_preds1 = torch.cat(all_preds1)
+        all_preds2 = torch.cat(all_preds2)
+        all_labels = torch.cat(all_labels)
+        
+        # Ensemble prediction (average of both models)
+        ensemble_preds = (all_preds1 + all_preds2) / 2
+        
+        # Compute metrics for ensemble
+        metrics = self.compute_confusion_metrics(ensemble_preds, all_labels)
+        
+        # Also compute individual model metrics
+        metrics1 = self.compute_confusion_metrics(all_preds1, all_labels)
+        metrics2 = self.compute_confusion_metrics(all_preds2, all_labels)
+        
+        return {
+            'accuracy': metrics['accuracy'],
+            'fnr': metrics['fnr'],
+            'loss': total_loss / len(test_loader),
+            'accuracy1': metrics1['accuracy'],
+            'accuracy2': metrics2['accuracy'],
+            'fnr1': metrics1['fnr'],
+            'fnr2': metrics2['fnr']
+        }
+    
+    def save_checkpoint(self, epoch, suffix):
+        torch.save(self.model1.state_dict(), f"{self.config.get('output_dir')}/model1_{suffix}.pth")
+        torch.save(self.model2.state_dict(), f"{self.config.get('output_dir')}/model2_{suffix}.pth")
+
 
 class StochasticCoTeachingTrainer(BaseTrainer):
     """Stochastic co-teaching trainer with two networks
@@ -1148,6 +1336,8 @@ def get_trainer(trainer_type, config):
         return StandardTrainer(config)
     elif trainer_type == "coteaching":
         return CoTeachingTrainer(config)
+    elif trainer_type == "coteaching_asym":
+        return CoTeachingAsymTrainer(config)
     elif trainer_type == "stochastic_coteaching":
         return StochasticCoTeachingTrainer(config)
     elif trainer_type == "ensemble":
