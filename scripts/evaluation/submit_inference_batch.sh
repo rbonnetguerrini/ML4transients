@@ -130,8 +130,8 @@ cat > "$TEMP_SCRIPT" << 'EOF'
 #SBATCH --time=04:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=gpu_h100
-#SBATCH --gres=gpu:h100:1
+#SBATCH --partition=gpu_v100
+#SBATCH --gres=gpu:v100:1
 
 # Get arguments
 DATA_PATH="$1"

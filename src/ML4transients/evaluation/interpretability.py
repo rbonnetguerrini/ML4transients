@@ -377,8 +377,8 @@ class UMAPInterpreter:
             try:
                 with torch.no_grad():
                     for batch_idx, batch in enumerate(data_loader):
-                        if batch_idx % 10 == 0:  # Progress every 10 batches
-                            print(f"Processing batch {batch_idx+1}/{total_batches}")
+                        if batch_idx % 50 == 0:  # Progress every 50 batches
+                            print(f"Processing batch {batch_idx+1}/{total_batches} ({100*batch_idx/total_batches:.1f}%)")
                         
                         images, *_ = batch
                         images = images.to(self.device)

@@ -7,7 +7,7 @@ cutout:
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_filtered
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_test
 lightcurves:
   patches: []
   cache_size: 5

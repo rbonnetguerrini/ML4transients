@@ -525,10 +525,12 @@ def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
             print("Defaulting to single channel ['diff']")
     
     # Create inference dataset for the specified visits
+    # IMPORTANT: Use only the model's cutout_types here, NOT extended list
+    # The model can only process the channels it was trained on
     eval_dataset = PytorchDataset.create_inference_dataset(
         dataset_loader, 
         visits=visits,
-        cutout_types=cutout_types
+        cutout_types=cutout_types  # Use model's cutout types only
     )
     
     # Filter dataset by object IDs if specified

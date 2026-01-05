@@ -14,22 +14,23 @@ training:
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570_nES"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570"
   num_models: 50                      
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570_nES"
-  experiment_name: "multichannel_ensemble_50_89570_nES"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_ensemble_50_89570"
+  experiment_name: "multichannel_ensemble_50_89570"
   log_interval: 100
-  
+
   early_stopping:
-    enabled: false
-    monitor: "fnr"                      # Monitor False Negative Rate instead of loss
-    mode: "min"                         # Want to minimize FNR
+    enabled: true
+    monitor: "fnr"                      
+    mode: "min"                         
     patience: 80
-    min_delta: 0.001 
-    
+    min_delta: 0.001
+    start_epoch: 70    
+
   model_params:
     input_shape: [30, 30, 2]            
     num_classes: 2

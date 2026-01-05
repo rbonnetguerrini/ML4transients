@@ -31,10 +31,11 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "fnr"                      # Monitor False Negative Rate
-    mode: "min"                         # Want to minimize FNR
+    monitor: "fnr"                      
+    mode: "min"                         
     patience: 80
-    min_delta: 0.001   
+    min_delta: 0.001
+    start_epoch: 70    
     
   model_params:
     input_shape: [30, 30, 2]            
