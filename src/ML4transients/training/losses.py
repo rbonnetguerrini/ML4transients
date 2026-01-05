@@ -306,6 +306,8 @@ def get_loss_function(loss_type, **kwargs):
         return StandardLoss()
     elif loss_type == "coteaching":
         return CoTeachingLoss(**kwargs)
+    elif loss_type == "coteaching_asym":
+        return CoTeachingAsymLoss(**kwargs)
     elif loss_type == "stochastic_coteaching":
         return StochasticCoTeachingLoss(**kwargs)
     else:

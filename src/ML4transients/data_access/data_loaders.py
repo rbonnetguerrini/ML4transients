@@ -434,7 +434,7 @@ class FeatureLoader:
 class InferenceLoader:
     """Handles inference results loading and running inference on datasets."""
     
-    def __init__(self, data_path: Path, visit: int, weights_path: str = None):
+    def __init__(self, data_path: Path, visit: int, weights_path: str = None, mc_dropout: bool = False, mc_samples: int = 50):
         """
         Initialize InferenceLoader.
         
@@ -442,16 +442,26 @@ class InferenceLoader:
             data_path: Path to data directory
             visit: Visit number
             weights_path: Path to model weights (optional, for running inference)
+            mc_dropout: Whether MC Dropout is enabled (affects hash generation)
+            mc_samples: Number of MC Dropout samples (affects hash generation)
         """
         self.data_path = Path(data_path)
         self.visit = visit
         self.weights_path = weights_path
+        self.mc_dropout = mc_dropout
+        self.mc_samples = mc_samples
         
         # Generate model hash from weights path if provided
+        # Include MC Dropout config in hash for unique identification
         self.model_hash = None
         if weights_path:
             import hashlib
-            self.model_hash = hashlib.md5(str(weights_path).encode()).hexdigest()[:8]
+            # Base hash from weights path (for backward compatibility)
+            hash_string = str(weights_path)
+            # Append MC Dropout config to hash string if enabled
+            if mc_dropout:
+                hash_string += f"_mcd{mc_samples}"
+            self.model_hash = hashlib.md5(hash_string.encode()).hexdigest()[:8]
         
         # Set up inference file path
         self.inference_dir = self.data_path / "inference"
@@ -469,7 +479,7 @@ class InferenceLoader:
         self._uncertainties = None
         self._ids = None
 
-    def run_inference(self, dataset_loader, trainer=None, force=False):
+    def run_inference(self, dataset_loader, trainer=None, force=False, mc_dropout=False, mc_samples=50):
         """
         Run inference for this visit and save results.
         
@@ -477,6 +487,8 @@ class InferenceLoader:
             dataset_loader: DatasetLoader instance
             trainer: Pre-loaded trainer (optional, for efficiency)
             force: Force re-run even if results exist
+            mc_dropout: Enable Monte Carlo Dropout for uncertainty estimation
+            mc_samples: Number of MC Dropout forward passes
         """
         import torch
         
@@ -540,7 +552,9 @@ class InferenceLoader:
             dia_source_ids=dia_source_ids,
             visit=self.visit,
             model_hash=self.model_hash,
-            return_probabilities=None  # Auto-detect based on model type
+            return_probabilities=None,  # Auto-detect based on model type
+            mc_dropout=mc_dropout,  # Pass MC Dropout flag
+            mc_samples=mc_samples   # Pass number of MC samples
         )
         
         if results:

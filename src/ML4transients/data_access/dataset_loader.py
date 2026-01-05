@@ -180,7 +180,7 @@ class DatasetLoader:
         """
         return self.global_index.get(dia_source_id)
 
-    def get_inference_loader(self, visit: int, weights_path: str = None, model_hash: str = None, data_path: Path = None):
+    def get_inference_loader(self, visit: int, weights_path: str = None, model_hash: str = None, data_path: Path = None, mc_dropout: bool = False, mc_samples: int = 50):
         """
         Get or create an InferenceLoader for the given visit.
         Can work with either weights_path (for new inference) or model_hash (for existing results).
@@ -190,6 +190,8 @@ class DatasetLoader:
             weights_path: Path to trained model weights directory (for new inference)
             model_hash: Model hash from existing inference filename (for loading existing results)
             data_path: Specific data path to use (defaults to first data path)
+            mc_dropout: Enable Monte Carlo Dropout (affects hash generation for new inference)
+            mc_samples: Number of MC Dropout samples (affects hash generation for new inference)
             
         Returns:
             InferenceLoader: Configured inference loader for the visit
@@ -215,7 +217,8 @@ class DatasetLoader:
                 
                 if cache_key not in self._inference_loaders:
                     # Create InferenceLoader without weights_path since we're loading existing results
-                    inference_loader = InferenceLoader(data_path, visit, weights_path=None)
+                    # MC dropout params don't matter when loading existing results
+                    inference_loader = InferenceLoader(data_path, visit, weights_path=None, mc_dropout=False, mc_samples=50)
                     
                     # Manually set the inference file based on the registry info
                     inference_info = self._inference_registry[data_path_str][str(visit)][model_hash]
@@ -236,18 +239,26 @@ class DatasetLoader:
         
         # Case 2: Creating new inference or loading by weights_path
         else:
-            # Use weights path and visit as key to cache inference loaders
-            cache_key = f"{data_path}_{visit}_{weights_path}"
+            # Use weights path, visit, and MC dropout config as key to cache inference loaders
+            mc_suffix = f"_mcd{mc_samples}" if mc_dropout else ""
+            cache_key = f"{data_path}_{visit}_{weights_path}{mc_suffix}"
             
             if cache_key not in self._inference_loaders:
-                self._inference_loaders[cache_key] = InferenceLoader(data_path, visit, weights_path)
+                self._inference_loaders[cache_key] = InferenceLoader(data_path, visit, weights_path, mc_dropout=mc_dropout, mc_samples=mc_samples)
             
             return self._inference_loaders[cache_key]
 
-    def run_inference_all_visits(self, weights_path: str, data_path: Path = None, force=False):
+    def run_inference_all_visits(self, weights_path: str, data_path: Path = None, force=False, mc_dropout=False, mc_samples=50):
         """
         Run inference on all visits sequentially for memory efficiency.
         Uses cached model to avoid reloading.
+        
+        Args:
+            weights_path: Path to model weights
+            data_path: Optional data path override
+            force: Force re-run even if results exist
+            mc_dropout: Enable Monte Carlo Dropout for uncertainty estimation
+            mc_samples: Number of MC Dropout forward passes
         """
         if not data_path:
             data_path = self.data_paths[0]
@@ -265,7 +276,8 @@ class DatasetLoader:
             print(f"\n--- Processing visit {visit} ({i+1}/{len(self.visits)}) ---")
             
             try:
-                inference_loader = self.get_inference_loader(visit, weights_path=weights_path, data_path=data_path)
+                inference_loader = self.get_inference_loader(visit, weights_path=weights_path, data_path=data_path,
+                                                            mc_dropout=mc_dropout, mc_samples=mc_samples)
                 
                 if inference_loader.has_inference_results() and not force:
                     print(f"Inference results already exist for visit {visit}")
@@ -273,7 +285,8 @@ class DatasetLoader:
                     continue
                 
                 # Pass the cached trainer to avoid reloading
-                inference_loader.run_inference(self, trainer=trainer, force=force)
+                inference_loader.run_inference(self, trainer=trainer, force=force, 
+                                             mc_dropout=mc_dropout, mc_samples=mc_samples)
                 results[visit] = inference_loader
                 print(f" Completed inference for visit {visit}")
                 
@@ -299,13 +312,15 @@ class DatasetLoader:
         print(f"\nCompleted inference for {len(results)}/{len(self.visits)} visits")
         return results
 
-    def check_or_run_inference(self, weights_path: str, data_path: Path = None):
+    def check_or_run_inference(self, weights_path: str, data_path: Path = None, mc_dropout=False, mc_samples=50):
         """
         Check for existing inference results across all visits and optionally run inference.
         
         Args:
             weights_path: Path to trained model weights directory
             data_path: Specific data path to use (defaults to first data path)
+            mc_dropout: Enable Monte Carlo Dropout for uncertainty estimation
+            mc_samples: Number of MC Dropout forward passes
             
         Returns:
             Dict[int, InferenceLoader]: Inference loaders with results
@@ -318,7 +333,8 @@ class DatasetLoader:
         existing_loaders = {}
         
         for visit in self.visits:
-            inference_loader = self.get_inference_loader(visit, weights_path=weights_path, data_path=data_path)
+            inference_loader = self.get_inference_loader(visit, weights_path=weights_path, data_path=data_path,
+                                                        mc_dropout=mc_dropout, mc_samples=mc_samples)
             if inference_loader.has_inference_results():
                 existing_loaders[visit] = inference_loader
             else:
@@ -333,7 +349,8 @@ class DatasetLoader:
         
         if response in ['', 'y', 'yes']:
             try:
-                all_results = self.run_inference_all_visits(weights_path, data_path)
+                all_results = self.run_inference_all_visits(weights_path, data_path,
+                                                           mc_dropout=mc_dropout, mc_samples=mc_samples)
                 return all_results
             except Exception as e:
                 print(f"Error running inference: {e}")
@@ -594,6 +611,25 @@ class DatasetLoader:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             config = load_config(f"{weights_path}/config.yaml")
             trainer_type = config["training"]["trainer_type"]
+            
+            # Expand base_filters and base_dropout if present (for new architecture)
+            model_params = config["training"].get("model_params", {})
+            if "base_filters" in model_params:
+                F = model_params["base_filters"]
+                model_params["filters_1"] = F
+                model_params["filters_2"] = 2 * F
+                model_params["filters_3"] = 4 * F
+                print(f"[Inference] Expanded base_filters={F} to filters: ({F}, {2*F}, {4*F})")
+                del model_params["base_filters"]
+            
+            if "base_dropout" in model_params:
+                DR = model_params["base_dropout"]
+                model_params["dropout_1"] = 0.5 * DR
+                model_params["dropout_2"] = 0.5 * DR
+                model_params["dropout_3"] = DR
+                print(f"[Inference] Expanded base_dropout={DR:.3f} to dropouts: ({0.5*DR:.3f}, {0.5*DR:.3f}, {DR:.3f})")
+                del model_params["base_dropout"]
+            
             trainer = get_trainer(trainer_type, config["training"])
             
             # Load models based on trainer type (same logic as inference.py)
@@ -617,7 +653,9 @@ class DatasetLoader:
                     trainer.models[i].load_state_dict(state_dict)
                     trainer.models[i].to(device)
                     trainer.models[i].eval()
-            elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
+            elif (trainer_type == "coteaching" or 
+                  trainer_type == "coteaching_asym" or 
+                  trainer_type == "stochastic_coteaching"):
                 # Load both models for co-teaching
                 state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
                 state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
@@ -894,14 +932,24 @@ class DatasetLoader:
     
     @property
     def lightcurves(self):
-        """Access lightcurve loaders by path."""
+        """Access lightcurve loaders by path.
+        
+        Returns:
+            LightCurveLoader: If only one data path exists
+            Dict[str, LightCurveLoader]: If multiple data paths exist (keyed by path string)
+            
+        Note:
+            When multiple loaders exist, you can:
+            - Access specific loader: dataset.lightcurves[path]
+            - Get first loader: list(dataset.lightcurves.values())[0]
+            - Use get_primary_lightcurve_loader() for the main loader
+        """
         self._ensure_discovery()
         # If only one path, return the loader directly for convenience
         if len(self._lightcurve_loaders) == 1:
             return list(self._lightcurve_loaders.values())[0]
         return self._lightcurve_loaders
     
-    @property
     def inference(self) -> Dict[str, InferenceLoader]:
         """Access inference loaders by cache key."""
         return self._inference_loaders

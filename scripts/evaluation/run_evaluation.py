@@ -61,6 +61,10 @@ def parse_args():
                        help="Path to save the fitted UMAP after interpretability analysis")
     parser.add_argument("--show-all-cutouts", action="store_true",
                        help="Show all cutout types (diff, coadd, etc.) in UMAP hover tooltips (default: show only first channel)")
+    parser.add_argument("--mc-dropout", action="store_true",
+                       help="Enable Monte Carlo Dropout for uncertainty estimation (standard models only)")
+    parser.add_argument("--mc-samples", type=int, default=50,
+                       help="Number of MC Dropout forward passes for uncertainty estimation (default: 50)")
     
     return parser.parse_args()
 
@@ -728,6 +732,13 @@ def main():
     print(f"Run inference: {args.run_inference}", flush=True)
     print(f"Interpretability: {args.interpretability}", flush=True)
     
+    # Print MC Dropout configuration if enabled
+    if args.mc_dropout:
+        print(f"MC Dropout: ENABLED", flush=True)
+        print(f"  - MC samples: {args.mc_samples}", flush=True)
+    else:
+        print(f"MC Dropout: Disabled", flush=True)
+    
     if args.interpretability:
         print(f"  - Optimize UMAP: {args.optimize_umap}", flush=True)
         print(f"  - Enable clustering: {args.enable_clustering}", flush=True)
@@ -808,7 +819,8 @@ def main():
             step_start = time.time()
             # Run inference for all originally requested visits
             inference_results = dataset_loader.run_inference_all_visits(
-                args.weights_path, force=False
+                args.weights_path, force=False,
+                mc_dropout=args.mc_dropout, mc_samples=args.mc_samples
             )
             print(f"Inference completed in {time.time() - step_start:.2f}s")
             

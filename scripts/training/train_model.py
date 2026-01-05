@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 import copy
+import numpy as np
 
 # Add the ML4transients package to path
 sys.path.append('/sps/lsst/users/rbonnetguerrini/ML4transients/src')

@@ -29,6 +29,10 @@ def main():
     parser.add_argument('--force', action='store_true', help='Force re-run inference even if results exist')
     parser.add_argument('--save-summary', action='store_true', help='Save inference summary to file')
     parser.add_argument('--visits', type=str, help='Comma-separated list of visit numbers to process')
+    parser.add_argument('--mc-dropout', action='store_true', 
+                       help='Enable Monte Carlo Dropout for uncertainty estimation')
+    parser.add_argument('--mc-samples', type=int, default=50,
+                       help='Number of MC Dropout forward passes (default: 50)')
     
     args = parser.parse_args()
     
@@ -80,7 +84,8 @@ def main():
                 print(f"  Inference results already exist for visit {visit}, skipping")
                 continue
             
-            inference_loader.run_inference(dataset_loader, trainer=trainer, force=args.force)
+            inference_loader.run_inference(dataset_loader, trainer=trainer, force=args.force,
+                                         mc_dropout=args.mc_dropout, mc_samples=args.mc_samples)
             print(f"  Completed inference for visit {visit}")
         
         print("\nAll specified visits processed!")
@@ -89,9 +94,15 @@ def main():
         # Run inference on all visits
         print("Running inference on all visits...")
         if args.force:
-            inference_results = dataset_loader.run_inference_all_visits(weights_path, force=True)
+            inference_results = dataset_loader.run_inference_all_visits(
+                weights_path, force=True,
+                mc_dropout=args.mc_dropout, mc_samples=args.mc_samples
+            )
         else:
-            inference_results = dataset_loader.check_or_run_inference(weights_path)
+            inference_results = dataset_loader.check_or_run_inference(
+                weights_path,
+                mc_dropout=args.mc_dropout, mc_samples=args.mc_samples
+            )
         
         if inference_results:
             print("Inference completed successfully!")

@@ -6,7 +6,7 @@ from sklearn.metrics import accuracy_score, confusion_matrix
 from ML4transients.training import get_trainer
 from ML4transients.utils import load_config
 
-def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None, model_hash=None, return_probabilities=None):
+def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, compute_metrics=True, device=None, save_path=None, dia_source_ids=None, visit=None, model_hash=None, return_probabilities=None, mc_dropout=False, mc_samples=50):
     """
     Run inference using a trained model on a dataset with minimal memory usage.
 
@@ -22,6 +22,8 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
         model_hash: Optional model hash for saving in results metadata.
         return_probabilities (bool): If True, also returns prediction probabilities and uncertainty.
                                    If None, auto-detects based on model type.
+        mc_dropout (bool): If True, enables Monte Carlo Dropout for standard models.
+        mc_samples (int): Number of forward passes for MC Dropout (default: 50).
 
     Returns:
         Optionally returns predictions, true labels, accuracy, and confusion matrix.
@@ -53,7 +55,9 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                 trainer.models[i].load_state_dict(state_dict)
                 trainer.models[i].to(device)
                 trainer.models[i].eval()
-        elif trainer_type == "coteaching":
+        elif (trainer_type == "coteaching" or 
+                trainer_type == "coteaching_asym" or 
+                trainer_type == "stochastic_coteaching"):
             # Load both models for co-teaching
             state_dict1 = torch.load(f"{weights_path}/model1_best.pth", map_location=device)
             state_dict2 = torch.load(f"{weights_path}/model2_best.pth", map_location=device)
@@ -76,7 +80,13 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
     if return_probabilities is None:
         if hasattr(trainer, 'models') or hasattr(trainer, 'model1'):
             return_probabilities = True  # Ensemble or CoTeaching - extract uncertainties
-            print("Auto-detected ensemble/coteaching model - will extract probabilities and uncertainties")
+            if mc_dropout and hasattr(trainer, 'model1'):
+                print(f"Auto-detected CoTeaching model with MC Dropout ({mc_samples} samples per model) - will extract probabilities and uncertainties")
+            else:
+                print("Auto-detected ensemble/coteaching model - will extract probabilities and uncertainties")
+        elif mc_dropout:
+            return_probabilities = True  # MC Dropout enabled - extract uncertainties
+            print(f"MC Dropout enabled with {mc_samples} samples - will extract probabilities and uncertainties")
         else:
             return_probabilities = False  # Standard model
 
@@ -134,25 +144,79 @@ def infer(inference_loader, trainer=None, weights_path=None, return_preds=True, 
                     uncert = uncertainty.cpu().numpy()
                     
                 elif hasattr(trainer, 'model1'):  # CoTeaching
-                    outputs1 = trainer.model1(images)
-                    outputs2 = trainer.model2(images)
-                    probs1 = torch.sigmoid(outputs1.squeeze())
-                    probs2 = torch.sigmoid(outputs2.squeeze())
-                    
-                    # Average the two models
-                    mean_probs = (probs1 + probs2) / 2
-                    uncertainty = torch.abs(probs1 - probs2)  # Disagreement as uncertainty
-                    
-                    preds = (mean_probs > 0.5).float().cpu().numpy()
-                    probs = mean_probs.cpu().numpy()
-                    uncert = uncertainty.cpu().numpy()
+                    if mc_dropout and mc_samples > 1:
+                        # MC Dropout for CoTeaching: N=2 models, M=mc_samples per model
+                        # Combined uncertainty from both model diversity and dropout sampling
+                        trainer.model1.enable_mc_dropout()
+                        trainer.model2.enable_mc_dropout()
+                        
+                        all_predictions = []
+                        for _ in range(mc_samples):
+                            # Forward pass through both models with different dropout masks
+                            outputs1 = trainer.model1(images)
+                            outputs2 = trainer.model2(images)
+                            probs1 = torch.sigmoid(outputs1.squeeze())
+                            probs2 = torch.sigmoid(outputs2.squeeze())
+                            # Collect predictions from both models
+                            all_predictions.append(probs1)
+                            all_predictions.append(probs2)
+                        
+                        # Stack all N*M predictions (2 models × mc_samples)
+                        all_probs = torch.stack(all_predictions)  # [2*mc_samples, batch_size]
+                        mean_probs = all_probs.mean(dim=0)
+                        uncertainty = all_probs.std(dim=0)  # Variance across all samples
+                        
+                        preds = (mean_probs > 0.5).float().cpu().numpy()
+                        probs = mean_probs.cpu().numpy()
+                        uncert = uncertainty.cpu().numpy()
+                        
+                        # Restore normal eval mode
+                        trainer.model1.disable_mc_dropout()
+                        trainer.model2.disable_mc_dropout()
+                    else:
+                        # Standard CoTeaching without MC Dropout
+                        outputs1 = trainer.model1(images)
+                        outputs2 = trainer.model2(images)
+                        probs1 = torch.sigmoid(outputs1.squeeze())
+                        probs2 = torch.sigmoid(outputs2.squeeze())
+                        
+                        # Average the two models
+                        mean_probs = (probs1 + probs2) / 2
+                        uncertainty = torch.abs(probs1 - probs2)  # Disagreement as uncertainty
+                        
+                        preds = (mean_probs > 0.5).float().cpu().numpy()
+                        probs = mean_probs.cpu().numpy()
+                        uncert = uncertainty.cpu().numpy()
                     
                 else:  # Standard
-                    outputs = trainer.model(images)
-                    probs = torch.sigmoid(outputs.squeeze())
-                    preds = (probs > 0.5).float().cpu().numpy()
-                    probs = probs.cpu().numpy()
-                    uncert = np.zeros_like(probs)  # No uncertainty for single model
+                    if mc_dropout and mc_samples > 1:
+                        # Monte Carlo Dropout: Multiple forward passes with dropout enabled
+                        trainer.model.enable_mc_dropout()
+                        
+                        mc_predictions = []
+                        for _ in range(mc_samples):
+                            outputs = trainer.model(images)
+                            mc_probs = torch.sigmoid(outputs.squeeze())
+                            mc_predictions.append(mc_probs)
+                        
+                        # Stack and compute statistics
+                        mc_probs_stacked = torch.stack(mc_predictions)  # [mc_samples, batch_size]
+                        mean_probs = mc_probs_stacked.mean(dim=0)
+                        uncertainty = mc_probs_stacked.std(dim=0)  # Standard deviation as uncertainty
+                        
+                        preds = (mean_probs > 0.5).float().cpu().numpy()
+                        probs = mean_probs.cpu().numpy()
+                        uncert = uncertainty.cpu().numpy()
+                        
+                        # Restore normal eval mode
+                        trainer.model.disable_mc_dropout()
+                    else:
+                        # Standard single forward pass
+                        outputs = trainer.model(images)
+                        probs = torch.sigmoid(outputs.squeeze())
+                        preds = (probs > 0.5).float().cpu().numpy()
+                        probs = probs.cpu().numpy()
+                        uncert = np.zeros_like(probs)  # No uncertainty for single model
                 
                 labels = labels.cpu().numpy()
 

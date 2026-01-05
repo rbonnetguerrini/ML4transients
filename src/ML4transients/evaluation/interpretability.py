@@ -131,6 +131,25 @@ class UMAPInterpreter:
         # Load model
         config = load_config(self.model_path / "config.yaml")
         trainer_type = config["training"]["trainer_type"]
+        
+        # Expand base_filters and base_dropout if present (for new architecture)
+        model_params = config["training"].get("model_params", {})
+        if "base_filters" in model_params:
+            F = model_params["base_filters"]
+            model_params["filters_1"] = F
+            model_params["filters_2"] = 2 * F
+            model_params["filters_3"] = 4 * F
+            print(f"[Interpretability] Expanded base_filters={F} to filters: ({F}, {2*F}, {4*F})")
+            del model_params["base_filters"]
+        
+        if "base_dropout" in model_params:
+            DR = model_params["base_dropout"]
+            model_params["dropout_1"] = 0.5 * DR
+            model_params["dropout_2"] = 0.5 * DR
+            model_params["dropout_3"] = DR
+            print(f"[Interpretability] Expanded base_dropout={DR:.3f} to dropouts: ({0.5*DR:.3f}, {0.5*DR:.3f}, {DR:.3f})")
+            del model_params["base_dropout"]
+        
         self.trainer = get_trainer(trainer_type, config["training"])
         
         # Load models based on trainer type
@@ -153,7 +172,9 @@ class UMAPInterpreter:
                 self.trainer.models[i].to(self.device)
                 self.trainer.models[i].eval()
 
-        elif (trainer_type == "coteaching" or trainer_type == "stochastic_coteaching"):
+        elif (trainer_type == "coteaching" or 
+                trainer_type == "coteaching_asym" or 
+                trainer_type == "stochastic_coteaching"):
             print("Loading co-teaching model...")
             state_dict1 = torch.load(self.model_path / "model1_best.pth", map_location=self.device)
             state_dict2 = torch.load(self.model_path / "model2_best.pth", map_location=self.device)

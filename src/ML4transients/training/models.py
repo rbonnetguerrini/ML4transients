@@ -77,6 +77,27 @@ class CustomCNN(nn.Module):
         self.dropout_fc = nn.Dropout(dropout_3)
         self.fc2 = nn.Linear(units, 1)  # Single output for binary classification
         
+    def enable_mc_dropout(self):
+        """
+        Enable Monte Carlo Dropout for uncertainty estimation during inference.
+        
+        This method keeps dropout layers active during inference while maintaining
+        batch normalization layers in eval mode. This allows for uncertainty 
+        quantification by running multiple forward passes with different dropout masks.
+        
+        Note: The model must have been trained with dropout for MC Dropout to be effective.
+        """
+        self.eval()  # First set everything to eval mode
+        for m in self.modules():
+            if isinstance(m, (nn.Dropout, nn.Dropout2d)):
+                m.train()  # Re-enable only dropout layers
+    
+    def disable_mc_dropout(self):
+        """
+        Restore normal evaluation mode (disable all dropout).
+        """
+        self.eval()
+    
     def forward(self, x):
         # Apply all convolutional blocks
         for conv_block in self.conv_blocks:
