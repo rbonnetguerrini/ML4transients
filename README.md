@@ -78,7 +78,17 @@ python scripts/injection/gen_injection_catalogue.py --config configs/injection/i
 scripts/data_preparation/submit_collection.sh configs/data_preparation/configs_cutout.yaml 100
 ``` 
 
-- IMPORTANT : Once the cutouts and features are made, if you created them using the automatic job submitter, you should run `python scripts/data_preparation/create_global_index_post_batch.py configs/data_preparation/configs_cutout.yaml` so that you create an index that list in which visit is each diaSourceId.
+- IMPORTANT : Once the cutouts and features are made, if you created them using the automatic job submitter, you should run 
+
+After all jobs complete, run these post-processing steps:
+  1. Create global cutout index:
+   ```sh 
+     python scripts/data_preparation/create_global_index_post_batch.py configs/data_preparation/configs_cutout.yaml
+   ```
+  2. Extract lightcurves (single job to avoid conflicts):
+   ```sh 
+     sbatch scripts/data_preparation/submit_lightcurves.sh configs/data_preparation/configs_cutout.yaml
+   ````
 
 ## Lightcurve Extraction
 The lightcurve extraction module efficiently organizes and indexes time-series data for all detected objects. It groups detections by sky patch, saving each patch as an HDF5 file, and builds cross-reference indices for both `diaObjectId` and `diaSourceId`. This enables fast lookup and retrieval of full lightcurves or all sources belonging to a transient candidate. To extract and index lightcurves, use:

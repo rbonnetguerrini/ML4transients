@@ -6,7 +6,7 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_minmax/lightcurves"
 SNR_FILTERED_DIR="${INPUT_DIR}/snr_filtered"
 EXTENDEDNESS_FILTERED_DIR="${INPUT_DIR}/extendedness_filtered"
 REPO="/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml"

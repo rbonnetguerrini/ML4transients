@@ -2,15 +2,17 @@ repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
 collection: run/ssp_ud_cosmos/step5_new
 injection: false
 cutout:
+  #normalization: minmax
   size: 30
   coadd_science: true
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_test
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd
 lightcurves:
   patches: []
   cache_size: 5
+extract_lightcurves: false  # Set to false for batch processing to avoid file conflicts
 skip_global_index: true
 skip_lightcurve_index: true
 run_info:

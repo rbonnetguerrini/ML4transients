@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cutout_batches
 #SBATCH --time=04:00:00
+#SBATCH --partition=hpc
 #SBATCH --mem=24G
 #SBATCH --cpus-per-task=1
 #SBATCH --output=logs/data_preparation/batch_%A_%a.out

@@ -440,7 +440,6 @@ class UMAPInterpreter:
             self.sample_indices = np.arange(len(all_features))
                 
         # Force garbage collection after feature extraction
-        import gc
         gc.collect()
         
         return self.features
@@ -1005,8 +1004,8 @@ class UMAPInterpreter:
         processed_count = 0
         
         for batch_idx, batch in enumerate(data_loader):
-            if batch_idx % 20 == 0 and processed_count > 0:  # Reduce print frequency
-                print(f"Processed {processed_count}/{len(sample_indices)} images...")
+            if batch_idx % 100 == 0 and processed_count > 0:  # Reduce print frequency to every 100 batches
+                print(f"Processed {processed_count}/{len(sample_indices)} images ({100*processed_count/len(sample_indices):.1f}%)...")
             
             batch_images, *_ = batch
             batch_size = batch_images.shape[0]

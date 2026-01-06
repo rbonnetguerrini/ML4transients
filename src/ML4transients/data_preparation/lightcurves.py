@@ -14,6 +14,7 @@ import h5py
 from typing import Dict, List, Optional
 from pathlib import Path
 import time
+from datetime import timedelta
 
 def extract_and_save_lightcurves(config: dict):
     """
@@ -54,12 +55,44 @@ def extract_and_save_lightcurves(config: dict):
     target_patches = config.get("patches", list(patches_refs.keys()))
     processed_count = 0
     failed_patches = []
+    total_patches = len(target_patches)
+    total_lightcurve_points = 0
+    total_unique_objects = 0
+    start_time = time.time()
 
-    for i, patch_key in enumerate(target_patches):
+    print(f"\n{'='*70}")
+    print(f"LIGHTCURVE EXTRACTION")
+    print(f"Total patches to process: {total_patches}")
+    print(f"Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*70}\n")
+    sys.stdout.flush()
+
+    for i, patch_key in enumerate(target_patches, 1):
         if patch_key not in patches_refs:
             print(f"Warning: Patch {patch_key} not found in data")
             continue
-        print(f"Processing patch {patch_key} ({i+1}/{len(target_patches)})...")
+        
+        patch_start_time = time.time()
+        
+        # Calculate progress statistics
+        elapsed_time = time.time() - start_time
+        patches_completed = i - 1
+        patches_remaining = total_patches - i
+        
+        if patches_completed > 0:
+            avg_time_per_patch = elapsed_time / patches_completed
+            estimated_remaining_time = avg_time_per_patch * patches_remaining
+            eta_str = str(timedelta(seconds=int(estimated_remaining_time)))
+        else:
+            eta_str = "Calculating..."
+        
+        print(f"\n{'='*70}")
+        print(f"PATCH {i}/{total_patches}: {patch_key}")
+        print(f"Progress: {i/total_patches*100:.1f}% | Elapsed: {str(timedelta(seconds=int(elapsed_time)))} | ETA: {eta_str}")
+        if total_lightcurve_points > 0:
+            print(f"Lightcurve points so far: {total_lightcurve_points:,} | Objects: {total_unique_objects:,}")
+        print(f"{'='*70}")
+        sys.stdout.flush()
         all_lightcurves = []
         for ref in patches_refs[patch_key]:
             try:
@@ -75,15 +108,39 @@ def extract_and_save_lightcurves(config: dict):
             combined_lc = pd.concat(all_lightcurves, ignore_index=True)
             output_file = os.path.join(path_lightcurves, f"patch_{patch_key}.h5")
             save_lightcurves_hdf5(combined_lc, output_file)
-            print(f"  Saved patch {patch_key}: {len(combined_lc)} lightcurve points, "
-                  f"{combined_lc['diaObjectId'].nunique()} unique objects")
+            
+            patch_time = time.time() - patch_start_time
+            lc_points = len(combined_lc)
+            unique_objs = combined_lc['diaObjectId'].nunique()
+            
+            total_lightcurve_points += lc_points
+            total_unique_objects += unique_objs
+            
+            print(f"Patch {patch_key} completed in {timedelta(seconds=int(patch_time))}")
+            print(f"  Lightcurve points: {lc_points:,} | Unique objects: {unique_objs:,}")
+            sys.stdout.flush()
             processed_count += 1
         else:
             print(f"  No data found for patch {patch_key}")
             failed_patches.append(patch_key)
-    print(f"\nCompleted: {processed_count}/{len(target_patches)} patches processed successfully")
+    
+    # Print final summary
+    total_time = time.time() - start_time
+    print(f"\n{'='*70}")
+    print(f"LIGHTCURVE EXTRACTION SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total patches processed: {processed_count}/{total_patches}")
+    print(f"Total lightcurve points: {total_lightcurve_points:,}")
+    print(f"Total unique objects: {total_unique_objects:,}")
+    if processed_count > 0:
+        print(f"Average points per patch: {total_lightcurve_points/processed_count:.1f}")
+        print(f"Average time per patch: {timedelta(seconds=int(total_time/processed_count))}")
+    print(f"Total time: {str(timedelta(seconds=int(total_time)))}")
     if failed_patches:
-        print(f"Failed patches: {failed_patches}")
+        print(f"Failed patches ({len(failed_patches)}): {failed_patches[:10]}..." if len(failed_patches) > 10 else f"Failed patches: {failed_patches}")
+    print(f"Finished at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*70}")
+    sys.stdout.flush()
 
 def save_lightcurves_hdf5(lightcurves_df: pd.DataFrame, path: str):
     """
@@ -183,7 +240,7 @@ def create_diasource_patch_index(config: dict) -> pd.DataFrame:
     butler = Butler(repo, collections=collection)
     registry = butler.registry
 
-    print("Creating diaSourceId→patch index...")
+    print("Creating diaSourceId-->patch index...")
     datasetRefs = list(registry.queryDatasets(
         datasetType='goodSeeingDiff_assocDiaSrcTable',
         collections=collection

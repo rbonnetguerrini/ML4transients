@@ -32,7 +32,6 @@ from ML4transients.evaluation.lightcurve_visualization import (
 )
 
 
-
 def get_lightcurve_and_cutouts_by_band(dataset_loader, dia_object_id, weights_path=None, model_hash=None):
     """
     Load lightcurve data and cutouts organized by band.
@@ -259,6 +258,103 @@ def create_band_row_visualization(band, band_info, figsize_per_cutout=1.2):
     return fig
 
 
+def create_individual_diff_cutouts(band_data, figsize=(6, 3)):
+    """
+    Create visualization of all individual diff cutouts organized by band.
+    
+    Args:
+        band_data: Dictionary of band -> band_info
+        figsize: Figure size (width, height)
+        
+    Returns:
+        matplotlib Figure or None
+    """
+    # Calculate total number of diff cutouts across all bands
+    total_cutouts = sum(len(band_info['diff_cutouts']) for band_info in band_data.values())
+    
+    if total_cutouts == 0:
+        return None
+    
+    # Sort bands for consistent ordering
+    sorted_bands = sorted(band_data.keys())
+    
+    # Determine grid layout - aim for reasonable cutout size
+    # Target width matches lightcurve (figsize[0])
+    # Cutout size adapts to total count
+    cutouts_per_row = min(12, max(6, total_cutouts // 2))  # 6-12 cutouts per row
+    
+    # Calculate number of rows needed
+    num_rows = 0
+    for band in sorted_bands:
+        n_cutouts = len(band_data[band]['diff_cutouts'])
+        if n_cutouts > 0:
+            num_rows += (n_cutouts + cutouts_per_row - 1) // cutouts_per_row
+    
+    if num_rows == 0:
+        return None
+    
+    # Create figure
+    fig_height = max(2, num_rows * 0.8)  # Compact vertical spacing
+    fig = plt.figure(figsize=(figsize[0], fig_height))
+    fig.patch.set_facecolor('#2F2F2F')
+    
+    # Band-specific colors for labels
+    band_colors = {
+        'u': '#56b4e9',
+        'g': '#009e73',
+        'r': '#e69f00',
+        'i': '#cc79a7',
+        'z': '#d55e00',
+        'y': '#f0e442'
+    }
+    
+    # Create grid of subplots
+    gs = GridSpec(num_rows, cutouts_per_row, figure=fig, hspace=0.1, wspace=0.1)
+    
+    current_row = 0
+    
+    # Process each band
+    for band in sorted_bands:
+        band_info = band_data[band]
+        diff_cutouts = band_info['diff_cutouts']
+        obs_df = band_info['observations']
+        
+        if len(diff_cutouts) == 0:
+            continue
+        
+        # Sort cutouts by time if available
+        cutout_indices = list(range(len(diff_cutouts)))
+        if isinstance(obs_df, pd.DataFrame) and 'time' in obs_df.columns and len(obs_df) == len(diff_cutouts):
+            cutout_indices = obs_df.sort_values('time').index.tolist()
+        
+        # Display cutouts for this band
+        for i, idx in enumerate(cutout_indices):
+            col = i % cutouts_per_row
+            if col == 0 and i > 0:
+                current_row += 1
+            
+            ax = fig.add_subplot(gs[current_row, col])
+            
+            cutout = diff_cutouts[idx]
+            ax.imshow(cutout, cmap='gray', origin='lower')
+            ax.axis('off')
+            
+            # Add band label on first cutout of each band
+            if i == 0:
+                color = band_colors.get(band, '#5b75cd')
+                ax.text(0.05, 0.95, f'{band}', transform=ax.transAxes,
+                       color=color, fontsize=8, fontweight='bold',
+                       va='top', ha='left',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='#2F2F2F', 
+                                edgecolor=color, alpha=0.8))
+        
+        # Move to next row if this band's cutouts didn't fill the row
+        if len(cutout_indices) % cutouts_per_row != 0:
+            current_row += 1
+    
+    return fig
+
+
 def create_combined_lightcurve(band_data, inference_data, figsize=(6, 4)):
     """
     Create a single lightcurve plot with all bands combined.
@@ -399,6 +495,19 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
             lightcurve_img = base64.b64encode(buf.read()).decode('utf-8')
             buf.close()
             plt.close(lc_fig)
+    
+    # Generate individual diff cutouts visualization
+    diff_cutouts_img = None
+    if band_data:
+        diff_fig = create_individual_diff_cutouts(band_data, figsize=(6, 3))
+        if diff_fig is not None:
+            buf = BytesIO()
+            diff_fig.savefig(buf, format='png', dpi=120, facecolor='#2F2F2F',
+                           edgecolor='none', bbox_inches='tight')
+            buf.seek(0)
+            diff_cutouts_img = base64.b64encode(buf.read()).decode('utf-8')
+            buf.close()
+            plt.close(diff_fig)
     
     # Generate figure for each band (cutouts only)
     band_figures = {}
@@ -562,8 +671,23 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
         '  } else if (event.key === "ArrowRight") {',
         '    const nextBtn = document.getElementById("next-button");',
         '    if (nextBtn && !nextBtn.disabled) nextBtn.click();',
+        '  } else if (event.key === "1" || event.key === "b") {',
+        '    saveClassification("' + str(dia_object_id) + '", "bogus");',
+        '  } else if (event.key === "2" || event.key === "u") {',
+        '    saveClassification("' + str(dia_object_id) + '", "unknown");',
+        '  } else if (event.key === "3" || event.key === "s") {',
+        '    saveClassification("' + str(dia_object_id) + '", "sn");',
+        '  } else if (event.key === "4" || event.key === "o") {',
+        '    saveClassification("' + str(dia_object_id) + '", "other");',
+        '  } else if (event.key === "e") {',
+        '    exportClassifications();',
         '  }',
         '});',
+        '',
+        '// Load classifications on page load',
+        'window.onload = function() {',
+        '  loadClassifications();',
+        '};',
         '</script>',
         '</head>',
         '<body>',
@@ -596,6 +720,23 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
         f'<p><strong>Bands:</strong> {", ".join(sorted_bands)}</p>',
         '</div>',
         '</div>',
+        '</div>',
+    ])
+    
+    # Add classification panel
+    html_parts.extend([
+        '<div class="classification-panel">',
+        '<h2>Classification</h2>',
+        '<div class="classification-buttons">',
+        f'<button class="classify-button classify-bogus" onclick="saveClassification(\'{dia_object_id}\', \'bogus\')">Bogus (1/B)</button>',
+        f'<button class="classify-button classify-unknown" onclick="saveClassification(\'{dia_object_id}\', \'unknown\')">Unknown (2/U)</button>',
+        f'<button class="classify-button classify-sn" onclick="saveClassification(\'{dia_object_id}\', \'sn\')">SN (3/S)</button>',
+        f'<button class="classify-button classify-other" onclick="saveClassification(\'{dia_object_id}\', \'other\')">Other Transient (4/O)</button>',
+        '<button class="classify-button" style="background-color: #444;" onclick="exportClassifications()">Export All (E)</button>',
+        '</div>',
+        '<div id="current-classification" class="current-classification"></div>',
+        '<div id="status-message" class="classification-status"></div>',
+        '<p style="color: #888; font-size: 12px; margin-top: 10px;">Keyboard shortcuts: 1/B=Bogus, 2/U=Unknown, 3/S=SN, 4/O=Other Transient, E=Export, ←/→=Navigate</p>',
         '</div>',
     ])
     
@@ -724,11 +865,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Visualize lightcurve with band-based cutout rows (coadd - science - diff)"
     )
-    parser.add_argument("dia_object_id", type=int, help="The diaObjectId to visualize")
+    parser.add_argument("dia_object_id", type=int, nargs='?', help="The diaObjectId to visualize (if not provided, processes all)")
     parser.add_argument("--data-path", type=str, help="Path to data directory")
     parser.add_argument("--weights-path", type=str, help="Path to model weights for inference")
     parser.add_argument("--model-hash", type=str, help="Model hash for existing inference results")
-    parser.add_argument("--output", type=str, help="Output HTML filename")
+    parser.add_argument("--output", type=str, help="Output HTML filename (ignored when processing all)")
+    parser.add_argument("--output-dir", type=str, help="Output directory for HTML files (used when processing all)")
     parser.add_argument("--run-inference", action="store_true",
                        help="Run inference if not available (requires weights-path)")
     parser.add_argument("--all-ids", type=str, help="Comma-separated list of all diaObjectIds for navigation")
@@ -742,12 +884,70 @@ if __name__ == "__main__":
     if args.all_ids:
         all_ids = [int(x.strip()) for x in args.all_ids.split(',')]
     
-    visualize(
-        dia_object_id=args.dia_object_id,
-        data_path=data_path,
-        weights_path=args.weights_path,
-        model_hash=args.model_hash,
-        output_file_name=args.output,
-        run_inference_flag=args.run_inference,
-        all_object_ids=all_ids
-    )
+    # If no dia_object_id provided, process all available ones
+    if args.dia_object_id is None:
+        print("No diaObjectId specified - processing all available diaObjectIds...")
+        
+        # Data path is required
+        if data_path is None:
+            print("ERROR: --data-path is required when processing all diaObjectIds")
+            sys.exit(1)
+        
+        # Load dataset to get all diaObjectIds
+        dataset_loader = DatasetLoader(data_path)
+        
+        # Load diasource index to get all unique diaObjectIds
+        diasource_index_file = data_path / "lightcurves" / "diasource_patch_index.h5"
+        
+        diasource_index = load_diasource_index(diasource_index_file)
+        if diasource_index is None:
+            print("ERROR: Could not load diasource index")
+            sys.exit(1)
+        
+        unique_object_ids = sorted(diasource_index['diaObjectId'].unique())
+        print(f"Found {len(unique_object_ids)} unique diaObjectIds")
+        
+        # Set up output directory
+        output_dir = Path(args.output_dir) if args.output_dir else Path("lc_labels_output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Output directory: {output_dir}")
+        
+        # Use unique_object_ids for navigation if all_ids not provided
+        if all_ids is None:
+            all_ids = unique_object_ids
+        
+        # Process each diaObjectId
+        for i, obj_id in enumerate(unique_object_ids, 1):
+            print(f"\n[{i}/{len(unique_object_ids)}] Processing diaObjectId {obj_id}...")
+            output_file = output_dir / f"lc_labels_{obj_id}.html"
+            
+            try:
+                visualize(
+                    dia_object_id=obj_id,
+                    data_path=data_path,
+                    weights_path=args.weights_path,
+                    model_hash=args.model_hash,
+                    output_file_name=str(output_file),
+                    run_inference_flag=args.run_inference,
+                    all_object_ids=all_ids
+                )
+            except Exception as e:
+                print(f"ERROR processing {obj_id}: {e}")
+                continue
+        
+        print(f"\n Processing complete! Generated {len(unique_object_ids)} HTML files in {output_dir}")
+    else:
+        # Process single diaObjectId
+        if data_path is None:
+            print("ERROR: --data-path is required")
+            sys.exit(1)
+        
+        visualize(
+            dia_object_id=args.dia_object_id,
+            data_path=data_path,
+            weights_path=args.weights_path,
+            model_hash=args.model_hash,
+            output_file_name=args.output,
+            run_inference_flag=args.run_inference,
+            all_object_ids=all_ids
+        )

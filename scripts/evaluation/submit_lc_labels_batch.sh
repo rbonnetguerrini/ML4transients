@@ -1,14 +1,13 @@
 #!/bin/bash
 conda activate env_ML
 # Configuration - Edit these parameters directly in the script
-DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_filtered"
-WEIGHTS_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_coteaching_asym_89570"
-RUN_NAME="UDEEP_to_classify"
+DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_minmax_filtered"
+RUN_NAME="UDEEP_minmax"
 OUTPUT_PATH="../../saved/lc_labels/$RUN_NAME"
 
 # List of diaObjectIds to process - Leave empty to process all from dataset
 DIA_OBJECT_IDS=(
-    3495809259583582208
+3495809259583582208
 3495901618560344064
 3495906016606838787
 3495892822467315717
@@ -96,6 +95,7 @@ DIA_OBJECT_IDS=(
 3495971987304536364
 3496042356048675117
 3496051152141698352
+3496090734560320819
 3495870832234780981
 3496029161909200182
 3495928006839409974
@@ -182,6 +182,7 @@ DIA_OBJECT_IDS=(
 3495967589258007138
 3495862036141744739
 3496051152141696611
+3496029161909203564
 3495862036141734508
 3495866434188265070
 3495892822467336815
@@ -221,6 +222,7 @@ DIA_OBJECT_IDS=(
 3495897220513822437
 3496033559955713772
 3495949997071956718
+3496073142374291183
 3496011569723122415
 3495949997071929073
 3495892822467320562
@@ -288,11 +290,10 @@ DIA_OBJECT_IDS=(
 )
 
 # Allow command line arguments to override the defaults
-if [ $# -ge 3 ]; then
+if [ $# -ge 2 ]; then
     DATA_PATH="$1"
-    WEIGHTS_PATH="$2"
-    OUTPUT_PATH="$3"
-    shift 3
+    OUTPUT_PATH="$2"
+    shift 2
     if [ $# -gt 0 ]; then
         DIA_OBJECT_IDS=("$@")
     fi

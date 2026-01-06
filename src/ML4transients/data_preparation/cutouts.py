@@ -13,6 +13,8 @@ import os
 import h5py
 import gc
 import sys
+import time
+from datetime import timedelta
 
 def compute_xy(I0: int, R0: int, r: float, search_radius: int = 200) -> tuple:
     """
@@ -372,9 +374,19 @@ def save_cutouts(config: dict):
     # Track processing statistics
     processed_visits = []
     skipped_visits = []
+    total_visits = len(visits)
+    total_sources_processed = 0
+    start_time = time.time()
+    
+    print(f"\n{'='*70}")
+    print(f"PROCESSING SUMMARY")
+    print(f"Total visits to process: {total_visits}")
+    print(f"Started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*70}\n")
+    sys.stdout.flush()
     
     # Process each visit individually
-    for visit in visits:
+    for visit_idx, visit in enumerate(visits, 1):
         # Check if visit has already been processed (checkpoint)
         visit_cutout_file = os.path.join(path_cutouts, f"visit_{visit}.h5")
         visit_feature_file = os.path.join(path_features, f"visit_{visit}_features.h5")
@@ -403,9 +415,25 @@ def save_cutouts(config: dict):
 
         # Get all dataset references for current visit
         ref_ids = extract_all_single_visit(visit, collection, repo, prefix)
+        visit_start_time = time.time()
+        
+        # Calculate progress statistics
+        elapsed_time = time.time() - start_time
+        visits_processed = visit_idx - 1  # Visits completed so far
+        visits_remaining = total_visits - visit_idx
+        
+        if visits_processed > 0:
+            avg_time_per_visit = elapsed_time / visits_processed
+            estimated_remaining_time = avg_time_per_visit * visits_remaining
+            eta_str = str(timedelta(seconds=int(estimated_remaining_time)))
+        else:
+            eta_str = "Calculating..."
         
         print(f"\n{'='*70}")
-        print(f"Processing visit {visit} with {len(ref_ids)} detectors...")
+        print(f"VISIT {visit_idx}/{total_visits}: {visit} ({len(ref_ids)} detectors)")
+        print(f"Progress: {visit_idx/total_visits*100:.1f}% | Elapsed: {str(timedelta(seconds=int(elapsed_time)))} | ETA: {eta_str}")
+        if total_sources_processed > 0:
+            print(f"Sources processed so far: {total_sources_processed:,}")
         print(f"{'='*70}")
         sys.stdout.flush()
         
@@ -468,12 +496,14 @@ def save_cutouts(config: dict):
             # Clean up large arrays after each detector to free memory
             del diff_array, coadd_array, science_array, dia_src
             
-            # Progress update every 10 detectors
-            if (detector_idx + 1) % 10 == 0:
-                print(f"  Processed {detector_idx + 1}/{len(ref_ids)} detectors ({len(all_cutouts)} cutouts)")
+            # Progress update every 10 detectors to show detector-level progress
+            if (detector_idx + 1) % 10 == 0 or (detector_idx + 1) == len(ref_ids):
+                det_progress = (detector_idx + 1) / len(ref_ids) * 100
+                print(f"  Detectors: {detector_idx + 1}/{len(ref_ids)} ({det_progress:.0f}%) | Cutouts: {len(all_cutouts):,}", end='\r')
                 sys.stdout.flush()
         
-        print(f"Extracted {len(all_cutouts)} cutouts from visit {visit}")
+        # Clear the progress line and print final count
+        print(f"\n  \u2713 Extracted {len(all_cutouts):,} cutouts from {len(ref_ids)} detectors")
         sys.stdout.flush()
         
         # Skip visit if no valid cutouts were extracted
@@ -596,17 +626,35 @@ def save_cutouts(config: dict):
         sys.stdout.flush()
         
         # Clean up memory after saving
+        # Update statistics BEFORE deleting variables
+        visit_time = time.time() - visit_start_time
+        visit_sources = len(diaSourceIds)
+        total_sources_processed += visit_sources
+        
         del normalized_cutouts, normalized_coadd_cutouts, normalized_science_cutouts
         del features_df, diaSourceIds
         gc.collect()
-        print(f"Memory cleaned up for visit {visit}")
+        
+        print(f"Visit {visit} completed in {timedelta(seconds=int(visit_time))} ({visit_sources:,} sources)")
         sys.stdout.flush()
         
         # Mark visit as successfully processed
         processed_visits.append(visit)
     
-    # Print summary
-    print(f"\nProcessed {len(processed_visits)}/{len(visits)} visits (skipped {len(skipped_visits)})")
+    # Print final summary
+    total_time = time.time() - start_time
+    print(f"\n{'='*70}")
+    print(f"FINAL SUMMARY")
+    print(f"{'='*70}")
+    print(f"Total visits processed: {len(processed_visits)}/{total_visits}")
+    print(f"Visits skipped (already done): {len(skipped_visits)}")
+    print(f"Total sources processed: {total_sources_processed:,}")
+    print(f"Total time: {str(timedelta(seconds=int(total_time)))}")
+    if len(processed_visits) > 0:
+        print(f"Average time per visit: {timedelta(seconds=int(total_time/len(processed_visits)))}")
+        print(f"Average sources per visit: {total_sources_processed/len(processed_visits):.1f}")
+    print(f"Finished at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"{'='*70}")
     sys.stdout.flush()
     
     # Create global index after all visits are processed - but only if not in batch mode
