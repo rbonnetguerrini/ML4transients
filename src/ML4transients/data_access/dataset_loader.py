@@ -1021,7 +1021,8 @@ class DatasetLoader:
         
         return None
 
-    def get_dataset_statistics(self, detailed: bool = False, plot: bool = False) -> Dict:
+    def get_dataset_statistics(self, detailed: bool = False, plot: bool = False, 
+                                 snr_study: bool = False) -> Dict:
         """Get comprehensive statistics about the dataset.
         
         Provides statistics including:

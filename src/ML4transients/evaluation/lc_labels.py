@@ -553,10 +553,12 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
         '.band-row { background-color: #2F2F2F; padding: 15px; margin-bottom: 15px; border-radius: 5px; border: 1px solid #666; }',
         '.band-row h3 { color: #870000; margin-top: 0; margin-bottom: 10px; }',
         '.band-row img { width: 100%; height: auto; }',
-        '.lightcurve-section { background-color: #2F2F2F; padding: 15px; border-radius: 5px; border: 1px solid #666; position: sticky; top: 20px; }',
+        '.lightcurve-section { background-color: #2F2F2F; padding: 15px; border-radius: 5px; border: 1px solid #666; }',
         '.lightcurve-section h2 { color: #870000; margin-top: 0; margin-bottom: 15px; }',
         '.lightcurve-section img { width: 100%; height: auto; }',
-        '.legend { background-color: #2F2F2F; padding: 15px; border-radius: 5px; border: 1px solid #666; margin-top: 20px; }',
+        '.diff-cutouts-section { background-color: #2F2F2F; padding: 15px; border-radius: 5px; border: 1px solid #666; }',
+        '.diff-cutouts-section h2 { color: #870000; margin-top: 0; margin-bottom: 15px; }',
+        '.diff-cutouts-section img { width: 100%; height: auto; }',
         '.legend h3 { color: #870000; margin-top: 0; }',
         '.legend p { font-size: 12px; margin: 5px 0; }',
         '.classification-panel { background-color: #2F2F2F; padding: 20px; border-radius: 5px; border: 1px solid #666; margin-bottom: 20px; }',
@@ -756,7 +758,7 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
             ])
     html_parts.append('</div>')
     
-    # Right column: Combined lightcurve plot
+    # Right column: Combined lightcurve plot and diff cutouts
     if lightcurve_img:
         html_parts.extend([
             '<div class="lightcurve-column">',
@@ -764,8 +766,18 @@ def create_html_visualization(data_dict, output_file, all_object_ids=None):
             '<h2>Combined Lightcurve</h2>',
             f'<img src="data:image/png;base64,{lightcurve_img}" alt="Combined Lightcurve">',
             '</div>',
-            '</div>',
         ])
+        
+        # Add individual diff cutouts below lightcurve
+        if diff_cutouts_img:
+            html_parts.extend([
+                '<div class="diff-cutouts-section" style="margin-top: 15px;">',
+                '<h2> Diff Cutouts (chronological)</h2>',
+                f'<img src="data:image/png;base64,{diff_cutouts_img}" alt="Individual Diff Cutouts">',
+                '</div>',
+            ])
+        
+        html_parts.append('</div>')  # Close lightcurve-column
     
     html_parts.append('</div>')  # Close main-content
     

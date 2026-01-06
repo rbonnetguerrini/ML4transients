@@ -301,7 +301,6 @@ fi
 
 echo "Submitting lc_labels visualization batch job..."
 echo "Data path: $DATA_PATH"
-echo "Weights path: $WEIGHTS_PATH"
 echo "Output path: $OUTPUT_PATH"
 
 # Get project root
@@ -332,9 +331,8 @@ if [ ${#DIA_OBJECT_IDS[@]} -eq 0 ]; then
 #SBATCH --cpus-per-task=2
 
 DATA_PATH="\$1"
-WEIGHTS_PATH="\$2"  
-OUTPUT_PATH="\$3"
-PROJECT_ROOT="\$4"
+OUTPUT_PATH="\$2"
+PROJECT_ROOT="\$3"
 
 echo "Processing all diaObjectIds from dataset..."
 
@@ -344,7 +342,6 @@ export PYTHONPATH="\$PROJECT_ROOT/src:\$PYTHONPATH"
 # Run the lc_labels visualization for all IDs
 python "\$PROJECT_ROOT/src/ML4transients/evaluation/lc_labels.py" \\
     --data-path "\$DATA_PATH" \\
-    --weights-path "\$WEIGHTS_PATH" \\
     --output-dir "\$OUTPUT_PATH"
 
 exit_code=\$?
@@ -355,7 +352,7 @@ EOF
     chmod +x "$TEMP_SCRIPT"
     
     # Submit single job
-    SLURM_JOB_ID=$(sbatch --parsable "$TEMP_SCRIPT" "$DATA_PATH" "$WEIGHTS_PATH" "$OUTPUT_PATH" "$PROJECT_ROOT")
+    SLURM_JOB_ID=$(sbatch --parsable "$TEMP_SCRIPT" "$DATA_PATH" "$OUTPUT_PATH" "$PROJECT_ROOT")
     
     echo "Submitted SLURM job: $SLURM_JOB_ID"
     echo ""
@@ -386,11 +383,10 @@ cat > "$TEMP_SCRIPT" << EOF
 #SBATCH --cpus-per-task=1
 
 DATA_PATH="\$1"
-WEIGHTS_PATH="\$2"  
-OUTPUT_PATH="\$3"
-PROJECT_ROOT="\$4"
-ALL_IDS="\$5"
-shift 5
+OUTPUT_PATH="\$2"
+PROJECT_ROOT="\$3"
+ALL_IDS="\$4"
+shift 4
 DIA_OBJECT_IDS=("\$@")
 
 # Get the diaObjectId for this array task
@@ -405,7 +401,6 @@ export PYTHONPATH="\$PROJECT_ROOT/src:\$PYTHONPATH"
 python "\$PROJECT_ROOT/src/ML4transients/evaluation/lc_labels.py" \\
     "\$DIA_OBJECT_ID" \\
     --data-path "\$DATA_PATH" \\
-    --weights-path "\$WEIGHTS_PATH" \\
     --output "\$OUTPUT_PATH/lc_labels_\${DIA_OBJECT_ID}.html" \\
     --all-ids "\$ALL_IDS"
 
@@ -418,7 +413,7 @@ chmod +x "$TEMP_SCRIPT"
 
 # Submit job array
 NUM_IDS=${#DIA_OBJECT_IDS[@]}
-SLURM_JOB_ID=$(sbatch --array=0-$((NUM_IDS-1)) --parsable "$TEMP_SCRIPT" "$DATA_PATH" "$WEIGHTS_PATH" "$OUTPUT_PATH" "$PROJECT_ROOT" "$ALL_IDS_STR" "${DIA_OBJECT_IDS[@]}")
+SLURM_JOB_ID=$(sbatch --array=0-$((NUM_IDS-1)) --parsable "$TEMP_SCRIPT" "$DATA_PATH" "$OUTPUT_PATH" "$PROJECT_ROOT" "$ALL_IDS_STR" "${DIA_OBJECT_IDS[@]}")
 
 echo "Submitted SLURM job array: $SLURM_JOB_ID"
 echo "Array indices: 0-$((NUM_IDS-1))"
