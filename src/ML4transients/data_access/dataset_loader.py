@@ -1031,6 +1031,7 @@ class DatasetLoader:
         - Cutouts per visit distribution
         - Label distribution across the dataset
         - Inference results summary (if available)
+        - Per-class SNR analysis (if snr_study=True)
         
         Parameters
         ----------
@@ -1038,6 +1039,10 @@ class DatasetLoader:
             If True, return per-visit statistics
         plot : bool, default False
             If True, display visualization plots
+        snr_study : bool, default False
+            If True, compute per-class SNR analysis including distribution
+            statistics (mean, std, median, percentiles) for injections vs real sources.
+
             
         Returns
         -------
@@ -1053,8 +1058,13 @@ class DatasetLoader:
             'per_visit': {},
             'labels': {},
             'noise': {},
-            'inference': {}
+            'inference': {},
+            'snr': {}  # SNR statistics per class
         }
+        
+        # SNR collection lists (only used if snr_study=True)
+        all_snr_injections = []
+        all_snr_real = []
         
         # Summary statistics
         total_cutouts = 0
@@ -1153,6 +1163,48 @@ class DatasetLoader:
                     # If we can't read spy_injected, just continue without noise stats
                     pass
             
+            # SNR study: extract SNR values per class
+            if snr_study and visit in self._feature_loaders:
+                try:
+                    loader = self._feature_loaders[visit]
+                    with pd.HDFStore(loader.file_path, 'r') as store:
+                        # Get sample to check available columns
+                        sample = store.select('features', start=0, stop=1)
+                        available_cols = sample.columns.tolist()
+                        
+                        # Check for flux columns needed to compute SNR
+                        flux_col = None
+                        flux_err_col = None
+                        
+                        if 'psfFlux' in available_cols:
+                            flux_col = 'psfFlux'
+                        elif 'psFlux' in available_cols:
+                            flux_col = 'psFlux'
+                        
+                        if 'psfFluxErr' in available_cols:
+                            flux_err_col = 'psfFluxErr'
+                        elif 'psFluxErr' in available_cols:
+                            flux_err_col = 'psFluxErr'
+                        
+                        if flux_col and flux_err_col and 'is_injection' in available_cols:
+                            # Load flux data with labels
+                            cols_to_load = [flux_col, flux_err_col, 'is_injection']
+                            flux_data = store.select('features', columns=cols_to_load)
+                            
+                            # Compute SNR = |flux| / flux_err
+                            valid_mask = flux_data[flux_err_col] > 0
+                            snr_values = np.abs(flux_data.loc[valid_mask, flux_col]) / flux_data.loc[valid_mask, flux_err_col]
+                            labels_valid = flux_data.loc[valid_mask, 'is_injection']
+                            
+                            # Separate by class
+                            injection_mask = labels_valid == 1
+                            real_mask = labels_valid == 0
+                            
+                            all_snr_injections.extend(snr_values[injection_mask].tolist())
+                            all_snr_real.extend(snr_values[real_mask].tolist())
+                except Exception as e:
+                    print(f"Warning: Could not extract SNR for visit {visit}: {e}")
+            
             per_visit_stats[visit] = visit_stat
         
         # Overall summary
@@ -1220,6 +1272,23 @@ class DatasetLoader:
                 'visits_with_inference': len([v for v in self._inference_registry.values() for _ in v]),
             }
         
+        # SNR statistics (if snr_study=True)
+        if snr_study:
+            snr_inj_arr = np.array(all_snr_injections) if all_snr_injections else np.array([])
+            snr_real_arr = np.array(all_snr_real) if all_snr_real else np.array([])
+            
+            stats['snr'] = {
+                'study_enabled': True,
+                'injections': self._compute_snr_class_stats(snr_inj_arr, 'injections'),
+                'real': self._compute_snr_class_stats(snr_real_arr, 'real'),
+                'raw_data': {
+                    'injections': snr_inj_arr,
+                    'real': snr_real_arr
+                }
+            }
+        else:
+            stats['snr'] = {'study_enabled': False}
+        
         if detailed:
             stats['per_visit'] = per_visit_stats
         
@@ -1231,6 +1300,80 @@ class DatasetLoader:
             self._plot_statistics(stats)
         
         return stats
+    
+    def _compute_snr_class_stats(self, snr_array: np.ndarray, class_name: str) -> Dict:
+        """Compute descriptive statistics for SNR values of a specific class.
+        
+        Parameters
+        ----------
+        snr_array : np.ndarray
+            Array of SNR values
+        class_name : str
+            Name of the class (for reporting)
+            
+        Returns
+        -------
+        Dict
+            Dictionary containing SNR statistics
+        """
+        if len(snr_array) == 0:
+            return {
+                'count': 0,
+                'mean': np.nan,
+                'std': np.nan,
+                'median': np.nan,
+                'min': np.nan,
+                'max': np.nan,
+                'percentile_5': np.nan,
+                'percentile_25': np.nan,
+                'percentile_75': np.nan,
+                'percentile_95': np.nan,
+                'low_snr_count': 0,  # SNR < 5
+                'high_snr_count': 0,  # SNR >= 5
+                'low_snr_pct': 0.0,
+                'high_snr_pct': 0.0
+            }
+        
+        # Filter out NaN and infinite values
+        valid_snr = snr_array[np.isfinite(snr_array)]
+        
+        if len(valid_snr) == 0:
+            return {
+                'count': 0,
+                'mean': np.nan,
+                'std': np.nan,
+                'median': np.nan,
+                'min': np.nan,
+                'max': np.nan,
+                'percentile_5': np.nan,
+                'percentile_25': np.nan,
+                'percentile_75': np.nan,
+                'percentile_95': np.nan,
+                'low_snr_count': 0,
+                'high_snr_count': 0,
+                'low_snr_pct': 0.0,
+                'high_snr_pct': 0.0
+            }
+        
+        low_snr_mask = valid_snr < 5.0
+        high_snr_mask = valid_snr >= 5.0
+        
+        return {
+            'count': len(valid_snr),
+            'mean': float(np.mean(valid_snr)),
+            'std': float(np.std(valid_snr)),
+            'median': float(np.median(valid_snr)),
+            'min': float(np.min(valid_snr)),
+            'max': float(np.max(valid_snr)),
+            'percentile_5': float(np.percentile(valid_snr, 5)),
+            'percentile_25': float(np.percentile(valid_snr, 25)),
+            'percentile_75': float(np.percentile(valid_snr, 75)),
+            'percentile_95': float(np.percentile(valid_snr, 95)),
+            'low_snr_count': int(np.sum(low_snr_mask)),
+            'high_snr_count': int(np.sum(high_snr_mask)),
+            'low_snr_pct': float(np.sum(low_snr_mask) / len(valid_snr) * 100),
+            'high_snr_pct': float(np.sum(high_snr_mask) / len(valid_snr) * 100)
+        }
     
     def _print_statistics_summary(self, stats: Dict):
         """Print formatted statistics summary."""
@@ -1284,6 +1427,39 @@ class DatasetLoader:
             print(f"  Models used: {inf['num_models']}")
             print(f"  Visits with inference: {inf['visits_with_inference']}")
         
+        # SNR statistics (if snr_study enabled)
+        snr_stats = stats.get('snr', {})
+        if snr_stats.get('study_enabled', False):
+            print(f"\nSNR Analysis by Class:")
+            print(f"  {'Class':<12} {'Count':>10} {'Mean':>10} {'Std':>10} {'Median':>10} {'Low SNR%':>10} {'High SNR%':>10}")
+            print(f"  {'-'*12} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*10}")
+            
+            for class_name in ['injections', 'real']:
+                class_stats = snr_stats.get(class_name, {})
+                if class_stats.get('count', 0) > 0:
+                    print(f"  {class_name.capitalize():<12} "
+                          f"{class_stats['count']:>10,} "
+                          f"{class_stats['mean']:>10.2f} "
+                          f"{class_stats['std']:>10.2f} "
+                          f"{class_stats['median']:>10.2f} "
+                          f"{class_stats['low_snr_pct']:>9.1f}% "
+                          f"{class_stats['high_snr_pct']:>9.1f}%")
+                else:
+                    print(f"  {class_name.capitalize():<12} {'No data':>10}")
+            
+            print(f"\n  Percentile Summary:")
+            print(f"  {'Class':<12} {'P5':>8} {'P25':>8} {'P50':>8} {'P75':>8} {'P95':>8}")
+            print(f"  {'-'*12} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*8}")
+            for class_name in ['injections', 'real']:
+                class_stats = snr_stats.get(class_name, {})
+                if class_stats.get('count', 0) > 0:
+                    print(f"  {class_name.capitalize():<12} "
+                          f"{class_stats['percentile_5']:>8.2f} "
+                          f"{class_stats['percentile_25']:>8.2f} "
+                          f"{class_stats['median']:>8.2f} "
+                          f"{class_stats['percentile_75']:>8.2f} "
+                          f"{class_stats['percentile_95']:>8.2f}")
+        
         print("="*70 + "\n")
     
     def _plot_statistics(self, stats: Dict):
@@ -1291,7 +1467,15 @@ class DatasetLoader:
         import matplotlib.pyplot as plt
         import numpy as np
         
+        # Check if SNR study is enabled - create different layout
+        snr_stats = stats.get('snr', {})
+        has_snr_data = snr_stats.get('study_enabled', False) and 'raw_data' in snr_stats
+        
         if 'per_visit' not in stats or not stats['per_visit']:
+            if has_snr_data:
+                # Only plot SNR if no per-visit data but SNR study enabled
+                self._plot_snr_distributions(stats)
+                return
             print("Detailed per-visit statistics required for plotting. Run with detailed=True")
             return
         
@@ -1303,7 +1487,14 @@ class DatasetLoader:
         features_per_visit = [per_visit[v]['features'] for v in visits]
         injection_pct = [per_visit[v]['injection_pct'] for v in visits if per_visit[v]['features'] > 0]
         
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        # Determine figure layout based on whether SNR study is enabled
+        if has_snr_data:
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        else:
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+            # Reshape for consistent indexing
+            axes = np.array([[axes[0, 0], axes[0, 1], None], 
+                            [axes[1, 0], axes[1, 1], None]])
         
         # Plot 1: Cutouts per visit
         ax1 = axes[0, 0]
@@ -1344,7 +1535,264 @@ class DatasetLoader:
             ax4.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
             ax4.set_title('Overall Label Distribution')
         
+        # Plot 5 & 6: SNR distributions (if snr_study enabled)
+        if has_snr_data:
+            snr_inj = snr_stats['raw_data']['injections']
+            snr_real = snr_stats['raw_data']['real']
+            
+            # Plot 5: SNR distributions overlaid (top right)
+            ax5 = axes[0, 2]
+            if len(snr_inj) > 0:
+                # Use log scale for better visualization, clip extreme values
+                snr_inj_clipped = np.clip(snr_inj[np.isfinite(snr_inj)], 0.1, 1000)
+                ax5.hist(snr_inj_clipped, bins=50, alpha=0.6, color='#ff6b6b', 
+                        label=f'Injections (n={len(snr_inj):,})', density=True)
+            if len(snr_real) > 0:
+                snr_real_clipped = np.clip(snr_real[np.isfinite(snr_real)], 0.1, 1000)
+                ax5.hist(snr_real_clipped, bins=50, alpha=0.6, color='#4dabf7', 
+                        label=f'Real (n={len(snr_real):,})', density=True)
+            ax5.axvline(5.0, color='black', linestyle='--', linewidth=1.5, 
+                       label='SNR threshold (5)')
+            ax5.set_xlabel('SNR')
+            ax5.set_ylabel('Density')
+            ax5.set_title('SNR Distribution by Class')
+            ax5.set_xscale('log')
+            ax5.legend()
+            ax5.grid(True, alpha=0.3)
+            
+            # Plot 6: Box plot comparison (bottom right)
+            ax6 = axes[1, 2]
+            box_data = []
+            box_labels = []
+            box_colors = []
+            
+            if len(snr_inj) > 0:
+                snr_inj_valid = snr_inj[np.isfinite(snr_inj)]
+                # Clip for visualization but show original stats
+                snr_inj_plot = np.clip(snr_inj_valid, 0, np.percentile(snr_inj_valid, 99))
+                box_data.append(snr_inj_plot)
+                inj_stats = snr_stats['injections']
+                box_labels.append(f"Injections\n(μ={inj_stats['mean']:.1f})")
+                box_colors.append('#ff6b6b')
+            
+            if len(snr_real) > 0:
+                snr_real_valid = snr_real[np.isfinite(snr_real)]
+                snr_real_plot = np.clip(snr_real_valid, 0, np.percentile(snr_real_valid, 99))
+                box_data.append(snr_real_plot)
+                real_stats = snr_stats['real']
+                box_labels.append(f"Real\n(μ={real_stats['mean']:.1f})")
+                box_colors.append('#4dabf7')
+            
+            if box_data:
+                bp = ax6.boxplot(box_data, labels=box_labels, patch_artist=True)
+                for patch, color in zip(bp['boxes'], box_colors):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.6)
+                ax6.axhline(5.0, color='black', linestyle='--', linewidth=1.5, 
+                           label='SNR threshold (5)')
+                ax6.set_ylabel('SNR')
+                ax6.set_title('SNR Box Plot by Class (99th percentile clip)')
+                ax6.legend()
+                ax6.grid(True, alpha=0.3, axis='y')
+        
         plt.tight_layout()
+        plt.show()
+        
+        # If SNR study enabled, also show dedicated SNR figure
+        if has_snr_data:
+            self._plot_snr_distributions(stats)
+    
+    def _plot_snr_distributions(self, stats: Dict):
+        """Create dedicated SNR distribution plots.
+        
+        Parameters
+        ----------
+        stats : Dict
+            Statistics dictionary containing SNR data
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib import rcParams
+        
+
+        rcParams['font.family'] = 'serif'
+        rcParams['font.size'] = 11
+        rcParams['axes.labelsize'] = 12
+        rcParams['axes.titlesize'] = 13
+        rcParams['xtick.labelsize'] = 11
+        rcParams['ytick.labelsize'] = 11
+        rcParams['legend.fontsize'] = 10
+        rcParams['figure.dpi'] = 150
+        rcParams['lines.linewidth'] = 2
+        
+        snr_stats = stats.get('snr', {})
+        if not snr_stats.get('study_enabled', False) or 'raw_data' not in snr_stats:
+            print("SNR study data not available")
+            return
+        
+        snr_inj = snr_stats['raw_data']['injections']
+        snr_real = snr_stats['raw_data']['real']
+        inj_stats = snr_stats.get('injections', {})
+        real_stats = snr_stats.get('real', {})
+        
+        # Filter valid data
+        snr_inj_valid = snr_inj[np.isfinite(snr_inj)] if len(snr_inj) > 0 else np.array([])
+        snr_real_valid = snr_real[np.isfinite(snr_real)] if len(snr_real) > 0 else np.array([])
+        
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # Define consistent bins for both classes
+        bins = np.linspace(0, 50, 51)
+        
+        # Plot 1: Injections only (linear scale)
+        ax1 = axes[0, 0]
+        if len(snr_inj_valid) > 0:
+            counts, _, patches = ax1.hist(snr_inj_valid, bins=bins, alpha=0.75, 
+                                          color='#e74c3c', edgecolor='#c0392b', 
+                                          linewidth=0.5, density=True)
+            # Color bars by SNR threshold
+            for i, patch in enumerate(patches):
+                if bins[i] < 5.0:
+                    patch.set_facecolor('#e74c3c')
+                    patch.set_alpha(0.6)
+                else:
+                    patch.set_facecolor('#c0392b')
+                    patch.set_alpha(0.85)
+        
+        ax1.axvline(5.0, color='black', linestyle='--', linewidth=2.5, zorder=10)
+        ax1.set_xlabel('Signal-to-Noise Ratio (SNR)', fontweight='bold')
+        ax1.set_ylabel('Probability Density', fontweight='bold')
+        ax1.set_title('(a) Injections', fontsize=13, fontweight='bold', loc='left', pad=10)
+        ax1.grid(True, alpha=0.25, linestyle='-', linewidth=0.5)
+        ax1.set_xlim(0, 50)
+        
+        # Add statistics box
+        if inj_stats.get('count', 0) > 0:
+            textstr = (f'N = {inj_stats["count"]:,}\n'
+                      f'μ = {inj_stats["mean"]:.2f}\n'
+                      f'σ = {inj_stats["std"]:.2f}\n'
+                      f'Median = {inj_stats["median"]:.2f}\n'
+                      f'Low SNR: {inj_stats["low_snr_pct"]:.1f}%')
+            ax1.text(0.97, 0.97, textstr, transform=ax1.transAxes, fontsize=10,
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
+                             edgecolor='gray', linewidth=1, pad=0.5))
+        
+        # Plot 2: Real sources only (linear scale)
+        ax2 = axes[0, 1]
+        if len(snr_real_valid) > 0:
+            counts, _, patches = ax2.hist(snr_real_valid, bins=bins, alpha=0.75, 
+                                          color='#3498db', edgecolor='#2980b9',
+                                          linewidth=0.5, density=True)
+            # Color bars by SNR threshold
+            for i, patch in enumerate(patches):
+                if bins[i] < 5.0:
+                    patch.set_facecolor('#3498db')
+                    patch.set_alpha(0.6)
+                else:
+                    patch.set_facecolor('#2980b9')
+                    patch.set_alpha(0.85)
+        
+        ax2.axvline(5.0, color='black', linestyle='--', linewidth=2.5, zorder=10)
+        ax2.set_xlabel('Signal-to-Noise Ratio (SNR)', fontweight='bold')
+        ax2.set_ylabel('Probability Density', fontweight='bold')
+        ax2.set_title('(b) Real Sources', fontsize=13, fontweight='bold', loc='left', pad=10)
+        ax2.grid(True, alpha=0.25, linestyle='-', linewidth=0.5)
+        ax2.set_xlim(0, 50)
+        
+        # Add statistics box
+        if real_stats.get('count', 0) > 0:
+            textstr = (f'N = {real_stats["count"]:,}\n'
+                      f'μ = {real_stats["mean"]:.2f}\n'
+                      f'σ = {real_stats["std"]:.2f}\n'
+                      f'Median = {real_stats["median"]:.2f}\n'
+                      f'Low SNR: {real_stats["low_snr_pct"]:.1f}%')
+            ax2.text(0.97, 0.97, textstr, transform=ax2.transAxes, fontsize=10,
+                    verticalalignment='top', horizontalalignment='right',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
+                             edgecolor='gray', linewidth=1, pad=0.5))
+        
+        # Plot 3: CDF comparison
+        ax3 = axes[1, 0]
+        if len(snr_inj_valid) > 0:
+            snr_inj_sorted = np.sort(snr_inj_valid)
+            cdf_inj = np.arange(1, len(snr_inj_sorted) + 1) / len(snr_inj_sorted)
+            ax3.plot(snr_inj_sorted, cdf_inj, color='#e74c3c', linewidth=2.5, 
+                    label='Injections', alpha=0.9)
+        if len(snr_real_valid) > 0:
+            snr_real_sorted = np.sort(snr_real_valid)
+            cdf_real = np.arange(1, len(snr_real_sorted) + 1) / len(snr_real_sorted)
+            ax3.plot(snr_real_sorted, cdf_real, color='#3498db', linewidth=2.5, 
+                    label='Real Sources', alpha=0.9)
+        ax3.axvline(5.0, color='black', linestyle='--', linewidth=2.5, zorder=10)
+        ax3.axhline(0.5, color='gray', linestyle=':', linewidth=1.5, alpha=0.5)
+        ax3.set_xlabel('Signal-to-Noise Ratio (SNR)', fontweight='bold')
+        ax3.set_ylabel('Cumulative Probability', fontweight='bold')
+        ax3.set_title('(c) Cumulative Distribution Function', fontsize=13, fontweight='bold', 
+                     loc='left', pad=10)
+        ax3.set_xlim(0, 100)
+        ax3.set_ylim(0, 1)
+        ax3.legend(framealpha=0.95, loc='lower right')
+        ax3.grid(True, alpha=0.25, linestyle='-', linewidth=0.5)
+        
+        # Plot 4: Low vs High SNR bar chart
+        ax4 = axes[1, 1]
+        
+        x = np.arange(2)
+        width = 0.35
+        
+        low_snr_pcts = [
+            inj_stats.get('low_snr_pct', 0),
+            real_stats.get('low_snr_pct', 0)
+        ]
+        high_snr_pcts = [
+            inj_stats.get('high_snr_pct', 0),
+            real_stats.get('high_snr_pct', 0)
+        ]
+        
+        bars1 = ax4.bar(x - width/2, low_snr_pcts, width, 
+                       label='Low SNR (< 5)', color='#e67e22', 
+                       alpha=0.85, edgecolor='#d35400', linewidth=1.5)
+        bars2 = ax4.bar(x + width/2, high_snr_pcts, width, 
+                       label='High SNR (≥ 5)', color='#27ae60', 
+                       alpha=0.85, edgecolor='#229954', linewidth=1.5)
+        
+        ax4.set_ylabel('Percentage (%)', fontweight='bold')
+        ax4.set_title('(d) SNR Distribution Summary', fontsize=13, fontweight='bold', 
+                     loc='left', pad=10)
+        ax4.set_xticks(x)
+        ax4.set_xticklabels(['Injections', 'Real Sources'], fontweight='bold')
+        ax4.legend(framealpha=0.95, loc='upper center', ncol=2)
+        ax4.grid(True, alpha=0.25, axis='y', linestyle='-', linewidth=0.5)
+        ax4.set_ylim(0, 108)  # Increased to 108 to give room for annotations
+        
+        # Add value labels on bars with better formatting
+        for bar in bars1:
+            height = bar.get_height()
+            # Place text inside bar if it's tall enough, otherwise above
+            if height > 10:
+                ax4.annotate(f'{height:.1f}%',
+                            xy=(bar.get_x() + bar.get_width() / 2, height / 2),
+                            ha='center', va='center', fontsize=10, fontweight='bold', color='white')
+            else:
+                ax4.annotate(f'{height:.1f}%',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10, fontweight='bold')
+        for bar in bars2:
+            height = bar.get_height()
+            # Place text inside bar if it's tall enough, otherwise above
+            if height > 10:
+                ax4.annotate(f'{height:.1f}%',
+                            xy=(bar.get_x() + bar.get_width() / 2, height / 2),
+                            ha='center', va='center', fontsize=10, fontweight='bold', color='white')
+            else:
+                ax4.annotate(f'{height:.1f}%',
+                            xy=(bar.get_x() + bar.get_width() / 2, height),
+                            xytext=(0, 3), textcoords="offset points",
+                            ha='center', va='bottom', fontsize=10, fontweight='bold')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.99])
         plt.show()
 
     def __repr__(self):
