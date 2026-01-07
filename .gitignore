@@ -12,3 +12,4 @@ configs/data_preparation/batches/*.yaml
 *.pth
 cutout_raphael.yaml
 cutout_raphael_injected.yaml
+final_plots
