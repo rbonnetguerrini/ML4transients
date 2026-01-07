@@ -2,7 +2,7 @@
 conda activate env_ML
 # Configuration - Edit these parameters directly in the script
 DATA_PATH="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_minmax_filtered"
-RUN_NAME="UDEEP_minmax"
+RUN_NAME="UDEEP_minmax_test"
 OUTPUT_PATH="../../saved/lc_labels/$RUN_NAME"
 
 # List of diaObjectIds to process - Leave empty to process all from dataset

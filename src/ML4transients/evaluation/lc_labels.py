@@ -387,51 +387,88 @@ def create_combined_lightcurve(band_data, inference_data, figsize=(6, 4)):
     # Plot each band
     for band in sorted_bands:
         band_info = band_data[band]
-        obs_df = band_info['observations']
+        obs_df = band_info['observations'].copy()
         
         if len(obs_df) > 0 and 'time' in obs_df.columns and 'flux' in obs_df.columns:
-            times = obs_df['time'].values
-            fluxes = obs_df['flux'].values
-            flux_errs = obs_df.get('flux_err', pd.Series([0] * len(obs_df))).values
+            # Group observations from the same band on the same night
+            # Extract integer night (MJD day)
+            obs_df['night'] = obs_df['time'].apply(lambda t: int(t))
+            
+            # Group by night and average flux/flux_err
+            grouped_data = []
+            for night, night_group in obs_df.groupby('night'):
+                avg_time = night_group['time'].mean()
+                avg_flux = night_group['flux'].mean()
+                
+                # Average flux errors (quadrature sum divided by N)
+                if 'flux_err' in night_group.columns:
+                    # Propagate errors: 
+                    avg_flux_err = np.sqrt((night_group['flux_err']**2).sum()) / len(night_group)
+                else:
+                    avg_flux_err = 0
+                
+                # Keep track of source IDs for inference overlay
+                source_ids = night_group['diaSourceId'].tolist()
+                
+                grouped_data.append({
+                    'time': avg_time,
+                    'flux': avg_flux,
+                    'flux_err': avg_flux_err,
+                    'source_ids': source_ids
+                })
+            
+            grouped_df = pd.DataFrame(grouped_data).sort_values('time')
+            
+            times = grouped_df['time'].values
+            fluxes = grouped_df['flux'].values
+            flux_errs = grouped_df['flux_err'].values
             
             color = band_colors.get(band, '#5b75cd')
             
-            # Plot observations with connecting lines (no error bars for cleaner view)
-            ax.plot(times, fluxes, '-o', color=color, alpha=0.8, linewidth=1.2, 
-                   markersize=5, markeredgecolor='white', markeredgewidth=0.5,
-                   label=f'Band {band}')
+            # plot all individual observations as small crosses
+            ax.plot(obs_df['time'].values, obs_df['flux'].values, 'x', 
+                   color=color, alpha=0.4, markersize=3, markeredgewidth=0.8)
+            
+            #  plot averaged observations with error bars
+            ax.errorbar(times, fluxes, yerr=flux_errs, fmt='-o', color=color, 
+                       alpha=0.8, linewidth=1.2, markersize=5, 
+                       markeredgecolor='white', markeredgewidth=0.5,
+                       elinewidth=1, capsize=3, capthick=1,
+                       label=f'Band {band}')
             
             # Overlay inference information if available
             if inference_data:
-                for idx, row in obs_df.iterrows():
-                    src_id = row['diaSourceId']
-                    if src_id in inference_data:
-                        inf_result = inference_data[src_id]
-                        
-                        # Determine marker based on classification
-                        prediction = inf_result.get('prediction', None)
-                        label = inf_result.get('label', None)
-                        
-                        if prediction is not None and label is not None:
-                            # Classification status
-                            if prediction == 1 and label == 1:
-                                marker = 'x'  # True Positive
-                                marker_color = color
-                            elif prediction == 0 and label == 0:
-                                marker = 'o'  # True Negative
-                                marker_color = color
-                            elif prediction == 1 and label == 0:
-                                marker = '*'  # False Positive
-                                marker_color = '#ff0000'
-                            elif prediction == 0 and label == 1:
-                                marker = 's'  # False Negative
-                                marker_color = '#ffaa00'
-                            else:
-                                continue
+                for idx, row in grouped_df.iterrows():
+                    # Check inference results for any source in this averaged point
+                    for src_id in row['source_ids']:
+                        if src_id in inference_data:
+                            inf_result = inference_data[src_id]
                             
-                            ax.scatter(row['time'], row['flux'], marker=marker, 
-                                    s=100, color=marker_color, edgecolor='white', 
-                                    linewidths=1.5, zorder=10)
+                            # Determine marker based on classification
+                            prediction = inf_result.get('prediction', None)
+                            label = inf_result.get('label', None)
+                            
+                            if prediction is not None and label is not None:
+                                # Classification status
+                                if prediction == 1 and label == 1:
+                                    marker = 'x'  # True Positive
+                                    marker_color = color
+                                elif prediction == 0 and label == 0:
+                                    marker = 'o'  # True Negative
+                                    marker_color = color
+                                elif prediction == 1 and label == 0:
+                                    marker = '*'  # False Positive
+                                    marker_color = '#ff0000'
+                                elif prediction == 0 and label == 1:
+                                    marker = 's'  # False Negative
+                                    marker_color = '#ffaa00'
+                                else:
+                                    continue
+                                
+                                ax.scatter(row['time'], row['flux'], marker=marker, 
+                                        s=100, color=marker_color, edgecolor='white', 
+                                        linewidths=1.5, zorder=10)
+                                break  # Only plot one marker per averaged point
     
     ax.set_xlabel('MJD', color='white', fontsize=9)
     ax.set_ylabel('Flux', color='white', fontsize=9)
