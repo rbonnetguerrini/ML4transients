@@ -444,9 +444,7 @@ def save_cutouts(config: dict):
 
             # Load coadd (template) image data
             coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
-                        
-                        
-            coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
+
 
             # Load science (calexp) image data
             science_array = butler.get(f'{prefix}calexp', dataId=ref).getImage().array
