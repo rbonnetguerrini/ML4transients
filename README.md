@@ -110,7 +110,7 @@ python scripts/data_preparation/run_crossmatch.py \
 --catalog_file /sps/lsst/groups/transients/HSC/fouchez/raphael/crossmatch_data/milliquas/milliquas_filtered.h5 \
 --ra_column RA \
 --dec_column DEC \
---tolerance 0.2
+--tolerance 0.5
 ```
 
 Results are saved to `crossmatch/crossmatch_results.h5` and can be used to filter datasets by match status.
