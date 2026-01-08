@@ -107,9 +107,9 @@ Cross-match your lightcurve dataset with external catalogs (e.g., Gaia) to ident
 ```sh
 python scripts/data_preparation/run_crossmatch.py \
 --dataset /path/to/lightcurve/data \
---catalog_file saved/source_cat_gaia.pkl \
---ra_column "ra" \
---dec_column "dec" \ 
+--catalog_file /sps/lsst/groups/transients/HSC/fouchez/raphael/crossmatch_data/milliquas/milliquas_filtered.h5 \
+--ra_column RA \
+--dec_column DEC \
 --tolerance 0.2
 ```
 
