@@ -110,6 +110,7 @@ python scripts/data_preparation/run_crossmatch.py \
 --catalog_file saved/source_cat_gaia.pkl \
 --ra_column "ra" \
 --dec_column "dec" \ 
+--tolerance 0.2
 ```
 
 Results are saved to `crossmatch/crossmatch_results.h5` and can be used to filter datasets by match status.
