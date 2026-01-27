@@ -65,6 +65,12 @@ def parse_args():
                        help="Enable Monte Carlo Dropout for uncertainty estimation (standard models only)")
     parser.add_argument("--mc-samples", type=int, default=50,
                        help="Number of MC Dropout forward passes for uncertainty estimation (default: 50)")
+    parser.add_argument("--analyze-transient-types", action="store_true",
+                       help="Analyze performance on transient subclasses (SN vs other_transients) within is_injection=1 samples")
+    parser.add_argument("--lc-threshold", type=float, default=0.9,
+                       help="Threshold for classifying lightcurves as real/bogus (default: 0.9 = 90%%). "
+                            "LC classified as real if >=threshold of sources predicted as real, "
+                            "bogus if >=threshold predicted as bogus, otherwise unclassified")
     
     return parser.parse_args()
 
@@ -259,13 +265,15 @@ class FilteredInferenceLoader:
 
 def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str = None,
                             visits: list = None, model_hash: str = None, 
-                            auto_run_inference: bool = False) -> dict:
+                            auto_run_inference: bool = False, mc_dropout: bool = False) -> dict:
     """Collect (or discover) inference loaders for requested visits.
 
     Parameters
     ----------
     auto_run_inference : bool
         If True, automatically return None to trigger inference instead of prompting user
+    mc_dropout : bool
+        If True, look for MC dropout inference results
     
     Notes
     -----
@@ -293,14 +301,15 @@ def collect_inference_results(dataset_loader: DatasetLoader, weights_path: str =
             inference_loader = dataset_loader.get_inference_loader(
                 visit=visit,
                 weights_path=weights_path,
-                model_hash=model_hash
+                model_hash=model_hash,
+                mc_dropout=mc_dropout
             )
             
             if inference_loader and inference_loader.has_inference_results():
                 results[visit] = inference_loader
             else:
                 missing_visits.append(visit)
-                print("✗")
+                print("Missing visit")
                 
         except Exception as e:
             print(f"Error loading inference for visit {visit}: {e}")
@@ -491,6 +500,179 @@ def extract_snr_values(dataset_loader: DatasetLoader, source_ids: np.ndarray) ->
         print(f"Warning: Could not extract SNR values: {e}")
         print("SNR-based metrics will not be available")
         return None
+
+
+def extract_other_transients_labels(dataset_loader: DatasetLoader, source_ids: np.ndarray) -> Optional[np.ndarray]:
+    """Extract other_transients labels for given source IDs.
+    
+    This is used to split the is_injection==1 class into two subclasses:
+    - SN (supernovae): is_injection==1 && other_transients==0
+    - Other Transients: is_injection==1 && other_transients==1
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader instance
+    source_ids : np.ndarray
+        Array of diaSourceId values
+        
+    Returns
+    -------
+    np.ndarray or None
+        other_transients values for each source (0=SN, 1=other_transient),
+        or None if data is not available
+    """
+    print("Extracting other_transients labels for transient type analysis...")
+    start_time = time.time()
+    
+    try:
+        # Group source IDs by visit for efficient loading
+        visit_to_source_ids = {}
+        for source_id in source_ids:
+            visit = dataset_loader.find_visit(int(source_id))
+            if visit:
+                if visit not in visit_to_source_ids:
+                    visit_to_source_ids[visit] = []
+                visit_to_source_ids[visit].append(int(source_id))
+        
+        print(f"Found {len(visit_to_source_ids)} visits for {len(source_ids)} source IDs")
+        
+        other_transients_dict = {}  # To map source_id to other_transients value
+        
+        # Load features by visit to get other_transients column
+        for visit, visit_source_ids in visit_to_source_ids.items():
+            if visit in dataset_loader.features:
+                feature_loader = dataset_loader.features[visit]
+                feature_data = feature_loader.get_multiple_by_ids(visit_source_ids)
+                
+                for source_id in visit_source_ids:
+                    if source_id in feature_data:
+                        df = feature_data[source_id]
+                        # Check if other_transients column exists
+                        if 'other_transients' in df.columns:
+                            other_transients_dict[source_id] = int(df['other_transients'].iloc[0])
+                        else:
+                            # Column not found - set to -1 to indicate missing
+                            other_transients_dict[source_id] = -1
+                    else:
+                        other_transients_dict[source_id] = -1
+            else:
+                # No feature data for this visit
+                for source_id in visit_source_ids:
+                    other_transients_dict[source_id] = -1
+        
+        # Create array in the same order as source_ids
+        other_transients_values = [other_transients_dict.get(int(source_id), -1) for source_id in source_ids]
+        other_transients_array = np.array(other_transients_values)
+        
+        # Check if we have valid data
+        valid_count = np.sum(other_transients_array >= 0)
+        if valid_count == 0:
+            print("Warning: 'other_transients' column not found in feature data")
+            print("Transient type analysis will not be available")
+            return None
+        
+        n_sn = np.sum(other_transients_array == 0)
+        n_other = np.sum(other_transients_array == 1)
+        n_missing = np.sum(other_transients_array == -1)
+        
+        print(f"other_transients extraction completed in {time.time() - start_time:.2f}s")
+        print(f"Transient type breakdown: SN={n_sn}, Other Transients={n_other}, Missing={n_missing}")
+        return other_transients_array
+        
+    except Exception as e:
+        print(f"Warning: Could not extract other_transients labels: {e}")
+        print("Transient type analysis will not be available")
+        return None
+
+
+def extract_dist_max_bright(dataset_loader: DatasetLoader, source_ids: np.ndarray, 
+                           other_transients: np.ndarray) -> Optional[np.ndarray]:
+    """Extract dist_max_bright values for SN sources.
+    
+    This column indicates the distance (in days) from the maximum brightness
+    of the supernova light curve. Only available for SN sources (other_transients=0).
+    
+    Parameters
+    ----------
+    dataset_loader : DatasetLoader
+        Dataset loader instance
+    source_ids : np.ndarray
+        Array of diaSourceId values
+    other_transients : np.ndarray
+        Array indicating transient type (0=SN, 1=other_transient)
+        
+    Returns
+    -------
+    np.ndarray or None
+        dist_max_bright values for each source (NaN for non-SN sources),
+        or None if data is not available
+    """
+    print("Extracting dist_max_bright values for SN phase analysis...")
+    start_time = time.time()
+    
+    try:
+        # Group source IDs by visit for efficient loading
+        visit_to_source_ids = {}
+        for source_id in source_ids:
+            visit = dataset_loader.find_visit(int(source_id))
+            if visit:
+                if visit not in visit_to_source_ids:
+                    visit_to_source_ids[visit] = []
+                visit_to_source_ids[visit].append(int(source_id))
+        
+        dist_max_bright_dict = {}  # To map source_id to dist_max_bright value
+        
+        # Load features by visit to get dist_max_bright column
+        for visit, visit_source_ids in visit_to_source_ids.items():
+            if visit in dataset_loader.features:
+                feature_loader = dataset_loader.features[visit]
+                feature_data = feature_loader.get_multiple_by_ids(visit_source_ids)
+                
+                for source_id in visit_source_ids:
+                    if source_id in feature_data:
+                        df = feature_data[source_id]
+                        # Check if dist_max_bright column exists
+                        if 'dist_max_bright' in df.columns:
+                            val = df['dist_max_bright'].iloc[0]
+                            dist_max_bright_dict[source_id] = float(val) if not np.isnan(val) else np.nan
+                        else:
+                            dist_max_bright_dict[source_id] = np.nan
+                    else:
+                        dist_max_bright_dict[source_id] = np.nan
+            else:
+                # No feature data for this visit
+                for source_id in visit_source_ids:
+                    dist_max_bright_dict[source_id] = np.nan
+        
+        # Create array in the same order as source_ids
+        dist_max_bright_values = [dist_max_bright_dict.get(int(source_id), np.nan) for source_id in source_ids]
+        dist_max_bright_array = np.array(dist_max_bright_values)
+        
+        # Check how many valid values we have (should only be for SN sources)
+        valid_count = np.sum(~np.isnan(dist_max_bright_array))
+        sn_count = np.sum(other_transients == 0)
+        
+        if valid_count == 0:
+            print("Warning: 'dist_max_bright' column not found or all NaN")
+            print("SN phase analysis will not be available")
+            return None
+        
+        print(f"dist_max_bright extraction completed in {time.time() - start_time:.2f}s")
+        print(f"Valid dist_max_bright values: {valid_count}/{sn_count} SN sources")
+        
+        # Print statistics for valid values
+        valid_values = dist_max_bright_array[~np.isnan(dist_max_bright_array)]
+        if len(valid_values) > 0:
+            print(f"dist_max_bright stats: min={valid_values.min():.1f}, max={valid_values.max():.1f}, mean={valid_values.mean():.1f} days")
+        
+        return dist_max_bright_array
+        
+    except Exception as e:
+        print(f"Warning: Could not extract dist_max_bright values: {e}")
+        print("SN phase analysis will not be available")
+        return None
+
 
 def create_evaluation_data_loader(dataset_loader: DatasetLoader, visits: list,
                                 max_samples: int = 3000, 
@@ -752,6 +934,11 @@ def main():
     
     print(f"SNR threshold: {args.snr_threshold}", flush=True)
     
+    if args.analyze_transient_types:
+        print(f"Transient type analysis: ENABLED (SN vs Other Transients)", flush=True)
+    else:
+        print(f"Transient type analysis: Disabled", flush=True)
+    
     if args.object_ids_file:
         print(f"Object IDs file: {args.object_ids_file}", flush=True)
     
@@ -810,7 +997,8 @@ def main():
         dataset_loader, 
         weights_path=args.weights_path, 
         visits=visits_to_eval, 
-        model_hash=args.model_hash,
+        model_hash=args.model_hash,  # Pass the flag for non-interactive mode
+        mc_dropout=args.mc_dropout,  # Pass MC dropout flag to find correct results
         auto_run_inference=args.run_inference  # Pass the flag for non-interactive mode
     )
     print(f"Inference results collection completed in {time.time() - step_start:.2f}s")
@@ -835,6 +1023,7 @@ def main():
                     weights_path=args.weights_path, 
                     visits=visits_to_eval, 
                     model_hash=args.model_hash,
+                    mc_dropout=args.mc_dropout,  # Pass MC dropout flag to find correct results
                     auto_run_inference=False  # No need to prompt again after running inference
                 )
                 print(f"Re-collection completed in {time.time() - step_start:.2f}s")
@@ -884,10 +1073,27 @@ def main():
     snr_values = extract_snr_values(dataset_loader, source_ids)
     print(f"SNR extraction completed in {time.time() - step_start:.2f}s")
     
+    # Extract other_transients labels if transient type analysis is requested
+    other_transients = None
+    dist_max_bright = None
+    sn_phase_analysis = None
+    if args.analyze_transient_types:
+        print("Extracting other_transients labels for transient type analysis...")
+        step_start = time.time()
+        other_transients = extract_other_transients_labels(dataset_loader, source_ids)
+        print(f"other_transients extraction completed in {time.time() - step_start:.2f}s")
+        
+        # Also extract dist_max_bright for SN phase analysis
+        print("Extracting dist_max_bright for SN phase analysis...")
+        step_start = time.time()
+        dist_max_bright = extract_dist_max_bright(dataset_loader, source_ids, other_transients)
+        print(f"dist_max_bright extraction completed in {time.time() - step_start:.2f}s")
+    
     # Create metrics evaluation with probabilities, SNR, and uncertainties if available
     print("Computing evaluation metrics...")
     step_start = time.time()
-    metrics = EvaluationMetrics(predictions, labels, probabilities, snr_values, uncertainties)
+    metrics = EvaluationMetrics(predictions, labels, probabilities, snr_values, uncertainties, 
+                               source_ids=source_ids, dataset_loader=dataset_loader)
     print(f"Metrics computation completed in {time.time() - step_start:.2f}s")
     
     # Print enhanced summary
@@ -926,8 +1132,129 @@ def main():
         except Exception as e:
             print(f"Warning: Could not compute SNR-based metrics: {e}")
     
-    print("="*50)
+    # Compute lightcurve-level metrics
+    lc_metrics = None
+    try:
+        print("Computing lightcurve-level metrics...")
+        step_start = time.time()
+        lc_metrics = metrics.get_lightcurve_metrics(other_transients, lc_threshold=args.lc_threshold)
+        print(f"Lightcurve metrics computation completed in {time.time() - step_start:.2f}s")
+        
+        # Print lightcurve summary
+        print("\n" + "="*50)
+        print("LIGHTCURVE-LEVEL PERFORMANCE")
+        print("="*50)
+        print(f"Classification Threshold: {args.lc_threshold:.1%}")
+        print(f"Total Lightcurves: {lc_metrics['overall']['n_lightcurves']}")
+        print(f"Classified LCs: {lc_metrics['overall']['n_classified']}")
+        print(f"Unclassified LCs: {lc_metrics['overall']['n_unclassified']}")
+        print(f"Correctly Classified: {lc_metrics['overall']['n_correct']}")
+        print(f"Incorrectly Classified: {lc_metrics['overall']['n_incorrect']}")
+        print(f"Lightcurve Accuracy: {lc_metrics['overall']['accuracy']:.4f}")
+        print(f"Classified as Real: {lc_metrics['overall']['n_classified_as_real']}")
+        print(f"Classified as Bogus: {lc_metrics['overall']['n_classified_as_bogus']}")
+        
+        # Print confusion matrix
+        print("\nLightcurve Confusion Matrix:")
+        print(f"  TP: {lc_metrics['confusion']['true_positive']}")
+        print(f"  TN: {lc_metrics['confusion']['true_negative']}")
+        print(f"  FP: {lc_metrics['confusion']['false_positive']}")
+        print(f"  FN: {lc_metrics['confusion']['false_negative']}")
+        
+        # Print class-specific breakdown
+        if 'by_true_class' in lc_metrics:
+            if 'real_transients' in lc_metrics['by_true_class']:
+                real = lc_metrics['by_true_class']['real_transients']
+                print(f"\nReal Transient Lightcurves: {real['n_lightcurves']}")
+                print(f"  Correctly Detected: {real['n_correct']}")
+                print(f"  Missed: {real['n_incorrect']}")
+                print(f"  Recall: {real['recall']:.4f}")
+            
+            if 'bogus' in lc_metrics['by_true_class']:
+                bogus = lc_metrics['by_true_class']['bogus']
+                print(f"\nBogus Lightcurves: {bogus['n_lightcurves']}")
+                print(f"  Correctly Rejected: {bogus['n_correct']}")
+                print(f"  False Alarms: {bogus['n_incorrect']}")
+                print(f"  Specificity: {bogus['specificity']:.4f}")
+        
+    except Exception as e:
+        print(f"Warning: Could not compute lightcurve metrics: {e}")
+        import traceback
+        traceback.print_exc()
     
+    # Print transient type summary if available
+    if other_transients is not None:
+        try:
+            tt_metrics = metrics.get_transient_type_metrics(other_transients)
+            print("\n" + "="*50)
+            print("TRANSIENT TYPE PERFORMANCE BREAKDOWN")
+            print("="*50)
+            
+            sn = tt_metrics['sn']
+            other = tt_metrics['other_transients']
+            bogus = tt_metrics['bogus']
+            
+            print(f"Supernovae: {sn['n_samples']} samples")
+            if sn['n_samples'] > 0:
+                print(f"  Correctly Detected: {sn['n_correct']}")
+                print(f"  Missed (FN): {sn['n_incorrect']}")
+                print(f"  Recall: {sn['recall']:.4f}")
+            
+            print(f"Other Transients : {other['n_samples']} samples")
+            if other['n_samples'] > 0:
+                print(f"  Correctly Detected: {other['n_correct']}")
+                print(f"  Missed (FN): {other['n_incorrect']}")
+                print(f"  Recall: {other['recall']:.4f}")
+            
+            print(f"Bogus: {bogus['n_samples']} samples")
+            if bogus['n_samples'] > 0:
+                print(f"  Correctly Rejected: {bogus['n_correct']}")
+                print(f"  False Positives: {bogus['n_fp']}")
+                print(f"  Specificity: {bogus['specificity']:.4f}")
+                print(f"  FP Rate: {bogus['fp_rate']:.4f}")
+                
+        except Exception as e:
+            print(f"Warning: Could not compute transient type metrics: {e}")
+        
+        # Compute SN phase analysis if dist_max_bright is available
+        if dist_max_bright is not None:
+            try:
+                sn_phase_analysis = metrics.get_sn_phase_analysis(other_transients, dist_max_bright)
+                
+                if sn_phase_analysis.get('available', False):
+                    print("\n" + "="*50)
+                    print("SN LIGHT CURVE PHASE ANALYSIS")
+                    print("="*50)
+                    print(f"Valid SN samples with dist_max_bright: {sn_phase_analysis['n_samples']}")
+                    
+                    # UQ correlation
+                    if 'uq_dist_correlation' in sn_phase_analysis:
+                        uq_corr = sn_phase_analysis['uq_dist_correlation']
+                        print(f"\nUncertainty vs Distance from Max:")
+                        print(f"  Spearman rho: {uq_corr['spearman_rho']:.4f}")
+                    
+                    # Accuracy correlation
+                    if 'accuracy_dist_correlation' in sn_phase_analysis:
+                        acc_corr = sn_phase_analysis['accuracy_dist_correlation']
+                        print(f"\nAccuracy vs Distance from Max:")
+                        print(f"  Spearman rho: {acc_corr['spearman_rho']:.4f}")
+                    
+                    # Phase breakdown
+                    if 'phase_breakdown' in sn_phase_analysis:
+                        print(f"\nDetection by Light Curve Phase:")
+                        for phase, data in sn_phase_analysis['phase_breakdown'].items():
+                            if data['n_samples'] > 0:
+                                print(f"  {phase}: {data['n_samples']} samples, accuracy: {data['accuracy']:.1%}")
+                else:
+                    print("\nWarning: SN phase analysis not available (insufficient data)")
+                    
+            except Exception as e:
+                print(f"Warning: Could not compute SN phase analysis: {e}")
+                import traceback
+                traceback.print_exc()
+    
+    print("="*50)
+
     # Determine model name for dashboard title
     if args.weights_path:
         model_name = Path(args.weights_path).name
@@ -1038,7 +1365,10 @@ def main():
         probabilities=probabilities,  # Pass pre-computed probabilities
         uncertainties=uncertainties,   # Pass pre-computed uncertainties
         snr_threshold=args.snr_threshold,  # Pass SNR threshold
-        show_all_cutouts=args.show_all_cutouts  # Pass cutout display preference
+        show_all_cutouts=args.show_all_cutouts,  # Pass cutout display preference
+        other_transients=other_transients,  # Pass transient type labels for subclass analysis
+        sn_phase_analysis=sn_phase_analysis,  # Pass SN phase analysis for dist_max_bright correlation
+        lc_metrics=lc_metrics  # Pass lightcurve-level metrics
     )
     print(f"Combined dashboard created in {time.time() - step_start:.2f}s")
     
@@ -1220,6 +1550,131 @@ def main():
             'filtered_by_object_ids': True,
             'n_objects': len(object_ids)
         }
+    
+    # Add lightcurve-level metrics if available
+    if lc_metrics is not None:
+        try:
+            eval_data['lightcurve_analysis'] = {
+                'overall': {
+                    'n_lightcurves': int(lc_metrics['overall']['n_lightcurves']),
+                    'n_correct': int(lc_metrics['overall']['n_correct']),
+                    'n_incorrect': int(lc_metrics['overall']['n_incorrect']),
+                    'accuracy': float(lc_metrics['overall']['accuracy']),
+                    'n_classified_as_real': int(lc_metrics['overall']['n_classified_as_real']),
+                    'n_classified_as_bogus': int(lc_metrics['overall']['n_classified_as_bogus'])
+                },
+                'confusion_matrix': {
+                    'true_positive': int(lc_metrics['confusion']['true_positive']),
+                    'true_negative': int(lc_metrics['confusion']['true_negative']),
+                    'false_positive': int(lc_metrics['confusion']['false_positive']),
+                    'false_negative': int(lc_metrics['confusion']['false_negative'])
+                }
+            }
+            
+            # Add class-specific breakdown if available
+            if 'by_true_class' in lc_metrics:
+                eval_data['lightcurve_analysis']['by_true_class'] = {}
+                if 'real_transients' in lc_metrics['by_true_class']:
+                    eval_data['lightcurve_analysis']['by_true_class']['real_transients'] = {
+                        'n_lightcurves': int(lc_metrics['by_true_class']['real_transients']['n_lightcurves']),
+                        'n_correct': int(lc_metrics['by_true_class']['real_transients']['n_correct']),
+                        'n_incorrect': int(lc_metrics['by_true_class']['real_transients']['n_incorrect']),
+                        'recall': float(lc_metrics['by_true_class']['real_transients']['recall'])
+                    }
+                if 'bogus' in lc_metrics['by_true_class']:
+                    eval_data['lightcurve_analysis']['by_true_class']['bogus'] = {
+                        'n_lightcurves': int(lc_metrics['by_true_class']['bogus']['n_lightcurves']),
+                        'n_correct': int(lc_metrics['by_true_class']['bogus']['n_correct']),
+                        'n_incorrect': int(lc_metrics['by_true_class']['bogus']['n_incorrect']),
+                        'specificity': float(lc_metrics['by_true_class']['bogus']['specificity'])
+                    }
+        except Exception as e:
+            print(f"Warning: Could not save lightcurve metrics: {e}")
+    
+    # Add transient type metrics if available
+    if other_transients is not None:
+        try:
+            tt_metrics = metrics.get_transient_type_metrics(other_transients)
+            eval_data['transient_type_analysis'] = {
+                'supernovae': {
+                    'n_samples': int(tt_metrics['sn']['n_samples']),
+                    'n_correct': int(tt_metrics['sn']['n_correct']),
+                    'n_incorrect': int(tt_metrics['sn']['n_incorrect']),
+                    'recall': float(tt_metrics['sn']['recall'])
+                },
+                'other_transients': {
+                    'n_samples': int(tt_metrics['other_transients']['n_samples']),
+                    'n_correct': int(tt_metrics['other_transients']['n_correct']),
+                    'n_incorrect': int(tt_metrics['other_transients']['n_incorrect']),
+                    'recall': float(tt_metrics['other_transients']['recall'])
+                },
+                'bogus': {
+                    'n_samples': int(tt_metrics['bogus']['n_samples']),
+                    'n_correct': int(tt_metrics['bogus']['n_correct']),
+                    'n_fp': int(tt_metrics['bogus']['n_fp']),
+                    'specificity': float(tt_metrics['bogus']['specificity']),
+                    'fp_rate': float(tt_metrics['bogus']['fp_rate'])
+                }
+            }
+            # Add probability stats if available
+            if 'mean_probability' in tt_metrics['sn']:
+                eval_data['transient_type_analysis']['supernovae']['mean_probability'] = float(tt_metrics['sn']['mean_probability'])
+                eval_data['transient_type_analysis']['other_transients']['mean_probability'] = float(tt_metrics['other_transients']['mean_probability'])
+                eval_data['transient_type_analysis']['bogus']['mean_probability'] = float(tt_metrics['bogus']['mean_probability'])
+            # Add uncertainty stats if available
+            if 'mean_uncertainty' in tt_metrics['sn']:
+                eval_data['transient_type_analysis']['supernovae']['mean_uncertainty'] = float(tt_metrics['sn']['mean_uncertainty'])
+                eval_data['transient_type_analysis']['other_transients']['mean_uncertainty'] = float(tt_metrics['other_transients']['mean_uncertainty'])
+                eval_data['transient_type_analysis']['bogus']['mean_uncertainty'] = float(tt_metrics['bogus']['mean_uncertainty'])
+        except Exception as e:
+            print(f"Warning: Could not save transient type metrics: {e}")
+        
+        # Add SN phase analysis if available
+        if sn_phase_analysis is not None and sn_phase_analysis.get('available', False):
+            try:
+                eval_data['sn_phase_analysis'] = {
+                    'n_samples': int(sn_phase_analysis['n_samples']),
+                }
+                
+                # Add UQ correlation
+                if 'uq_dist_correlation' in sn_phase_analysis:
+                    eval_data['sn_phase_analysis']['uq_dist_correlation'] = {
+                        'spearman_rho': float(sn_phase_analysis['uq_dist_correlation']['spearman_rho']),
+                        'n_samples': int(sn_phase_analysis['uq_dist_correlation']['n_samples'])
+                    }
+                
+                # Add accuracy correlation
+                if 'accuracy_dist_correlation' in sn_phase_analysis:
+                    eval_data['sn_phase_analysis']['accuracy_dist_correlation'] = {
+                        'spearman_rho': float(sn_phase_analysis['accuracy_dist_correlation']['spearman_rho']),
+                        'n_samples': int(sn_phase_analysis['accuracy_dist_correlation']['n_samples'])
+                    }
+                
+                # Add phase breakdown
+                if 'phase_breakdown' in sn_phase_analysis:
+                    eval_data['sn_phase_analysis']['phase_breakdown'] = {}
+                    for phase, data in sn_phase_analysis['phase_breakdown'].items():
+                        if data['n_samples'] > 0:
+                            eval_data['sn_phase_analysis']['phase_breakdown'][phase] = {
+                                'n_samples': int(data['n_samples']),
+                                'accuracy': float(data['accuracy']),
+                                'mean_dist': float(data.get('mean_dist', 0))
+                            }
+                            if 'mean_uncertainty' in data:
+                                eval_data['sn_phase_analysis']['phase_breakdown'][phase]['mean_uncertainty'] = float(data['mean_uncertainty'])
+                
+                # Add binned analysis
+                if 'binned_by_distance' in sn_phase_analysis:
+                    eval_data['sn_phase_analysis']['binned_by_distance'] = {}
+                    for bin_label, data in sn_phase_analysis['binned_by_distance'].items():
+                        eval_data['sn_phase_analysis']['binned_by_distance'][bin_label] = {
+                            'n_samples': int(data['n_samples']),
+                            'accuracy': float(data['accuracy'])
+                        }
+                        if 'mean_uncertainty' in data:
+                            eval_data['sn_phase_analysis']['binned_by_distance'][bin_label]['mean_uncertainty'] = float(data['mean_uncertainty'])
+            except Exception as e:
+                print(f"Warning: Could not save SN phase analysis: {e}")
     
     with open(results_file, 'w') as f:
         yaml.dump(eval_data, f, default_flow_style=False, sort_keys=False)
