@@ -1,6 +1,6 @@
 # Standard training configuration with multi-channel inputs (diff + coadd)
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r035"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_minmax"
   visits: null
   test_size: 0.2
   val_size: 0.1
@@ -14,11 +14,11 @@ training:
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/standard_multichannel_89570_r035"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/standard_multichannel_minmax"
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "standard_multichannel_89570_r035"
+  experiment_name: "standard_multichannel_minmax"
   log_interval: 50
   
   early_stopping:

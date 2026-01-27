@@ -1,6 +1,6 @@
 # Co-teaching training configuration with optimized hyperparameters
 data:
-  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_r015"
+  path: "/sps/lsst/groups/transients/HSC/fouchez/raphael/data/rc2_89570_minmax"
   visits: null
   test_size: 0.2
   val_size: 0.1
@@ -14,7 +14,7 @@ training:
   num_iter_per_epoch: 400
   epoch_decay_start: 80
   num_workers: 4
-  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_coteaching_89570_r015"
+  output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_coteaching_89570_minmax"
   
   forget_rate: 0.16               
   num_gradual: 13                       
@@ -22,7 +22,7 @@ training:
   
   use_tensorboard: true
   tensorboard_log_dir: "runs"
-  experiment_name: "multichannel_coteaching_89570_r015"
+  experiment_name: "multichannel_coteaching_89570_minmax"
   log_interval: 100
   
   early_stopping:

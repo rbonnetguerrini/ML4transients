@@ -10,19 +10,19 @@ data:
 training:
   trainer_type: "stochastic_coteaching"
   epochs: 1500
-  learning_rate: 0.003999412311999152
-  batch_size: 256
+  learning_rate: 0.00016239636313582185
+  batch_size: 128
   num_iter_per_epoch: 400
-  epoch_decay_start: 80
+  epoch_decay_start: 9999
   num_workers: 4
   weight_decay: 0
   output_dir: "/sps/lsst/groups/transients/HSC/fouchez/raphael/training/multichannel_stoco_89570"
   
   # Stochastic co-teaching specific parameters
-  alpha: 32                             # Beta distribution alpha 
-  beta: 4                               # Beta distribution beta 
+  alpha: 12                             
+  beta: 4                               
   num_gradual: 10                       # Gradual warmup period (tp_gradual)
-  delay: 0                              # Delay before starting rejection 
+  delay: 15                              # Delay before starting rejection 
   exponent: 1                           # Exponent for schedule
   clip: [0.01, 0.99]                    # Min/max clipping for random thresholds
   seed: 42
@@ -34,18 +34,19 @@ training:
   
   early_stopping:
     enabled: true
-    monitor: "fnr"                      # Monitor False Negative Rate
-    mode: "min"                         # Minimize FNR
+    monitor: "fnr"                      
+    mode: "min"                         
     patience: 80
     min_delta: 0.001
+    start_epoch: 70                       
     
   model_params:
-    input_shape: [30, 30, 2]            
+    input_shape: [30, 30, 2]  # 2 channels (diff + coadd)
     num_classes: 2
-    num_conv_blocks: 3                  
-    base_filters: 64                   
-    base_dropout: 0.25                   
-    units: 128                          
-    in_channels: 2    
+    num_conv_blocks: 3  
+    base_filters: 64  
 
+    base_dropout: 0.25  
+    units: 64
+    in_channels: 2  
 random_state: 42

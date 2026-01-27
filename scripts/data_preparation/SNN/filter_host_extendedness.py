@@ -211,8 +211,8 @@ def filter_lightcurves(
         
         diaobject_data.append({
             'diaObjectId': diaobj_id,
-            'coord_ra': max_row['coord_ra'],
-            'coord_dec': max_row['coord_dec'],
+            'coord_ra': max_row['ra'],
+            'coord_dec': max_row['dec'],
             'tract': max_row['tract'],
             'patch': max_row['patch'],
             'max_diff_flux': abs(max_row['psfFlux']),

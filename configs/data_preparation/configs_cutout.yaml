@@ -2,13 +2,13 @@ repo: /sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml
 collection: run/ssp_ud_cosmos/step5_new
 injection: false
 cutout:
-  #normalization: minmax
+  normalization: minmax
   size: 30
   coadd_science: true
   save: true
   save_features_only: false
   return_data: false
-path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd
+path: /sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_filtered4
 lightcurves:
   patches: []
   cache_size: 5
