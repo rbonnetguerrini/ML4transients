@@ -309,7 +309,7 @@ def save_lightcurve_index(index_df: pd.DataFrame, path: str):
 
 def save_diasource_patch_index(index_df: pd.DataFrame, path: str):
     """
-    Save diaSourceId→patch index to HDF5.
+    Save diaSourceId-->patch index to HDF5.
 
     Parameters
     ----------
@@ -341,9 +341,9 @@ def extract_and_save_lightcurves_with_index(config: dict):
     skip_lightcurve_index = config.get("skip_lightcurve_index", False)
     
     if not skip_lightcurve_index:
-        print("=== Creating diaObjectId→patch index ===")
+        print("=== Creating diaObjectId-->patch index ===")
         object_index_df = create_lightcurve_index(config)
-        print("\n=== Creating diaSourceId→patch index ===")
+        print("\n=== Creating diaSourceId-->patch index ===")
         source_index_df = create_diasource_patch_index(config)
 
         path_lightcurves = f"{output_path}/lightcurves"
