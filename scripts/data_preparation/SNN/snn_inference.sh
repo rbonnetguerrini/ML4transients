@@ -6,7 +6,7 @@ setup lsst_distrib
 
 export PYTHONPATH=/sps/lsst/users/rbonnetguerrini/ML4transients/src:$PYTHONPATH
 
-INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP_coadd_minmax/lightcurves"
+INPUT_DIR="/sps/lsst/groups/transients/HSC/fouchez/raphael/data/UDEEP/lightcurves"
 SNR_FILTERED_DIR="${INPUT_DIR}/snr_filtered"
 EXTENDEDNESS_FILTERED_DIR="${INPUT_DIR}/extendedness_filtered"
 REPO="/sps/lsst/groups/transients/HSC/fouchez/RC2_repo/butler.yaml"
@@ -43,18 +43,18 @@ if [ "$SNR_FILES_EXIST" -gt 0 ]; then
     for metadata_file in "$SNR_FILTERED_DIR"/*_snr_filter_metadata.json; do
         if [ -f "$metadata_file" ]; then
             FILES_PROCESSED=$((FILES_PROCESSED + 1))
-            initial=$(python -c "import json; print(json.load(open('$metadata_file'))['initial_objects'])")
-            final=$(python -c "import json; print(json.load(open('$metadata_file'))['final_objects'])")
-            snr_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_snr_filter'])")
-            win_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_window_filter'])")
-            obs_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_minobs_filter'])")
-            neg_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_negative_flux'])")
+            initial=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('initial_objects', 0))" 2>/dev/null || echo "0")
+            final=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('final_objects', 0))" 2>/dev/null || echo "0")
+            snr_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_snr_filter', 0))" 2>/dev/null || echo "0")
+            win_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_window_filter', 0))" 2>/dev/null || echo "0")
+            nights_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_min_nights', 0))" 2>/dev/null || echo "0")
+            neg_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_negative_flux', 0))" 2>/dev/null || echo "0")
             
             TOTAL_OBJECTS=$((TOTAL_OBJECTS + initial))
             SNR_KEPT=$((SNR_KEPT + final))
             SNR_FILTER_DISCARDED=$((SNR_FILTER_DISCARDED + snr_disc))
             WINDOW_DISCARDED=$((WINDOW_DISCARDED + win_disc))
-            MINOBS_DISCARDED=$((MINOBS_DISCARDED + obs_disc))
+            MINOBS_DISCARDED=$((MINOBS_DISCARDED + nights_disc))
             NEGFLUX_DISCARDED=$((NEGFLUX_DISCARDED + neg_disc))
         fi
     done
@@ -69,9 +69,8 @@ else
             python /sps/lsst/users/rbonnetguerrini/ML4transients/scripts/data_preparation/SNN/filter_snr_and_quality.py \
                 --input "$input_file" \
                 --output "$output_file" \
-                --min-obs 10 \
-                --snr-threshold 5.0 \
-                --high-snr-threshold 3.0
+                --min-nights 6 \
+                --snr-threshold 5.0
             
             if [ $? -ne 0 ]; then
                 echo "SNR filtering failed for $filename."
@@ -83,18 +82,18 @@ else
             metadata_file="${output_file%.h5}_snr_filter_metadata.json"
             if [ -f "$metadata_file" ]; then
                 FILES_PROCESSED=$((FILES_PROCESSED + 1))
-                initial=$(python -c "import json; print(json.load(open('$metadata_file'))['initial_objects'])")
-                final=$(python -c "import json; print(json.load(open('$metadata_file'))['final_objects'])")
-                snr_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_snr_filter'])")
-                win_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_window_filter'])")
-                obs_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_minobs_filter'])")
-                neg_disc=$(python -c "import json; print(json.load(open('$metadata_file'))['discarded_negative_flux'])")
+                initial=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('initial_objects', 0))" 2>/dev/null || echo "0")
+                final=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('final_objects', 0))" 2>/dev/null || echo "0")
+                snr_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_snr_filter', 0))" 2>/dev/null || echo "0")
+                win_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_window_filter', 0))" 2>/dev/null || echo "0")
+                nights_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_min_nights', 0))" 2>/dev/null || echo "0")
+                neg_disc=$(python -c "import json; d=json.load(open('$metadata_file')); print(d.get('discarded_negative_flux', 0))" 2>/dev/null || echo "0")
                 
                 TOTAL_OBJECTS=$((TOTAL_OBJECTS + initial))
                 SNR_KEPT=$((SNR_KEPT + final))
                 SNR_FILTER_DISCARDED=$((SNR_FILTER_DISCARDED + snr_disc))
                 WINDOW_DISCARDED=$((WINDOW_DISCARDED + win_disc))
-                MINOBS_DISCARDED=$((MINOBS_DISCARDED + obs_disc))
+                MINOBS_DISCARDED=$((MINOBS_DISCARDED + nights_disc))
                 NEGFLUX_DISCARDED=$((NEGFLUX_DISCARDED + neg_disc))
             fi
         fi
@@ -108,7 +107,7 @@ echo "Files processed: $FILES_PROCESSED" >> "$LOG_FILE"
 echo "Total diaObjects: $TOTAL_OBJECTS" >> "$LOG_FILE"
 echo "Discarded (SNR < 5.0): $SNR_FILTER_DISCARDED" >> "$LOG_FILE"
 echo "Discarded (time window): $WINDOW_DISCARDED" >> "$LOG_FILE"
-echo "Discarded (min observations): $MINOBS_DISCARDED" >> "$LOG_FILE"
+echo "Discarded (min nights): $MINOBS_DISCARDED" >> "$LOG_FILE"
 echo "Discarded (negative avg flux): $NEGFLUX_DISCARDED" >> "$LOG_FILE"
 echo "Total discarded in Step 1: $SNR_TOTAL_DISCARDED" >> "$LOG_FILE"
 echo "After Step 1: $SNR_KEPT" >> "$LOG_FILE"
@@ -190,17 +189,16 @@ if [ $SNR_KEPT -gt 0 ]; then
 fi
 echo "" >> "$LOG_FILE"
 
-# Write completion summary
 echo "=== Pipeline Completion ===" >> "$LOG_FILE"
 echo "Completed: $(date)" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
-echo "=== Complete Filtering Pipeline Summary ===" >> "$LOG_FILE"
+echo "=== Filtering Pipeline Summary ===" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
 echo "Step 1 - SNR and Quality Filters:" >> "$LOG_FILE"
 echo "  Initial objects: $TOTAL_OBJECTS" >> "$LOG_FILE"
 echo "  Rejected (SNR < 5.0): $SNR_FILTER_DISCARDED" >> "$LOG_FILE"
 echo "  Rejected (time window): $WINDOW_DISCARDED" >> "$LOG_FILE"
-echo "  Rejected (min observations): $MINOBS_DISCARDED" >> "$LOG_FILE"
+echo "  Rejected (min nights): $MINOBS_DISCARDED" >> "$LOG_FILE"
 echo "  Rejected (negative avg flux): $NEGFLUX_DISCARDED" >> "$LOG_FILE"
 echo "  After Step 1: $SNR_KEPT" >> "$LOG_FILE"
 echo "" >> "$LOG_FILE"
@@ -217,7 +215,7 @@ TOTAL_REJECTED=$((SNR_TOTAL_DISCARDED + EXTENDEDNESS_REJECTED))
 echo "  Total rejected: $TOTAL_REJECTED" >> "$LOG_FILE"
 echo "    └─ SNR filter: $SNR_FILTER_DISCARDED" >> "$LOG_FILE"
 echo "    └─ Time window: $WINDOW_DISCARDED" >> "$LOG_FILE"
-echo "    └─ Min observations: $MINOBS_DISCARDED" >> "$LOG_FILE"
+echo "    └─ Min nights: $MINOBS_DISCARDED" >> "$LOG_FILE"
 echo "    └─ Negative flux: $NEGFLUX_DISCARDED" >> "$LOG_FILE"
 echo "    └─ Point source hosts: $POINT_HOST_REJECTED" >> "$LOG_FILE"
 echo "    └─ Low flux ratio: $FLUX_RATIO_REJECTED" >> "$LOG_FILE"
@@ -232,5 +230,4 @@ echo "Filtered lightcurves saved in: $EXTENDEDNESS_FILTERED_DIR" >> "$LOG_FILE"
 echo "=== Pipeline complete ==="
 echo ""
 echo "Pipeline summary saved to: $LOG_FILE"
-echo "Filtered lightcurves saved in: $EXTENDEDNESS_FILTERED_DIR"
 cat "$LOG_FILE"
