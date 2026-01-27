@@ -57,11 +57,11 @@ def main():
             print(" Cutout index creation returned None")
         
         # Create lightcurve indices
-        print("\n=== Creating diaObjectId→patch index ===")
+        print("\n=== Creating diaObjectId-->patch index ===")
         object_index_df = create_lightcurve_index(config)
         print(f"  Object index created: {len(object_index_df)} entries")
         
-        print("\n=== Creating diaSourceId→patch index ===")
+        print("\n=== Creating diaSourceId-->patch index ===")
         source_index_df = create_diasource_patch_index(config)
         print(f"  Source index created: {len(source_index_df)} entries")
         
