@@ -16,6 +16,41 @@ import sys
 import time
 from datetime import timedelta
 
+def rotate_xy_ccw(x, y, w, h, nq):
+    """
+    Rotate pixel coordinates counter-clockwise by nq quarter-turns.
+    
+    Args:
+        x, y: Original pixel coordinates
+        w, h: Width and height of the original (unrotated) array
+        nq: Number of quarter-turns counter-clockwise
+        
+    Returns:
+        tuple: Rotated (x, y) coordinates
+    """
+    nq = nq % 4
+    if nq == 0:
+        return x, y
+    elif nq == 1:   # 90° CCW
+        return (h - 1 - y), x
+    elif nq == 2:   # 180°
+        return (w - 1 - x), (h - 1 - y)
+    else:           # 270° CCW
+        return y, (w - 1 - x)
+
+def rot90_array(a, nq):
+    """
+    Rotate array counter-clockwise by nq quarter-turns.
+    
+    Args:
+        a: Input array
+        nq: Number of quarter-turns counter-clockwise
+        
+    Returns:
+        np.ndarray: Rotated array
+    """
+    return np.rot90(a, k=nq % 4)
+
 def compute_xy(I0: int, R0: int, r: float, search_radius: int = 200) -> tuple:
     """
     Calculate optimal number of samples to relabel and remove for noise injection.
@@ -48,7 +83,7 @@ def compute_xy(I0: int, R0: int, r: float, search_radius: int = 200) -> tuple:
         if F <= 0:
             continue
 
-        y = R0 + x - F           # from R0 + x - y = F  → y = R0 + x - F
+        y = R0 + x - F           # from R0 + x - y = F  --> y = R0 + x - F
         if y < 0:
             continue
 
@@ -437,17 +472,24 @@ def save_cutouts(config: dict):
         print(f"{'='*70}")
         sys.stdout.flush()
         
+        # Get camera for detector orientation information
+        camera = butler.get("camera", instrument="HSC")
+        
         # Process each detector/exposure in the visit
         for detector_idx, ref in enumerate(ref_ids):
-            # Load difference image data
-            diff_array = butler.get(f'{prefix}goodSeeingDiff_differenceExp', dataId=ref).getImage().array
-
-            # Load coadd (template) image data
-            coadd_array = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
-
-
-            # Load science (calexp) image data
-            science_array = butler.get(f'{prefix}calexp', dataId=ref).getImage().array
+            # Get detector orientation (number of quarter-turns)
+            det = camera[ref["detector"]]
+            nq = det.getOrientation().getNQuarter()
+            
+            # Load arrays (unrotated from raw detector frame)
+            diff_array_u = butler.get(f'{prefix}goodSeeingDiff_differenceExp', dataId=ref).getImage().array
+            coadd_array_u = butler.get(f'{prefix}goodSeeingDiff_templateExp', dataId=ref).getImage().array
+            science_array_u = butler.get(f'{prefix}calexp', dataId=ref).getImage().array
+            
+            # Rotate arrays to focal-plane-aligned orientation
+            diff_array = rot90_array(diff_array_u, nq)
+            coadd_array = rot90_array(coadd_array_u, nq)
+            science_array = rot90_array(science_array_u, nq)
             
             # Load source catalog (astronomical detections)
             dia_src = butler.get(f'{prefix}goodSeeingDiff_diaSrcTable', dataId=ref)
@@ -463,21 +505,41 @@ def save_cutouts(config: dict):
             
             # Initialize rotation angle (for potential augmentation)
             dia_src['rotation_angle'] = 0
+            
+            # Precompute shapes for coordinate rotation
+            h_d, w_d = diff_array_u.shape
+            h_s, w_s = science_array_u.shape
+            h_c, w_c = coadd_array_u.shape
 
             # Extract cutouts for each detected source
             for i in range(len(dia_src)):
+                # Get source coordinates in unrotated frame
+                x_u = float(dia_src['x'][i])
+                y_u = float(dia_src['y'][i])
+                
+                # Rotate source coordinates for diff/science images
+                x_d, y_d = rotate_xy_ccw(x_u, y_u, w_d, h_d, nq)
+                x_s, y_s = rotate_xy_ccw(x_u, y_u, w_s, h_s, nq)
+                
+                # Coadd uses magic +20,+20 offset in UNROTATED frame, then rotate
+                # Magic offset: due to convolution for the coadd. Coadd is 20 pixels larger on each side
+                # in this version of the pipeline: (4176, 2048) normal CCD VS (4216, 2088) for Coadded image.
+                x_c_u = x_u + 20.0
+                y_c_u = y_u + 20.0
+                x_c, y_c = rotate_xy_ccw(x_c_u, y_c_u, w_c, h_c, nq)
+                
                 # Create cutout centered on source position from difference image
-                cutout = Cutout2D(diff_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)
+                cutout = Cutout2D(diff_array, (x_d, y_d), cutout_size)
                 
                 # Quality control: skip cutouts with wrong size or NaN values
                 if cutout.data.shape != (cutout_size, cutout_size) or np.isnan(cutout.data).any():
                     continue
                 
                 # Create cutouts from coadd (template) image
-                coadd_cutout = Cutout2D(coadd_array, (dia_src['x'][i]+20, dia_src['y'][i]+20), cutout_size)     # !!! Magic offset: due to convolution for the coadd. Coadd is 20 pixels larger on each side in this version of the pipeline: (4176, 2048) normal CCD VS (4216, 2088) for Coadded image.
+                coadd_cutout = Cutout2D(coadd_array, (x_c, y_c), cutout_size)
                 
                 # Create cutouts from science (calexp) image
-                science_cutout = Cutout2D(science_array, (dia_src['x'][i], dia_src['y'][i]), cutout_size)
+                science_cutout = Cutout2D(science_array, (x_s, y_s), cutout_size)
                 
                 # Quality control: skip if any cutout has wrong size or NaN values
                 if (coadd_cutout.data.shape != (cutout_size, cutout_size) or np.isnan(coadd_cutout.data).any() or
@@ -492,6 +554,7 @@ def save_cutouts(config: dict):
                 diaSourceIds.append(dia_src.iloc[i]["diaSourceId"])
             
             # Clean up large arrays after each detector to free memory
+            del diff_array_u, coadd_array_u, science_array_u
             del diff_array, coadd_array, science_array, dia_src
             
             # Progress update every 10 detectors to show detector-level progress
